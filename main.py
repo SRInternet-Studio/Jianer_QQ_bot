@@ -519,7 +519,7 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
 
         if f"{reminder}重启" == user_message:
             if str(event.user_id) in Super_User or str(event.user_id) in ROOT_User or str(event.user_id) in Manage_User:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"正在重启简儿－O－……")))
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"正在重启{bot_name}－O－……")))
 
                 try:
                     with open("restart.temp", "w" ,encoding="utf-7") as f:
@@ -705,12 +705,12 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
                         with open(blacklist_file, "w", encoding="utf-8") as f:
                          for item in blacklist114:
                             f.write(item + "\n")  # 防止之前的丟失555，并添加换行符
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加成功,现列表:{blacklist114}")))
+                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加成功\n现在的黑名单: {blacklist114}")))
             
                     except Exception as e:
-                       await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加失败,原因:{e}")))
+                       await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加失败, 是因为\n{e}")))
                 else:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加失败,原因:群{Toset2}已在黑名单！")))
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加失败,是因为{Toset2}已在黑名单")))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"不能这么做！那是一块丞待开发的禁地，可能很危险，{bot_name}很胆小……꒰>﹏< ꒱")))
         elif "删除黑名单 " in order:
@@ -724,11 +724,11 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
                         with open(blacklist_file, "w", encoding="utf-8") as f:
                          for item in blacklist117:
                             f.write(item + "\n")  # 防止之前的丟失555，并添加换行符
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除成功,现列表:{blacklist117}")))
+                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除成功\n现在黑名单: {blacklist117}")))
                     except Exception as e:
-                       await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除失败,原因:{e}")))
+                       await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除失败, 是因为\n{e}")))
                 else:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除失败,原因:群{Toset1}不在黑名单！")))
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除失败, 是因为群{Toset1}不在黑名单")))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"不能这么做！那是一块丞待开发的禁地，可能很危险，{bot_name}很胆小……꒰>﹏< ꒱")))
             
@@ -741,7 +741,7 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
                 if Toset in ROOT_User:
                     r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-失败：指定的用户是根用户， 根用户组为只读。'''
+失败：指定的用户是 ROOT_User 且组 ROOT_User 为只读。'''
                 else:
                     if Toset in s:
                         s.remove(Toset)
@@ -752,7 +752,7 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
                         r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
 成功: @{Toset} 现在是一个普通用户了。
-现在发送 {reminder}帮助 来知道你拥有了哪些权限。'''
+现在发送 {reminder}帮助 了解你拥有的权限。'''
                     else:
                         r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -782,14 +782,14 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
                         if Toset in Manage_User:
                             r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-成功: {nikename}(@{Toset}) 已经成为了一个初级管理。'''
+成功: {nikename}(@{Toset}) 已加入管理组 Manage_User 。'''
                         elif Toset in Super_User:
                             s.remove(Toset)
                             m.append(Toset)
                             if Write_Settings(s, m):
                                 r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-成功: {nikename}(@{Toset}) 已经成为了一个初级管理。
+成功: {nikename}(@{Toset}) 已加入管理组 Manage_User 。
 Now use {reminder}帮助 to know what permissions you have now.'''
                             else:
                                 r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
@@ -798,14 +798,14 @@ Now use {reminder}帮助 to know what permissions you have now.'''
                         elif Toset in ROOT_User:
                             r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-失败：指定的用户是根用户， 根用户组为只读。'''
+失败：指定的用户是 ROOT_User 且组 ROOT_User 为只读。'''
                         else:
                             m.append(Toset)
                             if Write_zSettings(s, m):
                                 r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-成功: {nikename}(@{Toset}) 已经成为了一个初级管理
-现在发送 {reminder}帮助 来知道你拥有了哪些权限。'''
+成功: {nikename}(@{Toset}) 已加入管理组 Manage_User 。
+现在发送 {reminder}帮助 了解你拥有的权限。'''
                             else:
                                 r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -831,8 +831,8 @@ Now use {reminder}帮助 to know what permissions you have now.'''
                             if Write_Settings(s, m):
                                 r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-成功: {nikename}(@{Toset}) 已经成为了一个高级管理。
-现在发送 {reminder}帮助 来知道你拥有了哪些权限'''
+成功: {nikename}(@{Toset}) 已加入管理组 Super_User 。
+现在发送 {reminder}帮助 了解你拥有的权限。'''
                             else:
                                 r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -840,18 +840,18 @@ Now use {reminder}帮助 to know what permissions you have now.'''
                         elif Toset in Super_User:
                             r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-成功: {nikename}(@{Toset}) 已经成为了一个高级用户'''
+成功: {nikename}(@{Toset}) 已加入管理组 Super_User 。'''
                         elif Toset in ROOT_User:
                             r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-失败：指定的用户是根用户， 根用户组为只读。'''
+失败：指定的用户是 ROOT_User 且组 ROOT_User 为只读。'''
                         else:
                             s.append(Toset)
                             if Write_Settings(s, m):
                                 r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-成功: {nikename}(@{Toset}) 已经成为了一个高级用户
-现在发送 {reminder}帮助 来看看你拥有了哪些权限'''
+成功: {nikename}(@{Toset}) 已加入管理组 Super_User 。
+现在发送 {reminder}帮助 了解你拥有的权限。'''
                             else:
                                 r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -860,7 +860,7 @@ Now use {reminder}帮助 to know what permissions you have now.'''
                 else:
                     r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-失败：只能设置初级管理或高级管理。'''
+失败：只能设置 Manage_User 或 Super_User 。'''
             else:
                 r  = f"不能这么做！那是一块丞待开发的禁地，可能很危险，{bot_name}很胆小……꒰>﹏< ꒱"
 
@@ -967,7 +967,7 @@ If you are a Super_User or ROOT_User, you can manage these users. Use {reminder}
 构建信息：
 版本：{version_name}
 由 Lagrange.OneBot 驱动
-使用 HypeR_bot 框架制作
+基于 HypeR_bot 框架制作
 ————————————————————
 第三方API
 1. Mirokoi API
