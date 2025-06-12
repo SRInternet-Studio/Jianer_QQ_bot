@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <style>
+        @font-face {
+        font-family: title114514;
+        src: url("/root/Jianer/assets/t.ttf");
+        }
+        @font-face {
+        font-family: name114514;
+        src: url("/root/Jianer/assets/n.ttf");
+        }
+        .user_icon {
+            position: relative;
+            display: inline-block;
+        }
+
+        .user_icon img {
+            display: block;
+            /* 这将消除底部的空白间隙 */
+        }
+
+        .user_icon::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(ellipse 100% 100% at 0% 70%,
+            rgba(255, 255, 255, 0) 79%,
+            #000000 99%);
+            pointer-events: none;
+            /* 这将防止遮罩阻止鼠标事件 */
+        }
+
+        .user_quote {
+            box-sizing: border-box;
+            /* 确保wh是内容加padding的总和 */
+            padding: 0 10%;
+            width: 640px;
+            height: 400px;
+            font-family: "JetBrains Mono",sans-serif ;
+            font-size: 54px;
+            font-weight: bold;
+            color: white;
+            background-color: black;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .user_name {
+            width: 640px;
+            height: 240px;
+            font-size: 32px;
+            color: rgb(180, 180, 180);
+            background-color: black;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body style="margin: 0">
+<div style="display: flex; text-align: center">
+    <!-- 图片部分 -->
+    <div class="user_icon">
+        <img src="{ava_url}" style="width:640px;height:640px" class="user_img"/>
+    </div>
+    <!-- 文字部分 -->
+    <div style="display: block">
+        
+        <div class="user_quote" style="font-family: title114514;">{quote}</div>
+        <div class="user_name" style="font-family: name114514;">——— {name}</div>
+    </div>
+</div>
+</body>
+</html>
