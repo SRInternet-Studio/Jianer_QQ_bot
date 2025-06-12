@@ -1,0 +1,240 @@
+/* 基础样式 */
+body {
+    font-family: 'Segoe UI', sans-serif;
+    background: #f0f0f0;
+    margin: 0;
+    padding: 20px;
+}
+
+.container {
+    max-width: 100%;
+    margin: 0 auto;
+    padding: 20px;
+    padding-bottom: 60px; 
+}
+
+/* .container {
+    max-width: 800px;
+    margin: 0 auto;
+} */
+
+.control-bar {
+    background: white;
+    padding: 15px;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    margin-bottom: 20px;
+}
+
+.btn {
+    padding: 8px 15px;
+    border: 1px solid #0078d4;
+    border-radius: 4px;
+    background: white;
+    cursor: pointer;
+    margin-right: 10px;
+}
+
+.btn.primary {
+    background: #0078d4;
+    color: white;
+}
+
+/* 编辑区样式 */
+.editor-container {
+    background: white;
+    padding: 20px;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.group-section {
+    margin-bottom: 20px;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.input-field {
+    width: 300px;
+    padding: 8px;
+    margin: 5px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+.delete-btn {
+    color: #d13438;
+    border-color: #d13438;
+}
+
+.toast-message {
+    padding: 12px 24px;
+    margin-bottom: 8px;
+    border-radius: 4px;
+    font-size: 14px;
+    opacity: 0;
+    transform: translateY(-20px);
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.toast-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast-success {
+    background: #dff6dd;
+    color: #107c10;
+    border: 1px solid #107c10;
+}
+
+.toast-error {
+    background: #fde7e9;
+    color: #d13438;
+    border: 1px solid #d13438;
+}
+
+.toast-info {
+    background: #c7e0f4;
+    color: #005a9e;
+    border: 1px solid #005a9e;
+}
+
+/* .footer {
+    position: relative;
+    margin-top: 30px;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #f8f9fa;
+    padding: 12px 20px;
+    text-align: center;
+    font-size: 0.9em;
+    color: #6c757d;
+    border-top: 1px solid #dee2e6;
+    z-index: 1000;
+} */
+
+.footer {
+    position: relative;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #f8f9fa;
+    padding: 12px 20px;
+    text-align: center;
+    font-size: 0.9em;
+    color: #6c757d;
+    border-top: 1px solid #dee2e6;
+    z-index: 1000;
+}
+
+.footer a {
+    color: #007bff;
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.footer a:hover {
+    color: #0056b3;
+    text-decoration: underline;
+}
+
+/* 按钮点击效果 */
+.btn:active {
+    transform: scale(0.98);
+    filter: brightness(90%);
+}
+
+/* 链接点击效果 */
+a:active {
+    opacity: 0.7;
+}
+
+/* 输入框聚焦效果 */
+.input-field:focus {
+    outline: 2px solid #0078d4;
+    outline-offset: 2px;
+}
+
+.loading-mask {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255,255,255,0.8);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+
+/* 移动端适配（屏幕宽度小于768px） */
+@media (max-width: 768px) {
+    .container {
+        max-width: 100%;
+        padding: 10px;
+    }
+
+    .control-bar {
+        padding: 10px;
+        margin-bottom: 15px;
+    }
+
+    .btn {
+        padding: 10px 15px;
+        margin: 5px 0;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .group-section {
+        padding: 10px;
+        margin-bottom: 15px;
+    }
+
+    .input-field {
+        width: 100%;
+        margin: 5px 0;
+    }
+
+    .footer {
+        position: relative; /* 改为相对定位 */
+        padding: 10px;
+        font-size: 0.8em;
+    }
+
+    h1 {
+        font-size: 1.5em;
+        margin: 15px 0;
+    }
+
+    /* 调整按钮间距 */
+    .delete-btn {
+        margin-top: 8px;
+        display: block;
+    }
+
+    input[type="text"] {
+        font-size: 16px; /* 防止iOS自动缩放 */
+        min-height: 44px; 
+    }
+}
+
+/* 超小屏幕优化（屏幕宽度小于480px） */
+@media (max-width: 480px) {
+    .group-header {
+        flex-direction: column;
+    }
+    
+    .group-header > .input-field {
+        margin-bottom: 8px;
+    }
+    
+    .user-item {
+        flex-wrap: wrap;
+    }
+}
