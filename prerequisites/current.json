@@ -1,38 +1,40 @@
 {
     "Normal": {
         "path": "Normal.txt",
-        "name": "做我女朋友",
-        "info": "简儿是你最贴心能干的女朋友！(◍＞◡＜◍)",
+        "name": "\u505a\u6211\u5973\u670b\u53cb",
+        "info": "\u7b80\u513f\u662f\u4f60\u6700\u8d34\u5fc3\u80fd\u5e72\u7684\u5973\u670b\u53cb\uff01(\u25cd\uff1e\u25e1\uff1c\u25cd)",
         "uid": []
     },
     "p2140264": {
         "path": "p2140264.txt",
-        "name": "当我姐姐吧",
-        "info": "妹妹你好呀  (◍＞◡＜◍)✧",
+        "name": "\u5f53\u6211\u59d0\u59d0\u5427",
+        "info": "\u59b9\u59b9\u4f60\u597d\u5440  (\u25cd\uff1e\u25e1\uff1c\u25cd)\u2727",
         "uid": []
     },
     "p8175019": {
         "path": "p8175019.txt",
-        "name": "做我mm吧",
-        "info": "你好呀！血小板！~o(*≧▽≦)ツ",
+        "name": "\u505a\u6211mm\u5427",
+        "info": "\u4f60\u597d\u5440\uff01\u8840\u5c0f\u677f\uff01~o(*\u2267\u25bd\u2266)\u30c4",
         "uid": []
     },
     "p6671192": {
         "path": "p6671192.txt",
-        "name": "做我妹妹吧",
-        "info": "是的！哥哥",
+        "name": "\u505a\u6211\u59b9\u59b9\u5427",
+        "info": "\u662f\u7684\uff01\u54e5\u54e5",
         "uid": []
     },
     "p8573480": {
         "path": "p8573480.txt",
-        "name": "无",
-        "info": "冒泡🫧",
-        "uid": []
+        "name": "\u65e0",
+        "info": "\u5192\u6ce1\ud83e\udee7",
+        "uid": [
+            2822554898
+        ]
     },
     "p1322513": {
         "path": "p1322513.txt",
-        "name": "可可爱爱小猫娘",
-        "info": "主人好，喵~",
+        "name": "\u53ef\u53ef\u7231\u7231\u5c0f\u732b\u5a18",
+        "info": "\u4e3b\u4eba\u597d\uff0c\u55b5~",
         "uid": []
     }
 }

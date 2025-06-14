@@ -48,9 +48,8 @@ ROOT_User: list = config.others["ROOT_User"]
 Super_User: list = []
 Manage_User: list = []
 
-otherai_api_url: str = config.others["other_ai_url"]
-otherai_api_key: str = config.others["other_ai_api_key"]
-otherai_model_name: str = config.others["other_ai_model_name"]
+
+
 
 logger = Logger.Logger()
 logger.set_level(config.log_level)
@@ -67,6 +66,20 @@ generating = False
 emoji_send_count: datetime = None
 emoji_plus_one_off = False
 self_service_titles = False
+
+
+
+#遍历并加载自定义ai配置
+ai_counter = 0
+otherai_numberber = 0
+
+otherai_setings = []
+for i in config.others["other_ai"]:
+    otherai_setings.append(i)
+ai_counter = len(otherai_setings)
+for i in range(0, ai_counter):
+    exec("otherai_{}_config = otherai_setings[{}]".format(i, i))
+
 
 # AI Settings
 EnableNetwork = config.others["default_mode"]
@@ -689,10 +702,13 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             EnableNetwork = "Pixmap"
             print(f"sys: AI Mode change to Gemini")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}已经可以读图了!")))
-        elif ("自定义ai") == order:
+        elif "自定义ai" in order:
+            global otherai_numberber
             EnableNetwork = "OtherAI"
+            otherai_numberber = int(order.split(" ")[1])
             print(f"sys: AI Mode change to OtherAI")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"已切换到超级管理员自定义的ai！")))
+
 
 
         elif "列出黑名单" == order:
@@ -1028,7 +1044,7 @@ if failed_plugins else "无"}'''
 8. EdgeTTS
 ————————————————————
 © 2019~2025 思锐工作室 保留所有权利
-修改/二开 爱来自Bilibili@月下的桃子'''
+'''
 
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(about)))
 
@@ -1595,8 +1611,13 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                         msg = ""
                         await process_reply_message()
                         msg += order
-                        print(otherai_model_name)
-                        print(otherai_api_url)
+                        for i in range(0, ai_counter):
+                            if otherai_numberber == i:
+                                otherai_api_url = eval('otherai_{}_config.get("EndPoint")'.format(otherai_numberber))
+                                otherai_api_key = eval('otherai_{}_config.get("Key")'.format(otherai_numberber))
+                                otherai_model_name = eval('otherai_{}_config.get("Model_Name")'.format(otherai_numberber))
+                                
+
                         search = OtherAI(
                             sys_prompt, msg, user_lists, event.user_id,
                             otherai_model_name, bot_name,
@@ -1651,7 +1672,7 @@ def help_message() -> str:
        {reminder}GPT-4{"（当前）" if EnableNetwork == "Net" else ""} —> {bot_name}将会调用GPT-4回复 🌟
        {reminder}GPT-3.5{"（当前）" if EnableNetwork == "Normal" else ""} —> {bot_name}将会调用GPT-3.5回复🎈
        {reminder}deepseek_v3{"（当前）" if EnableNetwork == "Ds" else ""} —> {bot_name}将会调用DeepseekV3回复✨
-       {reminder}自定义ai{"（当前）" if EnableNetwork == "OtherAI" else ""} —> {bot_name}将会调用你的自定义ai api回复{plugins_help}
+       {reminder}自定义ai [ai_code(从0开始)]{"（当前）" if EnableNetwork == "OtherAI" else ""} —> {bot_name}将会调用你的自定义ai api回复{plugins_help}
        {reminder}插件菜单 —> 查看{bot_name}已经安装的插件🔮
        {reminder}角色扮演 —> 让{bot_name}使用各种各样的预设聊天
 快来聊天吧(*≧︶≦)'''
