@@ -691,7 +691,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         elif f"{reminder}自定义ai菜单" in user_message:
             global ai_code_list
             for i in range(0, len(otherai_config)):
-                ai_code_list.append(f"{i}_{otherai_config[i]["Model_Name"]}")
+                ai_code_list.append(f"{i} {otherai_config[i]["Model_Name"]}{"（当前）" if otherai_numberber == i else ""}")
 
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
