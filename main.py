@@ -5,12 +5,68 @@
 # link: https://github.com/SRInternet-Studio/Jianer_QQ_bot/
 
 # import Tools functions
+
+
+
+ #                             _ooOoo_
+ #                            o8888888o
+ #                            88" . "88
+ #                            (| -_- |)
+ #                            O\  =  /O
+ #                         ____/`---'\____
+ #                       .'  \\|     |//  `.
+ #                      /  \\|||  :  |||//  \
+ #                     /  _||||| -:- |||||-  \
+ #                     |   | \\\  -  /// |   |
+ #                     | \_|  ''\---/''  |   |
+ #                     \  .-\__  `-`  ___/-. /
+ #                   ___`. .'  /--.--\  `. . __
+ #                ."" '<  `.___\_<|>_/___.'  >'"".
+ #               | | :  `- \`.;`\ _ /`;.`/ - ` : | |
+ #               \  \ `-.   \_ __\ /__ _/   .-` /  /
+ #          ======`-.____`-.___\_____/___.-`____.-'======
+ #                             `=---='
+ #          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ #                     佛祖保佑        永无BUG
+ #            佛曰:
+ #                   写字楼里写字间，写字间里程序员；
+ #                   程序人员写程序，又拿程序换酒钱。
+ #                   酒醒只在网上坐，酒醉还来网下眠；
+ #                   酒醉酒醒日复日，网上网下年复年。
+ #                   但愿老死电脑间，不愿鞠躬老板前；
+ #                   奔驰宝马贵者趣，公交自行程序员。
+ #                   别人笑我忒疯癫，我笑自己命太贱；
+ #                   不见满街漂亮妹，哪个归得程序员？
+
+#
+# 　　　┏┓　　　┏┓
+# 　　┏┛┻━━━┛┻┓
+# 　　┃　　　　　　　 ┃
+# 　　┃　　　━　　　 ┃
+# 　　┃　┳┛　┗┳　┃
+# 　　┃　　　　　　　 ┃
+# 　　┃　　　┻　　　 ┃
+# 　　┃　　　　　　　 ┃
+# 　　┗━┓　　　┏━┛Codes are far away from bugs with the animal protecting
+# 　　　　┃　　　┃    神兽保佑,代码无bug
+# 　　　　┃　　　┃
+# 　　　　┃　　　┗━━━┓
+# 　　　　┃　　　　　 ┣┓
+# 　　　　┃　　　　 ┏┛
+# 　　　　┗┓┓┏━┳┓┏┛
+# 　　　　　┃┫┫　┃┫┫
+# 　　　　　┗┻┛　┗┻┛
+#
+
+
+
 from Tools.tools import * 
 print(title() + "\nWelcome to Jianer QQ Bot, Starting Kernal now...", end="\r") 
 
 from Tools.GoogleAI import genai, Context, Parts, Roles, Schema
 from Tools.SearchOnline import network_gpt as SearchOnline
 from Tools.deepseek import dsr114 as deepseek
+from Tools.other_ai import OtherAI as OtherAI
 import prerequisites.prerequisite as presets_tool
 
 # import requirements
@@ -36,16 +92,19 @@ from Hyper.Events import *
 
 config = Configurator.cm.get_cfg()
 reminder: str = config.others["reminder"]
-bot_name = config.others["bot_name"] #星·简
-bot_name_en = config.others["bot_name_en"] #Shining girl
+bot_name = config.others["bot_name"]
+bot_name_en = config.others["bot_name_en"]
 bot_owner = config.owner[0]
 ONE_SLOGAN: str = config.others["slogan"]
 CONFUSED_WORD: str = config.others.get("confused_words", 
-    "不能这么做！那是一块丞待开发的禁地，可能很危险，{bot_name}很胆小……꒰>﹏< ꒱")
+    "对不起,您还不是Super_User或者Manager_User,无法使用本条指令")
 
 ROOT_User: list = config.others["ROOT_User"]
 Super_User: list = []
 Manage_User: list = []
+
+
+
 
 logger = Logger.Logger()
 logger.set_level(config.log_level)
@@ -62,6 +121,20 @@ generating = False
 emoji_send_count: datetime = None
 emoji_plus_one_off = False
 self_service_titles = False
+
+
+
+#遍历并加载自定义ai配置
+ai_counter = 0
+otherai_numberber = 0
+
+otherai_setings = []
+for i in config.others["other_ai"]:
+    otherai_setings.append(i)
+ai_counter = len(otherai_setings)
+for i in range(0, ai_counter):
+    exec("otherai_{}_config = otherai_setings[{}]".format(i, i))
+
 
 # AI Settings
 EnableNetwork = config.others["default_mode"]
@@ -444,7 +517,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
             await actions.send(group_id=group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮助 to know more.''')))
+欢迎! {bot_name} 已经成功重新启动. 现在你可以发送 {reminder}帮助 了解更多指令.''')))
 
     elif isinstance(event, Events.GroupMemberIncreaseEvent):
         if Wait_for_add_in:
@@ -452,10 +525,10 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
             return
         
         user = event.user_id
-        welcome = f''' 加入{bot_name}的大家庭，{bot_name}是你最忠实可爱的女朋友噢o(*≧▽≦)ツ
-随时和{bot_name}交流，你只需要在问题的前面加上 {reminder} 就可以啦！( •̀ ω •́ )✧
-@{bot_name} 可以看看{bot_name}会做什么有趣的事情哦~o((>ω< ))o
-祝你在{bot_name}的大家庭里生活愉快！♪(≧∀≦)ゞ☆'''
+        welcome = f''' 加入本群,{bot_name}是你最好的QQ机器人
+随时和{bot_name}交流（调用ai对话），你只需要在问题的前面加上 {reminder} 就可以啦！( •̀ ω •́ )✧
+@{bot_name} 可以看看{bot_name}目前有哪些指令可使用
+祝你在本群过得愉快!'''
         await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(f"http://q2.qlogo.cn/headimg_dl?dst_uin={user}&spec=640"), Segments.Text("欢迎"), Segments.At(user), Segments.Text(welcome)))
         
     elif isinstance(event, Events.GroupMemberDecreaseEvent):
@@ -465,8 +538,7 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
         else:
             user_nick = "有人又"
 
-        text = f'''{user_nick}离开了{bot_name}的大家庭，{bot_name}好伤心o(TヘTo)……
-大家一定要记得多来陪{bot_name}玩玩ヾ(•ω•`)o'''
+        text = f'''{user_nick}离开了本群，{bot_name}好伤心o(TヘTo)……'''
         print(f"group: {event.user_id} 已离开群聊 {event.group_id}")
         await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(text)))
 
@@ -482,10 +554,10 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
                 print(f"group: {await get_user_nickname(user, Manager, actions)} 的入群回答 {processed_keyword} 符合正确答案，已准许入群 {event.group_id}")
                 await actions.set_group_add_request(flag=event.flag, sub_type=event.sub_type, approve=True, reason="")
                 Wait_for_add_in = True
-                welcome = f'''{await get_user_nickname(user, Manager, actions)} 的答案正确，欢迎加入{bot_name}的大家庭！o(*≧▽≦)ツ
-随时和{bot_name}交流，只需在问题的前面加上 {reminder} 就可以啦！( •̀ ω •́ )✧
-@{bot_name} 可以看看{bot_name}会做什么有趣的事情哦~o((>ω< ))o
-祝你在{bot_name}的大家庭里生活愉快！♪(≧∀≦)ゞ☆'''  
+                welcome = f'''{await get_user_nickname(user, Manager, actions)} 的答案正确，欢迎加入本群
+随时和{bot_name}交流（调用ai回复），只需在问题的前面加上 {reminder} 就可以啦！( •̀ ω •́ )✧
+@{bot_name} 可以看看{bot_name}目前有哪些指令可使用
+祝你在本群过得愉快'''
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(f"http://q2.qlogo.cn/headimg_dl?dst_uin={user}&spec=640"), Segments.Text(welcome)))
                 break
             except:
@@ -570,7 +642,7 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
 
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-外部后端已重载已完成。发送 {reminder}插件视角 以查看更多信息。''')))
+外部后端已重载已完成。发送 {reminder}插件菜单 以查看更多信息。''')))
                 
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
@@ -669,22 +741,30 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
 
-        elif "默认4" == order:
+        elif "GPT-4" == order:
             EnableNetwork = "Net"
             print(f"sys: AI Mode change to ChatGPT-4")
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("嗯……我好像升级了！o((>ω< ))o")))
-        elif "深度" == order:
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已切换到GPT4！")))
+        elif "deepseek_v3" == order:
             EnableNetwork = "Ds"
             print(f"sys: AI Mode change to DeepSeek")
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("服务器……繁忙？ε٩(๑> ₃ <)۶з")))
-        elif "默认3.5" == order:
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已切换到DeepSeekV3！")))
+        elif "GPT-3.5" == order:
             EnableNetwork = "Normal"
             print(f"sys: AI Mode change to ChatGPT-3.5")
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("切换到大模型中运行ο(=•ω＜=)ρ⌒☆")))
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已切换到GPT3.5！")))
         elif "读图" == order:
             EnableNetwork = "Pixmap"
             print(f"sys: AI Mode change to Gemini")
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}打开了新视界！o(*≧▽≦)ツ")))
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}已经可以读图了!")))
+        elif "自定义ai" in order:
+            global otherai_numberber
+            EnableNetwork = "OtherAI"
+            otherai_numberber = int(order.split(" ")[1])
+            print(f"sys: AI Mode change to OtherAI")
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"已切换到超级管理员自定义的ai！")))
+
+
 
         elif "列出黑名单" == order:
           if str(event.user_id) in ADMINS:
@@ -920,8 +1000,8 @@ If you are a Super_User or ROOT_User, you can manage these users. Use {reminder}
                 r  = CONFUSED_WORD.format(bot_name=bot_name)
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(r)))
 
-        elif "插件视角" in order:
-            status = f'''{bot_name} {bot_name_en} - 插件视角
+        elif "插件菜单" in order:
+            status = f'''{bot_name} {bot_name_en} - 插件菜单
 ————————————————————
 ✅ 已加载插件 ({len(loaded_plugins)}):
 {chr(10).join(f"{i+1}. {str(plugin).rsplit('_', 1)[0]}" for i, plugin in enumerate(loaded_plugins)) if loaded_plugins else "无"}
@@ -975,9 +1055,9 @@ if failed_plugins else "无"}'''
                 ]
                 
                 content = "\n".join([
-                    f"管理我们的{bot_name}\n————————————————————",
+                    f"管理{bot_name}\n————————————————————",
                     *command_lines,
-                    "你的每一步操作，与用户息息相关。"
+                    "请注意，本页所列出命令仅管理员可用.请小心使用避免不纯的用户发出爆鸣声"
                 ])
                 
             else:
@@ -1005,7 +1085,7 @@ if failed_plugins else "无"}'''
 ————————————————————
 构建信息：
 版本：{version_name}
-由 Lagrange.OneBot 驱动
+由 Lagrange.OneBot/NapCat.QQ 驱动
 基于 HypeR_bot 框架制作
 ————————————————————
 第三方API
@@ -1018,7 +1098,8 @@ if failed_plugins else "无"}'''
 7. GPT-SoVITS
 8. EdgeTTS
 ————————————————————
-© 2019~2025 思锐工作室 保留所有权利'''
+© 2019~2025 思锐工作室 保留所有权利
+'''
 
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(about)))
 
@@ -1446,7 +1527,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 print(f"处理插件时发生错误: {e}")
                 return
             
-            # 3. 全都匹配不到，进入AI回复
+            # 3. 不是哥们怎么全都匹配不到，进入AI回复
             MAX_MESSAGE_LENGTH = 3
             if len(order) < 2:  # 不响应小于两个字的废话
                 return
@@ -1581,6 +1662,24 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                             config.others["deepseek_key"]
                         )
                         await handle_message_stream(search.Response())
+                    case "OtherAI":
+                        msg = ""
+                        await process_reply_message()
+                        msg += order
+                        for i in range(0, ai_counter):
+                            if otherai_numberber == i:
+                                otherai_api_url = eval('otherai_{}_config.get("EndPoint")'.format(otherai_numberber))
+                                otherai_api_key = eval('otherai_{}_config.get("Key")'.format(otherai_numberber))
+                                otherai_model_name = eval('otherai_{}_config.get("Model_Name")'.format(otherai_numberber))
+                                
+
+                        search = OtherAI(
+                            sys_prompt, msg, user_lists, event.user_id,
+                            otherai_model_name, bot_name,
+                            otherai_api_key,
+                            otherai_api_url
+                        )
+                        await handle_message_stream(search.Response())
 
                 result = result.rstrip()
                 await finalize_messages()
@@ -1624,12 +1723,13 @@ def help_message() -> str:
     return f'''如何与{bot_name}交流( •̀ ω •́ )✧
     注：对话前必须加上 {reminder} 噢！~
        {reminder}(任意问题，必填) —> {bot_name}回复
-       {reminder}读图{"（当前）" if EnableNetwork == "Pixmap" else ""} —> {bot_name}可以回复您发送的图片✅
-       {reminder}默认4{"（当前）" if EnableNetwork == "Net" else ""} —> {bot_name}更富有创造力的回复通道 🌟
-       {reminder}默认3.5{"（当前）" if EnableNetwork == "Normal" else ""} —> {bot_name}的快速回复通道🎈
-       {reminder}深度{"（当前）" if EnableNetwork == "Ds" else ""} —> 更加人性化和深度地回复问题✨{plugins_help}
-       {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮
-       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
+       {reminder}读图{"（当前）" if EnableNetwork == "Pixmap" else ""} —> {bot_name}可以回复您发送的图片(Gemini提供)✅
+       {reminder}GPT-4{"（当前）" if EnableNetwork == "Net" else ""} —> {bot_name}将会调用GPT-4回复 🌟
+       {reminder}GPT-3.5{"（当前）" if EnableNetwork == "Normal" else ""} —> {bot_name}将会调用GPT-3.5回复🎈
+       {reminder}deepseek_v3{"（当前）" if EnableNetwork == "Ds" else ""} —> {bot_name}将会调用DeepseekV3回复✨
+       {reminder}自定义ai [ai_code(从0开始)]{"（当前）" if EnableNetwork == "OtherAI" else ""} —> {bot_name}将会调用你的自定义ai api回复{plugins_help}
+       {reminder}插件菜单 —> 查看{bot_name}已经安装的插件🔮
+       {reminder}角色扮演 —> 让{bot_name}使用各种各样的预设聊天
 快来聊天吧(*≧︶≦)'''
 
 Listener.run()

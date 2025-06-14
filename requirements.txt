@@ -16,4 +16,9 @@ paramiko>=3.5.1
 PySide6
 PySide6-Fluent-Widgets
 edge_tts
+<<<<<<< HEAD
 pyGithub
+playwright
+=======
+pyGithub
+>>>>>>> b760a5537218f04870d1fc661f991ad4ae04d4e7
