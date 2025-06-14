@@ -67,18 +67,18 @@ emoji_send_count: datetime = None
 emoji_plus_one_off = False
 self_service_titles = False
 
+ai_code_list = []
 
 
+ 
 #遍历并加载自定义ai配置
 ai_counter = 0
 otherai_numberber = 0
 
-otherai_setings = []
+otherai_config = []
 for i in config.others["other_ai"]:
-    otherai_setings.append(i)
-ai_counter = len(otherai_setings)
-for i in range(0, ai_counter):
-    exec("otherai_{}_config = otherai_setings[{}]".format(i, i))
+    otherai_config.append(i)
+
 
 
 # AI Settings
@@ -639,6 +639,8 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
 
+
+
         elif f"{reminder}启用插件 " in user_message:
             if str(event.user_id) in ADMINS:
                 message = user_message
@@ -685,6 +687,18 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 插件 {plugin_name} 已经成功启用''')))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+
+        elif f"{reminder}自定义ai菜单" in user_message:
+            global ai_code_list
+            for i in range(0, len(otherai_config)):
+                ai_code_list.append(f"{i}_{otherai_config[i]["Model_Name"]}")
+
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
+————————————————————
+自定义ai菜单
+格式:[code]_[Model_Name]
+\n{"\n".join(ai_code_list)}
+''')))
 
         elif "GPT-4" == order:
             EnableNetwork = "Net"
@@ -1611,12 +1625,12 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                         msg = ""
                         await process_reply_message()
                         msg += order
-                        for i in range(0, ai_counter):
+                        for i in range(0, len(otherai_config)):
                             if otherai_numberber == i:
-                                otherai_api_url = eval('otherai_{}_config.get("EndPoint")'.format(otherai_numberber))
-                                otherai_api_key = eval('otherai_{}_config.get("Key")'.format(otherai_numberber))
-                                otherai_model_name = eval('otherai_{}_config.get("Model_Name")'.format(otherai_numberber))
-                                
+                                otherai_api_url = otherai_config[otherai_numberber]["EndPoint"]
+                                otherai_api_key = otherai_config[otherai_numberber]["Key"]
+                                otherai_model_name = otherai_config[otherai_numberber]["Model_Name"]
+                            
 
                         search = OtherAI(
                             sys_prompt, msg, user_lists, event.user_id,
@@ -1672,7 +1686,8 @@ def help_message() -> str:
        {reminder}GPT-4{"（当前）" if EnableNetwork == "Net" else ""} —> {bot_name}将会调用GPT-4回复 🌟
        {reminder}GPT-3.5{"（当前）" if EnableNetwork == "Normal" else ""} —> {bot_name}将会调用GPT-3.5回复🎈
        {reminder}deepseek_v3{"（当前）" if EnableNetwork == "Ds" else ""} —> {bot_name}将会调用DeepseekV3回复✨
-       {reminder}自定义ai [ai_code(从0开始)]{"（当前）" if EnableNetwork == "OtherAI" else ""} —> {bot_name}将会调用你的自定义ai api回复{plugins_help}
+       {reminder}自定义ai [ai_code(从0开始)]{"（当前）" if EnableNetwork == "OtherAI" else ""} —> {bot_name}将会调用你的自定义ai api回复
+       {reminder}自定义ai菜单 —>查看您已经配置的自定义ai配置{plugins_help}
        {reminder}插件菜单 —> 查看{bot_name}已经安装的插件🔮
        {reminder}角色扮演 —> 让{bot_name}使用各种各样的预设聊天
 快来聊天吧(*≧︶≦)'''
