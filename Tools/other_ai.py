@@ -2,7 +2,7 @@ import time
 import traceback
 from Tools.AI_tools import *
 from openai import OpenAI
-
+from Tools.佛祖和神兽 import *
 
 class OtherAI():
     def __init__(self, prompt, message, user_lists, uid, mode, bn, key, ai_url) -> None:

@@ -1,7 +1,7 @@
 from google import genai
 from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
 
-client = genai.Client(api_key="AIzaSyCHxl37ngb2yDahz9PN5yrUq8MIX43nD_Q")
+client = genai.Client(api_key="Your Key")
 
 google_search_tool = Tool(
     google_search = GoogleSearch()

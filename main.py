@@ -15,6 +15,8 @@ from Tools.deepseek import dsr114 as deepseek
 from Tools.other_ai import OtherAI as OtherAI
 import prerequisites.prerequisite as presets_tool
 
+from Tools.佛祖和神兽 import *
+
 # import requirements
 import faulthandler
 
