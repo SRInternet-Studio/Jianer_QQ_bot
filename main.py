@@ -12,12 +12,14 @@ from Tools.GoogleAI import genai, Context, Parts, Roles, Schema
 from Tools.SearchOnline import network_gpt as SearchOnline
 from Tools.deepseek import dsr114 as deepseek
 import prerequisites.prerequisite as presets_tool
-
+from Tools.ai_diy import *
+from Tools.other_ai import *
+import requests
 # import requirements
 import faulthandler
 faulthandler.enable()
 from urllib.parse import urlparse, urlunparse
-
+from threading import Thread
 import sys, os, asyncio, traceback, threading
 import importlib.util   
 import inspect
@@ -122,139 +124,247 @@ PRESET_DIR = presets_tool.PRESET_DIR
 NORMAL_PRESET = presets_tool.NORMAL_PRESET
 
 # 插件加载器 NEXT 3
-def load_plugins():
-    global loaded_plugins, disabled_plugins, failed_plugins, plugins_help, reminder, bot_name, PLUGIN_FOLDER
-    plugins = []
-    plugins_help = ""
+# 监控文件(教师监控（？）)
+class PluginWatcher:
+    def __init__(self, plugin_folder, reload_callback, interval=2):
+        self.plugin_folder = plugin_folder
+        self.reload_callback = reload_callback
+        self.interval = interval
+        self._running = False
+        self._file_mtimes = {}
+        self._thread = None
+        self._update_file_mtimes()
+    
+    def _update_file_mtimes(self):
+        for root, _, files in os.walk(self.plugin_folder):
+            for file in files:
+                if file.endswith(('.py', '.pyw')) or file == 'setup.py':
+                    path = os.path.join(root, file)
+                    try:
+                        self._file_mtimes[path] = os.path.getmtime(path)
+                    except OSError:
+                        pass
+    
+    def _check_files(self):
+        changed = False
+        for path, old_mtime in list(self._file_mtimes.items()):
+            try:
+                current_mtime = os.path.getmtime(path)
+                if current_mtime != old_mtime:
+                    self._file_mtimes[path] = current_mtime
+                    changed = True
+            except OSError:
+                del self._file_mtimes[path]
+                changed = True
+        
+        for root, _, files in os.walk(self.plugin_folder):
+            for file in files:
+                if file.endswith(('.py', '.pyw')) or file == 'setup.py':
+                    path = os.path.join(root, file)
+                    if path not in self._file_mtimes:
+                        try:
+                            self._file_mtimes[path] = os.path.getmtime(path)
+                            changed = True
+                        except OSError:
+                            pass
+        
+        return changed
+    
+    def _watch(self):
+        while self._running:
+            if self._check_files():
+                plugin_system.plugin_log("WARNING", "检测到插件文件变化，将自动重新加载插件！")
+                self.reload_callback()
+                self._update_file_mtimes()
+            
+            time.sleep(self.interval)
+    
+    def start(self):
+        if not self._running:
+            self._running = True
+            self._thread = Thread(target=self._watch, daemon=True)
+            self._thread.start()
+    
+    def stop(self):
+        self._running = False
+        if self._thread is not None:
+            self._thread.join()
 
-    loaded_plugins.clear()
-    disabled_plugins.clear()
-    failed_plugins.clear()
+class PluginSystem:
+    def __init__(self):
+        self.plugins = []
+        self.loaded_plugins = []
+        self.disabled_plugins = []
+        self.failed_plugins = []
+        self.plugins_help = ""
+        self.PLUGIN_FOLDER = "plugins"
+        self.watcher = None
+    
+    def plugin_log(self, level, message):
+        colors = {
+            "SUCCESS": "\033[92m", 
+            "ERROR": "\033[91m", 
+            "WARNING": "\033[93m", 
+            "INFO": "\033[94m"
+        }
+        reset = "\033[0m" 
+        color = colors.get(level, "\033[97m")
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Jianer_Plugin_System {color}[{level}]{reset} {message}")
+    
+    def _cleanup_plugins(self):
+        for module_name in list(sys.modules.keys()):
+            if module_name.startswith(tuple(self.loaded_plugins)):
+                del sys.modules[module_name]
+    
+    def load_plugins(self):
+        self._cleanup_plugins()
+        self.plugins = []
+        self.plugins_help = ""
+        self.loaded_plugins.clear()
+        self.disabled_plugins.clear()
+        self.failed_plugins.clear()
 
-    for filename in os.listdir(PLUGIN_FOLDER):
-        module_name = filename  # Folder name as module name
-        print(f"check file or directory: {filename}")
+        for filename in os.listdir(self.PLUGIN_FOLDER):
+            module_name = filename
+            self.plugin_log("INFO", f"检查文件或目录: {filename}")
 
-        if filename == "__pycache__":
-            print("Directory __pycache__ not load.")
-            continue
-
-        # 检查是否禁用
-        if filename.startswith("d_"):
-            disabled_plugins.append(module_name)
-            continue
-
-        # 处理目录形式插件
-        plugin_path = os.path.join(PLUGIN_FOLDER, filename)  # Full plugin path
-        if os.path.isdir(plugin_path):
-            setup_file = os.path.join(plugin_path, "setup.py")
-            if os.path.exists(setup_file):
-                try:
-                    # Load setup.py
-                    unique_module_name = f"{module_name}_{uuid.uuid4().hex}"  # Generate unique module name
-                    spec = importlib.util.spec_from_file_location(unique_module_name, setup_file)
-                    module = importlib.util.module_from_spec(spec)
-                    sys.modules[unique_module_name] = module
-                    spec.loader.exec_module(module)
-                    print(f"Loaded setup.py from folder plugin: {module_name}")
-
-                    # Verify plugin
-                    if hasattr(module, 'TRIGGHT_KEYWORD') and hasattr(module, 'on_message'):
-                        if isinstance(module.TRIGGHT_KEYWORD, str):
-                            plugins.append(module)  # Add module
-                            loaded_plugins.append(unique_module_name) 
-                            if hasattr(module, 'HELP_MESSAGE'):
-                                if isinstance(module.HELP_MESSAGE, str):
-                                    plugins_help += f"\n       {module.HELP_MESSAGE}"
-
-                            print(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
-                        else:
-                            failed_plugins.append(f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
-                    else:
-                        failed_plugins.append(f"{module_name} (缺少 TRIGGHT_KEYWORD：触发标识符 或 on_message：触发函数后端)")
-
-                except FileNotFoundError as e:
-                    failed_plugins.append(f"{module_name} (文件未找到: {e})")
-                    print(f"加载插件 {unique_module_name} 失败，是因为: {e}")
-                    if unique_module_name in sys.modules:
-                        del sys.modules[unique_module_name]
-                except ImportError as e:
-                    failed_plugins.append(f"{module_name} (导入错误: {e})")
-                    print(f"加载插件 {unique_module_name} 失败，是因为: {e}")
-                    if unique_module_name in sys.modules:
-                        del sys.modules[unique_module_name]
-                except Exception as e:
-                    failed_plugins.append(f"{module_name} (其他错误: {str(e)})")
-                    print(f"加载插件 {unique_module_name} 失败: \n{traceback.format_exc()}\n")
-                    if unique_module_name in sys.modules:
-                        del sys.modules[unique_module_name]  # Cleanup
-
-            else:
-                print(f"目录 {filename} 中缺少 setup.py 文件")
-                failed_plugins.append(f"{filename} (入口错误: 缺少 setup.py 文件)")
-
-        # 处理文件形式插件
-        elif filename.endswith(".py") or filename.endswith(".pyw"):
-            module_name = filename[:-3] if filename.endswith(".py") else filename[:-4]
+            if filename == "__pycache__":
+                self.plugin_log("WARNING", "跳过 __pycache__ 目录")
+                continue
 
             # 检查是否禁用
             if filename.startswith("d_"):
-                disabled_plugins.append(str(module_name)[3:])
+                self.disabled_plugins.append(module_name)
+                self.plugin_log("WARNING", f"跳过已禁用插件: {module_name}")
                 continue
 
-            # 生成唯一的模块名
-            unique_module_name = f"{module_name}_{uuid.uuid4().hex}"
+            # 处理目录形式插件
+            plugin_path = os.path.join(self.PLUGIN_FOLDER, filename)
+            if os.path.isdir(plugin_path):
+                setup_file = os.path.join(plugin_path, "setup.py")
+                if os.path.exists(setup_file):
+                    try:
+                        unique_module_name = f"{module_name}_{uuid.uuid4().hex}"
+                        spec = importlib.util.spec_from_file_location(unique_module_name, setup_file)
+                        module = importlib.util.module_from_spec(spec)
+                        sys.modules[unique_module_name] = module
+                        spec.loader.exec_module(module)
+                        self.plugin_log("INFO", f"从目录插件加载 setup.py: {module_name}")
 
-            try:
-                # 检查模块是否已经加载
-                if unique_module_name in sys.modules:
-                    print(f"模块 {unique_module_name} 已经加载，跳过")
+                        if hasattr(module, 'TRIGGHT_KEYWORD') and hasattr(module, 'on_message'):
+                            if isinstance(module.TRIGGHT_KEYWORD, str):
+                                self.plugins.append(module)
+                                self.loaded_plugins.append(unique_module_name)
+                                if hasattr(module, 'HELP_MESSAGE') and isinstance(module.HELP_MESSAGE, str):
+                                    self.plugins_help += f"\n       {module.HELP_MESSAGE}"
+
+                                self.plugin_log("SUCCESS", f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
+                            else:
+                                self.failed_plugins.append(f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
+                                self.plugin_log("ERROR", f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
+                        else:
+                            self.failed_plugins.append(f"{module_name} (缺少 TRIGGHT_KEYWORD 或 on_message)")
+                            self.plugin_log("ERROR", f"{module_name} (缺少 TRIGGHT_KEYWORD 或 on_message)")
+
+                    except FileNotFoundError as e:
+                        self.failed_plugins.append(f"{module_name} (文件未找到: {e})")
+                        self.plugin_log("ERROR", f"加载插件 {module_name} 失败: {e}")
+                        if unique_module_name in sys.modules:
+                            del sys.modules[unique_module_name]
+                    except ImportError as e:
+                        self.failed_plugins.append(f"{module_name} (导入错误: {e})")
+                        self.plugin_log("ERROR", f"加载插件 {module_name} 失败: {e}")
+                        if unique_module_name in sys.modules:
+                            del sys.modules[unique_module_name]
+                    except Exception as e:
+                        self.failed_plugins.append(f"{module_name} (错误: {str(e)})")
+                        self.plugin_log("ERROR", f"加载插件 {module_name} 失败: \n{traceback.format_exc()}")
+                        if unique_module_name in sys.modules:
+                            del sys.modules[unique_module_name]
+
+                else:
+                    self.plugin_log("WARNING", f"目录 {filename} 中缺少 setup.py 文件")
+                    self.failed_plugins.append(f"{filename} (缺少 setup.py 文件)")
+
+            # 处理文件形式插件
+            elif filename.endswith((".py", ".pyw")):
+                module_name = filename[:-3] if filename.endswith(".py") else filename[:-4]
+
+                if filename.startswith("d_"):
+                    self.disabled_plugins.append(str(module_name)[3:])
+                    self.plugin_log("WARNING", f"跳过已禁用插件: {module_name}")
                     continue
 
-                # 创建模块规范
-                spec = importlib.util.spec_from_file_location(unique_module_name, os.path.join(PLUGIN_FOLDER, filename))
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[unique_module_name] = module  # 添加到 sys.modules
-                spec.loader.exec_module(module)
+                unique_module_name = f"{module_name}_{uuid.uuid4().hex}"
 
-                # 验证模块是否符合插件规范
-                if hasattr(module, 'TRIGGHT_KEYWORD') and hasattr(module, 'on_message'):
-                    if isinstance(module.TRIGGHT_KEYWORD, str):
-                        plugins.append(module)  # 重要：把整个模块全tm加入到列表
-                        loaded_plugins.append(unique_module_name)
-                        if hasattr(module, 'HELP_MESSAGE'):
-                                if isinstance(module.HELP_MESSAGE, str):
-                                    plugins_help += f"\n       {module.HELP_MESSAGE}"
+                try:
+                    if unique_module_name in sys.modules:
+                        self.plugin_log("WARNING", f"模块 {unique_module_name} 已经加载，跳过")
+                        continue
 
-                        print(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
+                    spec = importlib.util.spec_from_file_location(
+                        unique_module_name, 
+                        os.path.join(self.PLUGIN_FOLDER, filename)
+                    )
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[unique_module_name] = module
+                    spec.loader.exec_module(module)
+
+                    if hasattr(module, 'TRIGGHT_KEYWORD') and hasattr(module, 'on_message'):
+                        if isinstance(module.TRIGGHT_KEYWORD, str):
+                            self.plugins.append(module)
+                            self.loaded_plugins.append(unique_module_name)
+                            if hasattr(module, 'HELP_MESSAGE') and isinstance(module.HELP_MESSAGE, str):
+                                self.plugins_help += f"\n       {module.HELP_MESSAGE}"
+
+                            self.plugin_log("SUCCESS", f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
+                        else:
+                            self.failed_plugins.append(f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
+                            self.plugin_log("ERROR", f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
                     else:
-                        failed_plugins.append(f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
-                else:
-                    failed_plugins.append(f"{module_name} (缺少 TRIGGHT_KEYWORD：触发标识符 或 on_message：触发函数后端)")
+                        self.failed_plugins.append(f"{module_name} (缺少 TRIGGHT_KEYWORD 或 on_message)")
+                        self.plugin_log("ERROR", f"{module_name} (缺少 TRIGGHT_KEYWORD 或 on_message)")
 
-            except FileNotFoundError as e:
-                failed_plugins.append(f"{module_name} (文件未找到: {e})")
-                print(f"加载插件 {unique_module_name} 失败，原因是: {e}")
-                if unique_module_name in sys.modules:
-                    del sys.modules[unique_module_name]
-            except ImportError as e:
-                failed_plugins.append(f"{module_name} (导入错误: {e})")
-                print(f"加载插件 {unique_module_name} 失败，原因是: {e}")
-                if unique_module_name in sys.modules:
-                    del sys.modules[unique_module_name]
-            except Exception as e:
-                failed_plugins.append(f"{module_name} (其他错误: {str(traceback.format_exc())})")
-                print(f"加载插件 {unique_module_name} 失败: \n{traceback.format_exc()}\n")
-                if unique_module_name in sys.modules:
-                    del sys.modules[unique_module_name]  # Cleanup
+                except FileNotFoundError as e:
+                    self.failed_plugins.append(f"{module_name} (文件未找到: {e})")
+                    self.plugin_log("ERROR", f"加载插件 {module_name} 失败: {e}")
+                    if unique_module_name in sys.modules:
+                        del sys.modules[unique_module_name]
+                except ImportError as e:
+                    self.failed_plugins.append(f"{module_name} (导入错误: {e})")
+                    self.plugin_log("ERROR", f"加载插件 {module_name} 失败: {e}")
+                    if unique_module_name in sys.modules:
+                        del sys.modules[unique_module_name]
+                except Exception as e:
+                    self.failed_plugins.append(f"{module_name} (错误: {str(e)})")
+                    self.plugin_log("ERROR", f"加载插件 {module_name} 失败: \n{traceback.format_exc()}")
+                    if unique_module_name in sys.modules:
+                        del sys.modules[unique_module_name]
 
-        else:
-            print(f"跳过非插件文件或目录: {filename}")
+            else:
+                self.plugin_log("WARNING", f"跳过非插件文件或目录: {filename}")
 
-    print(f"成功加载 {len(loaded_plugins)} 个插件")
-    return plugins
+        self.plugin_log("SUCCESS", f"成功加载 {len(self.loaded_plugins)} 个插件")
+        if self.failed_plugins:
+            self.plugin_log("WARNING", f"加载失败的插件: {len(self.failed_plugins)} 个")
+        return self.plugins
+    
+    def start_watching(self):
+        if self.watcher is None:
+            self.watcher = PluginWatcher(self.PLUGIN_FOLDER, self.load_plugins)
+            self.watcher.start()
+            self.plugin_log("INFO", "已启动插件文件监控 (HJB正在注视你（？）)")
+    
+    def stop_watching(self):
+        if self.watcher is not None:
+            self.watcher.stop()
+            self.watcher = None
+            self.plugin_log("INFO", "已停止插件文件监控")
 
-plugins = load_plugins() #在任何操作执行之前加载插件
+plugin_system = PluginSystem()
+plugins = plugin_system.load_plugins()#在任何操作执行之前加载插件
+plugin_system.start_watching()
+
 
 # 插件运行器 NEXT 3
 async def execute_plugins(isAny: bool, **main_context) -> bool: # 接受 main.py 的上下文，也就是所有的关键字
@@ -493,8 +603,33 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
           
     elif isinstance(event, Events.FriendAddEvent):
         print("sys: 同意好友")
-        await actions.set_friend_add_request(flag=event.flag,approve=True,remark="")
-            
+        await actions.custom.set_friend_add_request(flag=event.flag,approve=True,remark="")
+    elif isinstance(event, Events.PrivateMessageEvent):
+        if "添加AI接口" in str(event.message):
+            if str(event.user_id) in ADMINS:
+                aiurl = str(event.message)[str(event.message).find("添加AI接口 ") + len("添加AI接口 "):].strip()
+                match = re.match(r"^(https?://[^\s]+)\s+(.+)\s+(.+)\s+(.+)$", aiurl)
+                if match:
+                    url = match.group(1)
+                    remark = match.group(2)
+                    api_key = match.group(3)
+                    model_name = match.group(4)
+                    fhz = add_api(url, remark, api_key, model_name)
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(fhz)))
+                else:
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"添加AI接口命令格式错误。请使用：{reminder}添加AI接口 <URL> <备注> <API Key> <模型名称> (URL必须以http://或https://开头)")))
+        elif f"删除AI接口 " in str(event.message):
+            if str(event.user_id) in ADMINS:
+                aiurl = str(event.message)[str(event.message).find("删除AI接口 ") + len("删除AI接口 "):].strip()
+                fhz = delete_api(aiurl)
+                await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(fhz)))
+        elif f"{reminder}查看AI接口" == str(event.message):
+            fhz = list_api()
+            await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(fhz)))
+        elif f"设置AI接口 " in str(event.message):
+                aiurl = str(event.message)[str(event.message).find("设置AI接口 ") + len("设置AI接口 "):].strip()
+                fhz = set_api(aiurl)
+                await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(fhz)))
     elif isinstance(event, Events.GroupMessageEvent):
         global user_lists
         global sys_prompt
@@ -566,7 +701,10 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
         elif f"{reminder}重载插件" == user_message:
             if str(event.user_id) in ADMINS:
                 global plugins
-                plugins = load_plugins()
+                plugin_system = PluginSystem()
+                plugin_system.stop_watching()
+                plugins = plugin_system.load_plugins()
+                plugin_system.start_watching()
 
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -614,7 +752,10 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
                 if not basename.startswith("d_"):
                     os.rename(found_path, new_path)
 
-                plugins = load_plugins()
+                plugin_system = PluginSystem()
+                plugin_system.stop_watching()
+                plugins = plugin_system.load_plugins()
+                plugin_system.start_watching()
 
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -661,7 +802,10 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
                     original_path = os.path.join(dirname, original_name)
                     os.rename(found_path, original_path)
 
-                plugins = load_plugins() # 自动重载插件
+                plugin_system = PluginSystem()
+                plugin_system.stop_watching()
+                plugins = plugin_system.load_plugins()
+                plugin_system.start_watching()
 
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -677,6 +821,10 @@ Welcome! {bot_name} was restarted successfully. Now you can send {reminder}帮�
             EnableNetwork = "Ds"
             print(f"sys: AI Mode change to DeepSeek")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("服务器……繁忙？ε٩(๑> ₃ <)۶з")))
+        elif "自定义AI" == order:
+            EnableNetwork = "diy"
+            print(f"sys: AI Mode change to DIY")
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已切换到超级管理员自定义的ai！")))
         elif "默认3.5" == order:
             EnableNetwork = "Normal"
             print(f"sys: AI Mode change to ChatGPT-3.5")
@@ -1401,6 +1549,31 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                         await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("已设置！")))
                     else:
                         await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("当前功能未开放,请联系管理员(高级用户 或者 根用户)开放权限！")))
+        elif "添加AI接口" in order:
+            if str(event.user_id) in ADMINS:
+                aiurl = order[order.find("添加AI接口 ") + len("添加AI接口 "):].strip()
+                match = re.match(r"^(https?://[^\s]+)\s+(.+)\s+(.+)\s+(.+)$", aiurl)
+                if match:
+                    url = match.group(1)
+                    remark = match.group(2)
+                    api_key = match.group(3)
+                    model_name = match.group(4)
+                    fhz = add_api(url, remark, api_key, model_name)
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(fhz)))
+                else:
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"添加AI接口命令格式错误。请使用：{reminder}添加AI接口 <URL> <备注> <API Key> <模型名称> (URL必须以http://或https://开头)")))
+        elif f"删除AI接口 " in order:
+            if str(event.user_id) in ADMINS:
+                aiurl = order[order.find("删除AI接口 ") + len("删除AI接口 "):].strip()
+                fhz = delete_api(aiurl)
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(fhz)))
+        elif f"{reminder}查看AI接口" == user_message:
+            fhz = list_api()
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(fhz)))
+        elif f"设置AI接口 " in order:
+                aiurl = order[order.find("设置AI接口 ") + len("设置AI接口 "):].strip()
+                fhz = set_api(aiurl)
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(fhz)))
         # elif "6" == user_message:
         #         await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Image(os.path.abspath("./stcn6.png"))))
         #         await actions.set_group_ban(group_id=event.group_id,user_id=event.user_id,duration=600)
@@ -1581,7 +1754,21 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                             config.others["deepseek_key"]
                         )
                         await handle_message_stream(search.Response())
-
+                    case "diy":
+                        current_url, current_remark, current_api_key, current_model_name = get_current_api()
+                        if current_remark == None:
+                            await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("请先选择AI接口")))
+                            return None
+                        else:
+                            msg = ""
+                            await process_reply_message()
+                            msg += order
+                            search = OtherAI(
+                                sys_prompt, msg, user_lists, event.user_id,
+                                current_model_name, bot_name,
+                                current_api_key,current_url
+                            )
+                            await handle_message_stream(search.Response())
                 result = result.rstrip()
                 await finalize_messages()
                 
@@ -1592,24 +1779,34 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                     )
                     
                 if gptsovitsoff == False:
-                    """EdgeTTS 语音回复"""
-                    TTSettings: dict = {}
-                    if config.others["TTS"]:
-                        if isinstance(config.others["TTS"], dict):             
-                            TTSettings = config.others["TTS"]
-                        else:             
-                            TTSettings = dict(config.others["TTS"])
-                    
-                    communicate_completed: bool = False
-                    if TTSettings != {}:
-                        communicate_completed = await amain(result, TTSettings["voiceColor"], TTSettings["rate"], TTSettings["volume"], TTSettings["pitch"])
-                    else:
-                        print("EdgeTTS 配置文件不完整，或未配置，使用默认音色。")
-                        communicate_completed = await amain(result, "zh-CN-XiaoyiNeural", "+0%", "+0%", "+0Hz")
+                            apiurl = 'http://127.0.0.1:9880'
+                            params = {
+                                'text': result,
+                                'text_language': 'zh'
+                            }
+                            logger.log(f"请求GPT-SOVITS接口，URL：{apiurl}，参数：{params}",level=Logger.levels.DEBUG)
+                            try:
+                                response = requests.get(apiurl, params=params, stream=True)
+                                logger.log(f"收到GPT-SOVITS接口响应，状态码：{response.status_code}",level=Logger.levels.DEBUG) 
 
-                    if communicate_completed and os.path.isfile(communicate_completed):
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Record(os.path.abspath(communicate_completed))))
-                        os.remove(communicate_completed)
+                                if response.status_code == 200:
+                                    with open('output_audio.wav', 'wb') as file:
+                                        for chunk in response.iter_content(chunk_size=1024):
+                                            if chunk:
+                                                file.write(chunk)
+                                    print("OK")
+                                    logger.log("成功请求GPT-SOVITS接口", level=Logger.levels.DEBUG)
+                                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Record(os.path.abspath(r"./output_audio.wav"))))
+                                else:
+                                    logger.log(f"请求GPT-SOVITS接口失败，状态码：{response.status_code}，内容：{response.text}",level=Logger.levels.ERROR)
+                                    raise
+
+                            except Exception:
+                                logger.log("请求接口失败,更换edgetts",level=Logger.levels.DEBUG)
+                                communicate_completed = await amain(result, "zh-CN-XiaoyiNeural")
+                                if communicate_completed:
+                                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Record(os.path.abspath(r"./responseVoice.wav"))))
+                                    os.remove(r"./responseVoice.wav")
 
             except UnboundLocalError:
                 raise
@@ -1627,7 +1824,7 @@ def help_message() -> str:
        {reminder}读图{"（当前）" if EnableNetwork == "Pixmap" else ""} —> {bot_name}可以回复您发送的图片✅
        {reminder}默认4{"（当前）" if EnableNetwork == "Net" else ""} —> {bot_name}更富有创造力的回复通道 🌟
        {reminder}默认3.5{"（当前）" if EnableNetwork == "Normal" else ""} —> {bot_name}的快速回复通道🎈
-       {reminder}深度{"（当前）" if EnableNetwork == "Ds" else ""} —> 更加人性化和深度地回复问题✨{plugins_help}
+       {reminder}深度{"（当前）" if EnableNetwork == "Ds" else ""} —> 更加人性化和深度地回复问题✨{PluginSystem.plugins_help}
        {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮
        {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
 快来聊天吧(*≧︶≦)'''
