@@ -3,7 +3,7 @@ import traceback
 from Tools.AI_tools import *
 
 class network_gpt():
-    def __init__(self, prompt, message, user_lists, uid, mode, bn, key) -> None:
+    def __init__(self, prompt, message, user_lists, uid, mode, bn, key, base_url) -> None:
         self.prompt = prompt
         self.message = message
         self.user_lists = user_lists
@@ -11,6 +11,7 @@ class network_gpt():
         self.mode = mode
         self.bn = bn
         self.key = key
+        self.base_url = base_url
 
     def Response(self):
         try:
@@ -45,7 +46,7 @@ class network_gpt():
             openai.api_key = self.key #旧的可用4不可用3.5"sk-TczjyYwyuUP7KP7t619f6658C85e43A1905b77465b2e9aDf"
 
             # all client options can be configured just like the `OpenAI` instantiation counterpart
-            openai.base_url = "https://free.v36.cm/v1/"
+            openai.base_url = self.base_url
             openai.default_headers = {"x-foo": "true"}  
 
            # print(f"\n{user_input}\n")

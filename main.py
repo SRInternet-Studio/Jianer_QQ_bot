@@ -1558,14 +1558,15 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                         await handle_message_stream(response_stream, False)
 
                     case "Normal" | "Net":
-                        model_name = "gpt-3.5-turbo-16k" if EnableNetwork == "Normal" else "gpt-4o-mini"
+                        model_name = "google/gemma-3-12b-it:free" if EnableNetwork == "Normal" else "gpt-4o-mini"
                         msg = ""
                         await process_reply_message()
                         msg += order
                         search = SearchOnline(
                             sys_prompt, msg, user_lists, event.user_id, 
                             model_name, bot_name, 
-                            config.others["openai_key"]
+                            config.others["openai_key"],
+                            base_url="http://free.v36.cm/v1/"
                         )
                         await handle_message_stream(search.Response())
 
@@ -1579,7 +1580,19 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                             config.others["deepseek_key"]
                         )
                         await handle_message_stream(search.Response())
-
+                    
+                    case "Other":
+                        model_name = config.others["model_name"]
+                        msg = ""
+                        await process_reply_message()
+                        msg += order
+                        search = SearchOnline(
+                            sys_prompt, msg, user_lists, event.user_id, 
+                            model_name, bot_name, 
+                            config.others["other_key"],
+                            base_url=config.others["base_url"]
+                        )
+                        await handle_message_stream(search.Response())
                 result = result.rstrip()
                 await finalize_messages()
                 
@@ -1625,7 +1638,8 @@ def help_message() -> str:
        {reminder}读图{"（当前）" if EnableNetwork == "Pixmap" else ""} —> {bot_name}可以回复您发送的图片✅
        {reminder}默认4{"（当前）" if EnableNetwork == "Net" else ""} —> {bot_name}更富有创造力的回复通道 🌟
        {reminder}默认3.5{"（当前）" if EnableNetwork == "Normal" else ""} —> {bot_name}的快速回复通道🎈
-       {reminder}深度{"（当前）" if EnableNetwork == "Ds" else ""} —> 更加人性化和深度地回复问题✨{plugins_help}
+       {reminder}深度{"（当前）" if EnableNetwork == "Ds" else ""} —> 更加人性化和深度地回复问题✨
+       {reminder}其他模型{"（当前）" if EnableNetwork == "Other" else ""} —> 使用自定义模型提供商💬{plugins_help}
        {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮
        {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
 快来聊天吧(*≧︶≦)'''
