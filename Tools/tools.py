@@ -2,7 +2,6 @@ from PIL import Image
 from typing import Tuple, Optional, Any
 import platform
 import psutil
-import GPUtil
 import io, gc, os
 import edge_tts
 
@@ -63,11 +62,20 @@ def get_system_info():
     memory_usage_percentage = virtual_memory.percent
 
     # GPU信息（是否有）
-    gpus = GPUtil.getGPUs()
-    if gpus:
-        gpu_count = len(gpus)
-        gpu_usage = [gpu.load for gpu in gpus]
-    else:
+    try:
+        if shutil.which("nvidia-smi"):
+            output = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                encoding='utf-8',
+                stderr=subprocess.DEVNULL
+            )
+            gpu_usage = [float(x.strip()) / 100.0 for x in output.strip().split('\n') if x.strip()]
+            gpu_count = len(gpu_usage)
+        else:
+            gpu_count = 0
+            gpu_usage = []
+    except Exception as e:
+        print(f"Error getting GPU info: {e}")
         gpu_count = 0
         gpu_usage = []
 

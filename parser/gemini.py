@@ -92,11 +92,20 @@ class GeminiParser(BaseParser):
             use_openai_style = endpoint_style == "openai"
             is_google = str(self.base_url).startswith("https://generativelanguage.googleapis.com")
 
+            dynamic_system_prompt = ""
+            if history:
+                for msg in history:
+                    if msg.get("role") == "system":
+                        dynamic_system_prompt = msg.get("content", "") or ""
+                        break
+
+            final_system_prompt = dynamic_system_prompt if dynamic_system_prompt else self.personality
+
             if use_openai_style:
                 # OpenAI风格 chat.completions
                 messages: List[Dict[str, Any]] = []
-                if self.personality:
-                    messages.append({"role": "system", "content": [{"type": "text", "text": self.personality}]})
+                if final_system_prompt:
+                    messages.append({"role": "system", "content": [{"type": "text", "text": final_system_prompt}]})
                 
                 # 添加历史记录
                 if history:
@@ -162,8 +171,8 @@ class GeminiParser(BaseParser):
                         "maxOutputTokens": int(self.max_tokens),
                     },
                 }
-                if self.personality:
-                    body["systemInstruction"] = {"role": "system", "parts": [{"text": self.personality}]}
+                if final_system_prompt:
+                    body["systemInstruction"] = {"role": "system", "parts": [{"text": final_system_prompt}]}
 
                 # Google官方与第三方聚合端点的差异：URL与鉴权
                 base_url = self.base_url.rstrip('/') if self.base_url else "https://generativelanguage.googleapis.com"
@@ -185,7 +194,12 @@ class GeminiParser(BaseParser):
 
                 logger.debug(f"POST {url} (gemini style)")
                 async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                    data = await resp.json()
+                    text_resp = await resp.text()
+                    logger.debug(f"Gemini风格原始响应: {text_resp[:1000]}")
+                    try:
+                        data = await resp.json()
+                    except:
+                        data = {}
                     logger.debug(f"Gemini风格响应: {str(data)[:500]}")
                     text = self._extract_text_from_response(data)
                     if text and text != self.if_return_none:

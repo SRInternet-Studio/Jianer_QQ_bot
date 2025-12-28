@@ -147,7 +147,6 @@ cached_content=None)```
 'Configurator': <module'Hyper.Configurator'from'/usr/local/lib/python3.12/dist-packages/Hyper/Configurator.py'>,
 'platform': <module'platform'from'/usr/lib/python3.12/platform.py'>,
 'psutil': <module'psutil'from'/usr/lib/python3/dist-packages/psutil/__init__.py'>,
-'GPUtil': <module'GPUtil'from'/usr/local/lib/python3.12/dist-packages/GPUtil/__init__.py'>,
 'subprocess': <module'subprocess'from'/usr/lib/python3.12/subprocess.py'>,
 'Set': typing.Set,
 'Image': <module'PIL.Image'from'/usr/local/lib/python3.12/dist-packages/PIL/Image.py'>,

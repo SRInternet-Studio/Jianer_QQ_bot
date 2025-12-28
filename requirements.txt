@@ -1,11 +1,8 @@
-asyncio
-datetime
-emoji
+﻿emoji
 openai>=1.35.12
 requests
 aiohttp
 psutil
-gputil
 pillow
 google-generativeai==0.7.2
 httpx
@@ -17,3 +14,6 @@ PySide6
 PySide6-Fluent-Widgets
 edge_tts
 pyGithub
+pydantic
+playwright
+

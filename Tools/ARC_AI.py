@@ -5,7 +5,6 @@ import asyncio
 import inspect
 from typing import Optional, Dict, List, Any
 
-# 添加 ARC_Spec_Python 到路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARC_SPEC_PATH = os.path.join(PROJECT_ROOT, "ARC_Spec_Python")
 if ARC_SPEC_PATH not in sys.path:
@@ -98,7 +97,6 @@ async def get_response_stream(config_name: str, message: str, user_lists: Dict, 
     # 准备历史记录 (复制一份以免污染原始数据)
     history = list(user_lists[uid_str])
     
-    # 插入系统提示词 (如果存在)
     if sys_prompt:
         history.insert(0, {"role": "system", "content": sys_prompt})
 
