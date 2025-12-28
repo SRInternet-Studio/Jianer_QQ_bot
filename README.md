@@ -10,7 +10,3 @@
 
 这里是简儿的Dev分支。包含了未经测试的更改，请不要将此分支投入生产环境
 
-<div align="center">
-<br>
-<img src='https://github.com/user-attachments/assets/5dfe6517-b6d3-4fc3-ab9f-40132ee8316e' alt='sr-ico' height="200" width="200"></img></a>
-<h2>Made by 思锐工作室<h2/>
