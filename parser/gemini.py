@@ -12,20 +12,17 @@ except ImportError as e:
     aiohttp = None
 
 from .base import BaseParser
-# from ..utils.history_manager import HistoryManager # 移除相对导入
-from arcspec_ai.utils.history_manager import HistoryManager # 改为绝对导入
+from arcspec_ai.utils.history_manager import HistoryManager 
 
 logger = logging.getLogger(__name__)
 
 
 class GeminiParser(BaseParser):
-    """Google Gemini 解析器（REST + aiohttp）
-    
-    支持文本、图片、音频的多模态理解；可自动从消息和参数中识别图片/音频并打包为inlineData。
+    """Google Gemini 解析器
     """
 
     PARSER_NAME = "gemini"
-    PARSER_DESCRIPTION = "Google Gemini REST解析器，支持文本/图片/音频（aiohttp）"
+    PARSER_DESCRIPTION = "Google Gemini RESTAPI解析器，支持文本/图片"
     PARSER_ALIASES = ["google", "google_gemini", "gemini15", "gemini20"]
 
     def __init__(self, config: Dict[str, Any]):
@@ -63,7 +60,6 @@ class GeminiParser(BaseParser):
                 raise ValueError(f"配置中缺少必需的键: {key}")
 
     def chat(self, message: str, history: Optional[List[Dict[str, str]]] = None, **kwargs) -> str:
-        """同步聊天入口，内部使用async调用Gemini REST接口"""
         return asyncio.run(self._chat_async(message, history, **kwargs))
 
     async def _chat_async(self, message: str, history: Optional[List[Dict[str, str]]] = None, **kwargs) -> str:
@@ -87,7 +83,6 @@ class GeminiParser(BaseParser):
             parts += await self._gather_inline_parts(session, image_paths, image_urls, kind="image")
             parts += await self._gather_inline_parts(session, audio_paths, audio_urls, kind="audio")
 
-            # 显式端点风格控制（默认使用Gemini官方格式）
             endpoint_style = str(self.get_config_value("EndpointStyle", "gemini")).lower()
             use_openai_style = endpoint_style == "openai"
             is_google = str(self.base_url).startswith("https://generativelanguage.googleapis.com")
@@ -102,7 +97,6 @@ class GeminiParser(BaseParser):
             final_system_prompt = dynamic_system_prompt if dynamic_system_prompt else self.personality
 
             if use_openai_style:
-                # OpenAI风格 chat.completions
                 messages: List[Dict[str, Any]] = []
                 if final_system_prompt:
                     messages.append({"role": "system", "content": [{"type": "text", "text": final_system_prompt}]})
@@ -112,7 +106,7 @@ class GeminiParser(BaseParser):
                     for msg in history:
                         role = msg.get("role", "user")
                         content = msg.get("content", "")
-                        if role == "system": continue # 系统提示词已处理
+                        if role == "system": continue 
                         messages.append({"role": role, "content": [{"type": "text", "text": content}]})
 
                 user_content: List[Dict[str, Any]] = [{"type": "text", "text": message}]
@@ -150,7 +144,6 @@ class GeminiParser(BaseParser):
                     return text or self.if_return_none
 
             else:
-                # Gemini官方格式 generateContent
                 contents = []
                 
                 # 添加历史记录
@@ -174,23 +167,14 @@ class GeminiParser(BaseParser):
                 if final_system_prompt:
                     body["systemInstruction"] = {"role": "system", "parts": [{"text": final_system_prompt}]}
 
-                # Google官方与第三方聚合端点的差异：URL与鉴权
                 base_url = self.base_url.rstrip('/') if self.base_url else "https://generativelanguage.googleapis.com"
                 
-                # if is_google:
-                if True: # 强制使用 key 参数鉴权，因为很多第三方反代也是使用这种方式
+                if True: # 强制使用 key 参数鉴权
                     if base_url.endswith("/v1beta"):
                          url = f"{base_url}/models/{self.model}:generateContent?key={self.api_key}"
                     else:
                          url = f"{base_url}/v1beta/models/{self.model}:generateContent?key={self.api_key}"
                     headers = None
-                # else:
-                #     # 如果 base_url 已经包含 /v1beta，则不再重复添加
-                #     if base_url.endswith("/v1beta"):
-                #         url = f"{base_url}/models/{self.model}:generateContent"
-                #     else:
-                #         url = f"{base_url}/v1beta/models/{self.model}:generateContent"
-                #     headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
                 logger.debug(f"POST {url} (gemini style)")
                 async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=120)) as resp:
@@ -296,13 +280,11 @@ class GeminiParser(BaseParser):
 
     def _detect_media_from_message(self, message: str, kind: str) -> Tuple[List[str], List[str]]:
         """从消息文本中自动识别本地路径或URL的图片/音频"""
-        # 简单规则：匹配以常见扩展结尾的路径/URL
         if kind == "image":
             exts = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
         else:
             exts = [".wav", ".mp3", ".m4a", ".ogg", ".flac"]
 
-        # Windows/相对路径匹配（含空格的情况用引号）
         path_pattern = r"(?:[A-Za-z]:\\[^\s\"']+|\./[^\s\"']+|\.[^\s\"']+)"
         url_pattern = r"https?://[^\s\"']+"
 

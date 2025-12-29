@@ -11,12 +11,13 @@
   - `#删除特定后缀`（用户）
 
 ### 变更
-- GPU 监控从 `GPUtil` 切换为调用系统命令 `nvidia-smi` 获取信息，避免 Python 3.12+ 的 `distutils` 依赖问题。
+- 不再使用`GPUtil`避免 Python 3.12+ 的 `distutils` 依赖问题。
 - 更新 `requirements.txt`，移除 `gputil` 并补充缺失依赖。
 - 将新增指令补充到帮助菜单中，便于发现与使用。
 
 ### 修复
 - 修复 `SuffixManager` 未导入导致的 `NameError: name 'SuffixManager' is not defined` 启动报错。
+- 修复 `GeminiParser` 无法使用人设的问题。
 
 ## JianerNext4 Dev-20251227a
 

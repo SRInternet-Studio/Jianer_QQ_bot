@@ -12,11 +12,6 @@ class OpenAIParser(BaseParser):
     """OpenAI API解析器"""
     
     def __init__(self, config: Dict[str, Any]):
-        """初始化OpenAI解析器
-        
-        Args:
-            config: 配置字典，包含API密钥、模型等信息
-        """
         super().__init__(config)
         
         # 使用安全的配置访问方式
@@ -117,7 +112,7 @@ class OpenAIParser(BaseParser):
             if self.extra_body:
                 api_params.update(self.extra_body)
             
-            # 检查是否启用流式响应（从other参数或直接配置中获取）
+            # 检查是否启用流式响应
             is_stream = self.other_params.get('stream', self.get_config_value('stream', False))
             if is_stream:
                 api_params['stream'] = True
@@ -136,7 +131,7 @@ class OpenAIParser(BaseParser):
                     logger.warning("API返回空内容")
                     response_content = self.if_return_none
             
-            # 将助手回复添加到历史管理器 (本地管理，主要用于summary等)
+
             if response_content and response_content != self.if_return_none:
                 self.history_manager.add_assistant_message(response_content)
             
@@ -159,22 +154,16 @@ class OpenAIParser(BaseParser):
         try:
             logger.debug("开始处理流式响应")
             
-            # 创建流式响应
             stream = self.client.chat.completions.create(**api_params)
             
             full_response = ""
-            # print("\n", end="", flush=True)  # 移除控制台打印，以免干扰主程序输出
             
             for chunk in stream:
-                # 检查chunk是否有choices属性且不为空
                 if hasattr(chunk, 'choices') and chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
                     if hasattr(delta, 'content') and delta.content is not None:
                         content = delta.content
                         full_response += content
-                        # print(content, end="", flush=True) # 移除控制台打印
-            
-            # print()  # 移除
             
             logger.info(f"流式响应完成，总长度: {len(full_response)}")
             return full_response.strip() if full_response else self.if_return_none
@@ -186,13 +175,11 @@ class OpenAIParser(BaseParser):
     def clear_history(self) -> None:
         """清空对话历史记录"""
         self.history_manager.clear_history()
-        # 重新设置系统人格
         if self.personality:
             self.history_manager.set_system_message(self.personality)
         logger.info("对话历史记录已清空")
     
     def get_history_summary(self) -> Dict[str, Any]:
-        """获取历史记录摘要"""
         return self.history_manager.get_history_summary()
     
     def get_model_info(self) -> Dict[str, Any]:

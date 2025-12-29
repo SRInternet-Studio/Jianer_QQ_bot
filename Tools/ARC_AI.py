@@ -94,7 +94,7 @@ async def get_response_stream(config_name: str, message: str, user_lists: Dict, 
     if uid_str not in user_lists:
         user_lists[uid_str] = []
     
-    # 准备历史记录 (复制一份以免污染原始数据)
+    # 准备历史记录
     history = list(user_lists[uid_str])
     
     if sys_prompt:
@@ -116,7 +116,7 @@ async def get_response_stream(config_name: str, message: str, user_lists: Dict, 
         # Yield 结果
         yield response_text, 'message'
         
-        # 更新 user_lists (这是持久化的历史记录)
+        # 更新 user_lists
         user_lists[uid_str].append({"role": "user", "content": message})
         user_lists[uid_str].append({"role": "assistant", "content": response_text})
         
