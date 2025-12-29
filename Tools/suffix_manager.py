@@ -47,7 +47,6 @@ class SuffixManager:
             self.save_config()
 
     def get_suffix(self, user_id):
-        # 优先使用特定后缀，如果没有则使用全局后缀
         user_id = str(user_id)
         if user_id in self.config["user_suffixes"]:
             return self.config["user_suffixes"][user_id]
@@ -58,7 +57,6 @@ class SuffixManager:
         if not suffix:
             return text
 
-        # 避免重复添加后缀 (简单的检查)
         if text.endswith(suffix) or text.endswith(suffix + "。") or text.endswith(suffix + "！"):
             return text
 
