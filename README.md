@@ -8,5 +8,9 @@
 <img alt="GitLab Stars" src="https://img.shields.io/github/stars/SRInternet-Studio/Jianer_QQ_bot?label=Stars">
   <img alt="GitHub Downloads (all assets, all releases)" src="https://img.shields.io/github/downloads/SRInternet-Studio/Jianer_QQ_bot/total?style=social&logo=github&label=%E4%B8%8B%E8%BD%BD%E9%87%8F">
 
+
 这里是简儿的Dev分支。包含了未经测试的更改，请不要将此分支投入生产环境
 
+> [!Warning]
+> 
+> 请不要把本分支投入生产环境使用，如出现任何问题，我们均不负任何责任
