@@ -37,6 +37,7 @@ class OpenAIParser(BaseParser):
         # 初始化历史记录管理器
         max_history_tokens = self.get_config_value('max_history_tokens', 3000)
         max_history_messages = self.get_config_value('max_history_messages', 20)
+        self.max_history_messages = max_history_messages
         self.history_manager = HistoryManager(
             max_tokens=max_history_tokens,
             max_messages=max_history_messages
@@ -73,18 +74,28 @@ class OpenAIParser(BaseParser):
             # 构建消息列表
             messages = []
             
-            # 添加系统人格设定
-            if self.personality:
+            system_prompt = self.personality
+            if history:
+                for entry in history:
+                    if isinstance(entry, dict) and entry.get("role") == "system":
+                        system_prompt = entry.get("content") or system_prompt
+                        break
+
+            if system_prompt:
                 messages.append({
                     "role": "system",
-                    "content": self.personality
+                    "content": system_prompt
                 })
                 logger.debug("已添加系统人格设定")
             
             # 添加对话历史
             if history:
                 # 临时保持原有逻辑，后续会重构
-                recent_history = history[-10:]  # 只保留最近10条记录
+                non_system_history = [
+                    entry for entry in history
+                    if isinstance(entry, dict) and entry.get("role") in ("user", "assistant")
+                ]
+                recent_history = non_system_history[-self.max_history_messages:] if self.max_history_messages else non_system_history
                 for entry in recent_history:
                     if isinstance(entry, dict) and 'role' in entry and 'content' in entry:
                         # 过滤掉不需要的role，比如main.py中可能有的其他role? 
@@ -135,7 +146,7 @@ class OpenAIParser(BaseParser):
             if response_content and response_content != self.if_return_none:
                 self.history_manager.add_assistant_message(response_content)
             
-            return response_content.strip() if response_content != self.if_return_none else response_content
+            return response_content.rstrip() if response_content != self.if_return_none else response_content
                     
         except Exception as e:
             logger.error(f"API调用失败: {str(e)}")
@@ -166,7 +177,7 @@ class OpenAIParser(BaseParser):
                         full_response += content
             
             logger.info(f"流式响应完成，总长度: {len(full_response)}")
-            return full_response.strip() if full_response else self.if_return_none
+            return full_response.rstrip() if full_response else self.if_return_none
             
         except Exception as e:
             logger.error(f"流式响应错误: {str(e)}")

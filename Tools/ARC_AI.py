@@ -13,6 +13,36 @@ if ARC_SPEC_PATH not in sys.path:
 from arcspec_ai.configurator import load_ai_configs, load_parsers
 
 logger = logging.getLogger(__name__)
+MAX_HISTORY_ENTRIES = 0
+MAX_CHUNK_CHARS = 350
+MAX_SEND_PARTS = 3
+
+def split_text_for_send(text: str, max_chars: int = MAX_CHUNK_CHARS) -> List[str]:
+    if not text:
+        return []
+    if max_chars <= 0:
+        return [text]
+
+    separators = ["\n\n\n\n", "\n\n\n", "\n\n", "\n", "。", "！", "？", "；", "，", ".", "!", "?"]
+    parts: List[str] = []
+    i = 0
+    n = len(text)
+
+    while i < n:
+        end = min(i + max_chars, n)
+        split_at = end
+        for sep in separators:
+            pos = text.rfind(sep, i, end)
+            if pos != -1 and pos > i:
+                split_at = pos + len(sep)
+                break
+
+        part = text[i:split_at]
+        if part:
+            parts.append(part)
+        i = split_at
+
+    return parts
 
 class ARC_Manager:
     def __init__(self):
@@ -113,16 +143,23 @@ async def get_response_stream(config_name: str, message: str, user_lists: Dict, 
             # 同步解析器，在线程池中运行以避免阻塞事件循环
             response_text = await asyncio.to_thread(parser.parse, message, history=history, **kwargs)
         
-        # Yield 结果
-        yield response_text, 'message'
+        response_text = "" if response_text is None else str(response_text)
+        chunks = split_text_for_send(response_text, MAX_CHUNK_CHARS)
+        if MAX_SEND_PARTS and len(chunks) > MAX_SEND_PARTS:
+            chunks = chunks[:MAX_SEND_PARTS - 1] + ["".join(chunks[MAX_SEND_PARTS - 1:])]
+        if chunks:
+            for chunk in chunks:
+                yield chunk, 'message'
+                await asyncio.sleep(0)
+        else:
+            yield response_text, 'message'
         
         # 更新 user_lists
         user_lists[uid_str].append({"role": "user", "content": message})
         user_lists[uid_str].append({"role": "assistant", "content": response_text})
         
-        # 限制历史记录长度
-        if len(user_lists[uid_str]) > 20:
-            user_lists[uid_str] = user_lists[uid_str][-20:]
+        if MAX_HISTORY_ENTRIES and len(user_lists[uid_str]) > MAX_HISTORY_ENTRIES:
+            user_lists[uid_str] = user_lists[uid_str][-MAX_HISTORY_ENTRIES:]
             
         yield user_lists, 'user_lists'
 

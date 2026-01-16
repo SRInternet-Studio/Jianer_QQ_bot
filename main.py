@@ -111,6 +111,9 @@ memory_service = JianerMemoryService(
     global_candidate_limit=memory_global_candidate_limit,
 )
 
+preset_template_cache = {}
+memory_service.set_bot_name(bot_name)
+
 gptsovitsoff = False
 print(" " * 114, end="\r") # Staring Completed
 
@@ -533,6 +536,24 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, event_user)
         base_sys_prompt = sys_prompt
         presets = presets_tool.read_presets()
+        try:
+            global preset_template_cache
+            templates = {}
+            for preset_id, preset_data in (presets or {}).items():
+                preset_path = os.path.join(PRESET_DIR, str(preset_data.get("path", "") or ""))
+                if not preset_path or not os.path.exists(preset_path):
+                    continue
+                mtime = os.path.getmtime(preset_path)
+                cached = preset_template_cache.get(preset_id)
+                if not cached or cached[0] != mtime:
+                    with open(preset_path, "r", encoding="utf-8") as f:
+                        preset_template_cache[preset_id] = (mtime, f.read())
+                templates[preset_id] = preset_template_cache[preset_id][1]
+            templates["default"] = templates.get(presets_tool.NORMAL_PRESET, base_sys_prompt)
+            memory_service.set_bot_name(bot_name)
+            memory_service.set_preset_templates(templates)
+        except Exception:
+            pass
         
         if len(event.message) <= 0:
             return  # 只在函数中有效
@@ -1733,13 +1754,19 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 sys_prompt = ""
                 # presets_tool.current_preset (全局默认预设) 已经在前面被加载
                 # 检查用户是否有特定预设
+                active_preset_id = presets_tool.NORMAL_PRESET
                 for preset_id, preset_data in presets.items():
                     if "uid" in preset_data and event.user_id in preset_data["uid"]:
+                        active_preset_id = preset_id
                         # 读取预设内容
                         preset_path = os.path.join(PRESET_DIR, preset_data["path"])
                         if os.path.exists(preset_path):
                             with open(preset_path, "r", encoding="utf-8") as f:
-                                sys_prompt = f.read().strip()
+                                sys_prompt = f.read()
+                            sys_prompt = sys_prompt.replace("{self.bot_name}", bot_name)
+                            sys_prompt = sys_prompt.replace("{self.event_user}", event_user)
+                            sys_prompt = sys_prompt.replace("{self.event_user_id}", str(event.user_id))
+                            sys_prompt = sys_prompt.rstrip()
                         print(f"[{event.time_str}] '{preset_data['name']}' 已载入用户预设")
                         break
                 
@@ -1749,12 +1776,12 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                      pass # 暂时保持为空，或者您有默认的 sys_prompt 逻辑
 
                 persona_prompt = sys_prompt or base_sys_prompt
-                memory_service.update_persona(event.user_id, persona_prompt)
                 memory_context = await memory_service.build_memory_context(
                     group_id=event.group_id,
                     user_id=event.user_id,
                     is_private=False,
                     query_text=msg,
+                    preset_key=active_preset_id,
                     topk=memory_topk,
                 )
                 if memory_context:

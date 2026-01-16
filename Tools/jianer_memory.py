@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -29,19 +30,32 @@ def _scope_ids_from_event(group_id: Any, user_id: Any) -> Tuple[str, str, bool]:
     if group_id is None:
         return "p", uid, True
     gid = _digits_only(group_id)
-    return gid, uid, False
+    return gid, "0", False
 
 
 def raw_table_name(group_id: str, user_id: str, is_private: bool) -> str:
     if is_private:
         return f"raw_p_u{user_id}"
-    return f"raw_g{group_id}_u{user_id}"
+    return f"raw_g{group_id}"
 
 
-def mem_table_name(group_id: str, user_id: str, is_private: bool) -> str:
+def _safe_preset_key(preset_key: str) -> str:
+    k = (preset_key or "").strip()
+    if not k:
+        return "default"
+    safe = re.sub(r"[^a-zA-Z0-9_]+", "_", k).strip("_")
+    if not safe:
+        safe = hashlib.sha1(k.encode("utf-8")).hexdigest()[:10]
+    if len(safe) > 32:
+        safe = safe[:32]
+    return safe
+
+
+def mem_table_name(group_id: str, user_id: str, is_private: bool, preset_key: str) -> str:
+    p = _safe_preset_key(preset_key)
     if is_private:
-        return f"mem_p_u{user_id}"
-    return f"mem_g{group_id}_u{user_id}"
+        return f"mem_p_u{user_id}_p{p}"
+    return f"mem_g{group_id}_p{p}"
 
 
 @dataclass(frozen=True)
@@ -140,13 +154,43 @@ class MemorySQLiteStore:
                 group_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 is_private INTEGER NOT NULL,
+                preset_key TEXT NOT NULL,
                 raw_table TEXT NOT NULL,
                 last_seq INTEGER NOT NULL,
                 last_generated_at INTEGER NOT NULL,
-                PRIMARY KEY (group_id, user_id, is_private)
+                PRIMARY KEY (group_id, user_id, is_private, preset_key)
             );
             """
         )
+        try:
+            cols = [str(r["name"]) for r in conn.execute("PRAGMA table_info(memory_state);").fetchall()]
+            if "preset_key" not in cols:
+                with conn:
+                    conn.execute("ALTER TABLE memory_state RENAME TO memory_state_old;")
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS memory_state (
+                            group_id TEXT NOT NULL,
+                            user_id TEXT NOT NULL,
+                            is_private INTEGER NOT NULL,
+                            preset_key TEXT NOT NULL,
+                            raw_table TEXT NOT NULL,
+                            last_seq INTEGER NOT NULL,
+                            last_generated_at INTEGER NOT NULL,
+                            PRIMARY KEY (group_id, user_id, is_private, preset_key)
+                        );
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO memory_state(group_id, user_id, is_private, preset_key, raw_table, last_seq, last_generated_at)
+                        SELECT group_id, user_id, is_private, 'default', raw_table, last_seq, last_generated_at
+                        FROM memory_state_old;
+                        """
+                    )
+                    conn.execute("DROP TABLE memory_state_old;")
+        except Exception:
+            pass
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS mem_global (
@@ -216,14 +260,6 @@ class MemorySQLiteStore:
                                 """,
                                 (row.group_id, row.user_id, row.is_private, self.default_enabled, self.default_interval_seconds, _now_ts()),
                             )
-                            conn.execute(
-                                """
-                                INSERT INTO memory_state(group_id, user_id, is_private, raw_table, last_seq, last_generated_at)
-                                VALUES(?,?,?,?,?,?)
-                                ON CONFLICT(group_id, user_id, is_private) DO NOTHING;
-                                """,
-                                (row.group_id, row.user_id, row.is_private, row.table, 0, 0),
-                            )
                     pending.clear()
                     last_commit = time.time()
                 except Exception as e:
@@ -261,14 +297,6 @@ class MemorySQLiteStore:
                                 """,
                                 (row.group_id, row.user_id, row.is_private, self.default_enabled, self.default_interval_seconds, _now_ts()),
                             )
-                            conn.execute(
-                                """
-                                INSERT INTO memory_state(group_id, user_id, is_private, raw_table, last_seq, last_generated_at)
-                                VALUES(?,?,?,?,?,?)
-                                ON CONFLICT(group_id, user_id, is_private) DO NOTHING;
-                                """,
-                                (row.group_id, row.user_id, row.is_private, row.table, 0, 0),
-                            )
             finally:
                 try:
                     conn.close()
@@ -289,6 +317,7 @@ class DueScope:
     group_id: str
     user_id: str
     is_private: int
+    preset_key: str
     interval_seconds: int
     last_seq: int
     last_generated_at: int
@@ -332,7 +361,8 @@ class JianerMemoryService:
         self._scheduler_task: Optional[asyncio.Task] = None
         self._stop = False
 
-        self._persona_cache: Dict[str, str] = {}
+        self.bot_name = ""
+        self._preset_templates: Dict[str, str] = {"default": ""}
         self._memory_user_lists: Dict[str, List[Dict[str, str]]] = {}
 
         self._gen_sem = asyncio.Semaphore(1)
@@ -352,11 +382,26 @@ class JianerMemoryService:
         self._stop = True
         self.store.stop()
 
+    def set_bot_name(self, bot_name: str) -> None:
+        self.bot_name = (bot_name or "").strip()
+
+    def set_preset_templates(self, preset_templates: Dict[str, str]) -> None:
+        out: Dict[str, str] = {"default": self._preset_templates.get("default", "")}
+        for k, v in (preset_templates or {}).items():
+            kk = str(k or "").strip()
+            if not kk:
+                continue
+            out[kk] = str(v or "").strip()
+        if "default" not in out:
+            out["default"] = ""
+        self._preset_templates = out
+
+    def get_preset_keys(self) -> List[str]:
+        keys = [k for k in list(self._preset_templates.keys()) if str(k).strip() and str(k) != "default"]
+        return keys if keys else ["default"]
+
     def update_persona(self, user_id: Any, sys_prompt: str) -> None:
-        uid = _digits_only(user_id)
-        if not uid:
-            return
-        self._persona_cache[uid] = (sys_prompt or "").strip()
+        self._preset_templates["default"] = (sys_prompt or "").strip()
 
     def capture_message_event(self, event: Any, Segments: Any) -> None:
         try:
@@ -418,6 +463,20 @@ class JianerMemoryService:
                 parts.append("[未知]")
         return " ".join([p for p in parts if p]).strip()
 
+    def _render_template(self, template: str, scope: DueScope) -> str:
+        t = str(template or "").strip()
+        if not t:
+            return ""
+        if self.bot_name:
+            t = t.replace("{self.bot_name}", self.bot_name)
+        if int(scope.is_private) == 1:
+            t = t.replace("{self.event_user}", "私聊用户")
+            t = t.replace("{self.event_user_id}", str(scope.user_id))
+        else:
+            t = t.replace("{self.event_user}", "群成员")
+            t = t.replace("{self.event_user_id}", "0")
+        return t.strip()
+
     async def _scheduler_loop(self) -> None:
         while not self._stop:
             try:
@@ -442,8 +501,7 @@ class JianerMemoryService:
         return created
 
     async def set_enabled(self, group_id: Any, user_id: Any, is_private: bool, enabled: bool) -> None:
-        gid = "p" if is_private else _digits_only(group_id)
-        uid = _digits_only(user_id)
+        gid, uid, _ = _scope_ids_from_event(None if is_private else group_id, user_id)
         if not uid:
             return
         await asyncio.to_thread(self._set_enabled_sync, gid, uid, 1 if is_private else 0, 1 if enabled else 0)
@@ -462,20 +520,11 @@ class JianerMemoryService:
                     """,
                     (gid, uid, int(is_private), int(enabled), int(self.default_interval_seconds), _now_ts()),
                 )
-                conn.execute(
-                    """
-                    INSERT INTO memory_state(group_id, user_id, is_private, raw_table, last_seq, last_generated_at)
-                    VALUES(?,?,?,?,?,?)
-                    ON CONFLICT(group_id, user_id, is_private) DO NOTHING;
-                    """,
-                    (gid, uid, int(is_private), raw_table, 0, 0),
-                )
         finally:
             conn.close()
 
     async def set_interval_seconds(self, group_id: Any, user_id: Any, is_private: bool, seconds: int) -> None:
-        gid = "p" if is_private else _digits_only(group_id)
-        uid = _digits_only(user_id)
+        gid, uid, _ = _scope_ids_from_event(None if is_private else group_id, user_id)
         if not uid:
             return
         seconds = max(60, int(seconds))
@@ -495,108 +544,89 @@ class JianerMemoryService:
                     """,
                     (gid, uid, int(is_private), int(self.default_enabled), int(seconds), _now_ts()),
                 )
-                conn.execute(
-                    """
-                    INSERT INTO memory_state(group_id, user_id, is_private, raw_table, last_seq, last_generated_at)
-                    VALUES(?,?,?,?,?,?)
-                    ON CONFLICT(group_id, user_id, is_private) DO NOTHING;
-                    """,
-                    (gid, uid, int(is_private), raw_table, 0, 0),
-                )
         finally:
             conn.close()
 
     async def generate_now(self, group_id: Any, user_id: Any, is_private: bool) -> bool:
-        gid = "p" if is_private else _digits_only(group_id)
-        uid = _digits_only(user_id)
+        gid, uid, _ = _scope_ids_from_event(None if is_private else group_id, user_id)
         if not uid:
             return False
-        scope = await asyncio.to_thread(self._fetch_scope_sync, gid, uid, 1 if is_private else 0)
-        if not scope:
-            return False
-        async with self._gen_sem:
-            return await self._generate_for_scope(scope, force=True)
+        is_private_i = 1 if is_private else 0
+        enabled, interval_seconds, states = await asyncio.to_thread(self._ensure_and_fetch_settings_states, gid, uid, is_private_i)
+        raw_table = raw_table_name(gid, uid, bool(is_private_i))
 
-    def _fetch_scope_sync(self, gid: str, uid: str, is_private: int) -> Optional[DueScope]:
+        created_any = False
+        async with self._gen_sem:
+            for pk in self.get_preset_keys():
+                last_seq, last_generated_at = states.get(pk, (0, 0))
+                scope = DueScope(
+                    group_id=gid,
+                    user_id=uid,
+                    is_private=is_private_i,
+                    preset_key=str(pk),
+                    interval_seconds=int(interval_seconds),
+                    last_seq=int(last_seq),
+                    last_generated_at=int(last_generated_at),
+                    raw_table=raw_table,
+                )
+                ok = await self._generate_for_scope(scope, force=True)
+                created_any = created_any or bool(ok)
+        return created_any
+
+    def _ensure_and_fetch_settings_states(self, gid: str, uid: str, is_private: int) -> Tuple[int, int, Dict[str, Tuple[int, int]]]:
         conn = self._connect_rw()
         try:
-            row = conn.execute(
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO memory_settings(group_id, user_id, is_private, enabled, interval_seconds, updated_at)
+                    VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(group_id, user_id, is_private) DO NOTHING;
+                    """,
+                    (gid, uid, int(is_private), int(self.default_enabled), int(self.default_interval_seconds), _now_ts()),
+                )
+
+            srow = conn.execute(
                 """
-                SELECT
-                    s.group_id, s.user_id, s.is_private, s.interval_seconds,
-                    st.last_seq, st.last_generated_at, st.raw_table
-                FROM memory_settings s
-                JOIN memory_state st
-                    ON s.group_id = st.group_id AND s.user_id = st.user_id AND s.is_private = st.is_private
-                WHERE s.group_id = ? AND s.user_id = ? AND s.is_private = ?
+                SELECT enabled, interval_seconds
+                FROM memory_settings
+                WHERE group_id = ? AND user_id = ? AND is_private = ?
                 LIMIT 1;
                 """,
                 (gid, uid, int(is_private)),
             ).fetchone()
-            if not row:
-                raw_table = raw_table_name(gid, uid, bool(is_private))
-                with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO memory_settings(group_id, user_id, is_private, enabled, interval_seconds, updated_at)
-                        VALUES(?,?,?,?,?,?)
-                        ON CONFLICT(group_id, user_id, is_private) DO NOTHING;
-                        """,
-                        (gid, uid, int(is_private), int(self.default_enabled), int(self.default_interval_seconds), _now_ts()),
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO memory_state(group_id, user_id, is_private, raw_table, last_seq, last_generated_at)
-                        VALUES(?,?,?,?,?,?)
-                        ON CONFLICT(group_id, user_id, is_private) DO NOTHING;
-                        """,
-                        (gid, uid, int(is_private), raw_table, 0, 0),
-                    )
-                row = conn.execute(
-                    """
-                    SELECT
-                        s.group_id, s.user_id, s.is_private, s.interval_seconds,
-                        st.last_seq, st.last_generated_at, st.raw_table
-                    FROM memory_settings s
-                    JOIN memory_state st
-                        ON s.group_id = st.group_id AND s.user_id = st.user_id AND s.is_private = st.is_private
-                    WHERE s.group_id = ? AND s.user_id = ? AND s.is_private = ?
-                    LIMIT 1;
-                    """,
-                    (gid, uid, int(is_private)),
-                ).fetchone()
-            if not row:
-                return None
-            return DueScope(
-                group_id=str(row["group_id"]),
-                user_id=str(row["user_id"]),
-                is_private=int(row["is_private"]),
-                interval_seconds=int(row["interval_seconds"]),
-                last_seq=int(row["last_seq"]),
-                last_generated_at=int(row["last_generated_at"]),
-                raw_table=str(row["raw_table"]),
-            )
+            enabled = int(srow["enabled"]) if srow else int(self.default_enabled)
+            interval_seconds = int(srow["interval_seconds"]) if srow else int(self.default_interval_seconds)
+
+            st_rows = conn.execute(
+                """
+                SELECT preset_key, last_seq, last_generated_at
+                FROM memory_state
+                WHERE group_id = ? AND user_id = ? AND is_private = ?;
+                """,
+                (gid, uid, int(is_private)),
+            ).fetchall()
+            states: Dict[str, Tuple[int, int]] = {}
+            for r in st_rows:
+                states[str(r["preset_key"])] = (int(r["last_seq"]), int(r["last_generated_at"]))
+            return enabled, interval_seconds, states
         finally:
             conn.close()
 
-    async def get_status(self, group_id: Any, user_id: Any, is_private: bool) -> Dict[str, Any]:
-        gid = "p" if is_private else _digits_only(group_id)
-        uid = _digits_only(user_id)
+    async def get_status(self, group_id: Any, user_id: Any, is_private: bool, preset_key: Optional[str] = None) -> Dict[str, Any]:
+        gid, uid, _ = _scope_ids_from_event(None if is_private else group_id, user_id)
         if not uid:
             return {}
-        return await asyncio.to_thread(self._get_status_sync, gid, uid, 1 if is_private else 0)
+        return await asyncio.to_thread(self._get_status_sync, gid, uid, 1 if is_private else 0, preset_key)
 
-    def _get_status_sync(self, gid: str, uid: str, is_private: int) -> Dict[str, Any]:
+    def _get_status_sync(self, gid: str, uid: str, is_private: int, preset_key: Optional[str]) -> Dict[str, Any]:
         conn = self._connect_rw()
         try:
             row = conn.execute(
                 """
                 SELECT
-                    s.enabled, s.interval_seconds, s.updated_at,
-                    st.last_seq, st.last_generated_at, st.raw_table
+                    s.enabled, s.interval_seconds, s.updated_at
                 FROM memory_settings s
-                JOIN memory_state st
-                    ON s.group_id = st.group_id AND s.user_id = st.user_id AND s.is_private = st.is_private
                 WHERE s.group_id = ? AND s.user_id = ? AND s.is_private = ?
                 LIMIT 1;
                 """,
@@ -605,23 +635,67 @@ class JianerMemoryService:
             if not row:
                 return {"enabled": 0, "interval_seconds": self.default_interval_seconds, "last_generated_at": 0}
 
-            raw_table = str(row["raw_table"])
+            raw_table = raw_table_name(gid, uid, bool(is_private))
             raw_count = 0
             new_raw_count = 0
+            max_seq = 0
             try:
                 raw_count = int(conn.execute(f"SELECT COUNT(1) AS c FROM {raw_table};").fetchone()["c"])
-                new_raw_count = int(
-                    conn.execute(f"SELECT COUNT(1) AS c FROM {raw_table} WHERE seq > ?;", (int(row["last_seq"]),)).fetchone()[
-                        "c"
-                    ]
-                )
+                m = conn.execute(f"SELECT MAX(seq) AS m FROM {raw_table};").fetchone()
+                max_seq = int(m["m"] or 0) if m else 0
             except sqlite3.OperationalError:
                 pass
 
-            mem_table = mem_table_name(gid, uid, bool(is_private))
+            st_rows = conn.execute(
+                """
+                SELECT preset_key, last_seq, last_generated_at
+                FROM memory_state
+                WHERE group_id = ? AND user_id = ? AND is_private = ?;
+                """,
+                (gid, uid, int(is_private)),
+            ).fetchall()
+            st_map: Dict[str, Tuple[int, int]] = {}
+            for r in st_rows:
+                st_map[str(r["preset_key"])] = (int(r["last_seq"]), int(r["last_generated_at"]))
+            st_map_use = {k: v for k, v in st_map.items() if k != "default"} or st_map
+
+            last_seq = 0
+            last_generated_at = 0
+            if preset_key:
+                last_seq, last_generated_at = st_map.get(str(preset_key), (0, 0))
+            else:
+                if st_map_use:
+                    last_seq = min(v[0] for v in st_map_use.values())
+                    last_generated_at = max(v[1] for v in st_map_use.values())
+
+            if max_seq > 0:
+                try:
+                    new_raw_count = int(
+                        conn.execute(f"SELECT COUNT(1) AS c FROM {raw_table} WHERE seq > ?;", (int(last_seq),)).fetchone()["c"]
+                    )
+                except sqlite3.OperationalError:
+                    new_raw_count = 0
+
             mem_count = 0
             try:
-                mem_count = int(conn.execute(f"SELECT COUNT(1) AS c FROM {mem_table};").fetchone()["c"])
+                if preset_key:
+                    mem_table = mem_table_name(gid, uid, bool(is_private), str(preset_key))
+                    mem_count = int(conn.execute(f"SELECT COUNT(1) AS c FROM {mem_table};").fetchone()["c"])
+                else:
+                    if int(is_private) == 1:
+                        prefix = f"mem_p_u{uid}_p"
+                    else:
+                        prefix = f"mem_g{gid}_p"
+                    tables = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?;",
+                        (prefix + "%",),
+                    ).fetchall()
+                    for tr in tables:
+                        tn = str(tr["name"])
+                        try:
+                            mem_count += int(conn.execute(f"SELECT COUNT(1) AS c FROM {tn};").fetchone()["c"])
+                        except sqlite3.OperationalError:
+                            continue
             except sqlite3.OperationalError:
                 pass
 
@@ -631,8 +705,8 @@ class JianerMemoryService:
                 "enabled": int(row["enabled"]),
                 "interval_seconds": int(row["interval_seconds"]),
                 "updated_at": int(row["updated_at"]),
-                "last_seq": int(row["last_seq"]),
-                "last_generated_at": int(row["last_generated_at"]),
+                "last_seq": int(last_seq),
+                "last_generated_at": int(last_generated_at),
                 "raw_count": raw_count,
                 "new_raw_count": new_raw_count,
                 "mem_count": mem_count,
@@ -668,35 +742,57 @@ class JianerMemoryService:
     def _fetch_due_scopes(self, now_ts: int) -> List[DueScope]:
         conn = self._connect_rw()
         try:
-            rows = conn.execute(
+            settings = conn.execute(
                 """
-                SELECT
-                    s.group_id, s.user_id, s.is_private, s.interval_seconds,
-                    st.last_seq, st.last_generated_at, st.raw_table
-                FROM memory_settings s
-                JOIN memory_state st
-                    ON s.group_id = st.group_id AND s.user_id = st.user_id AND s.is_private = st.is_private
-                WHERE s.enabled = 1
-                  AND (st.last_generated_at + s.interval_seconds) <= ?
-                ORDER BY st.last_generated_at ASC
+                SELECT group_id, user_id, is_private, interval_seconds
+                FROM memory_settings
+                WHERE enabled = 1
+                ORDER BY updated_at DESC
                 LIMIT 50;
-                """,
-                (int(now_ts),),
+                """
             ).fetchall()
-            scopes: List[DueScope] = []
-            for r in rows:
-                scopes.append(
-                    DueScope(
-                        group_id=str(r["group_id"]),
-                        user_id=str(r["user_id"]),
-                        is_private=int(r["is_private"]),
-                        interval_seconds=int(r["interval_seconds"]),
-                        last_seq=int(r["last_seq"]),
-                        last_generated_at=int(r["last_generated_at"]),
-                        raw_table=str(r["raw_table"]),
-                    )
-                )
-            return scopes
+            if not settings:
+                return []
+
+            preset_keys = self.get_preset_keys()
+            due: List[DueScope] = []
+            for s in settings:
+                gid = str(s["group_id"])
+                uid = str(s["user_id"])
+                is_private = int(s["is_private"])
+                interval_seconds = int(s["interval_seconds"])
+                raw_table = raw_table_name(gid, uid, bool(is_private))
+
+                st_rows = conn.execute(
+                    """
+                    SELECT preset_key, last_seq, last_generated_at
+                    FROM memory_state
+                    WHERE group_id = ? AND user_id = ? AND is_private = ?;
+                    """,
+                    (gid, uid, int(is_private)),
+                ).fetchall()
+                st_map: Dict[str, Tuple[int, int]] = {}
+                for r in st_rows:
+                    st_map[str(r["preset_key"])] = (int(r["last_seq"]), int(r["last_generated_at"]))
+
+                for pk in preset_keys:
+                    last_seq, last_generated_at = st_map.get(pk, (0, 0))
+                    if (int(last_generated_at) + int(interval_seconds)) <= int(now_ts):
+                        due.append(
+                            DueScope(
+                                group_id=gid,
+                                user_id=uid,
+                                is_private=is_private,
+                                preset_key=str(pk),
+                                interval_seconds=interval_seconds,
+                                last_seq=int(last_seq),
+                                last_generated_at=int(last_generated_at),
+                                raw_table=raw_table,
+                            )
+                        )
+
+            due.sort(key=lambda x: int(x.last_generated_at))
+            return due[:200]
         finally:
             conn.close()
 
@@ -734,7 +830,8 @@ class JianerMemoryService:
                 break
             raw_text_lines.append(line)
 
-        persona = self._persona_cache.get(scope.user_id, "")
+        template = self._preset_templates.get(scope.preset_key) or self._preset_templates.get("default", "")
+        persona = self._render_template(template, scope)
         sys_prompt = (persona + "\n\n" if persona else "") + (
             "你现在负责把聊天增量提炼成长期记忆。输出必须是严格JSON，且只能输出JSON。"
             "JSON格式：{\"memories\":[{\"content\":\"...\",\"weight\":0.0}]}。"
@@ -755,7 +852,7 @@ class JianerMemoryService:
     async def _call_memory_ai(self, scope: DueScope, msg: str, sys_prompt: str) -> str:
         import Tools.ARC_AI as ARC_AI
 
-        uid = f"mem_{scope.group_id}_{scope.user_id}_{scope.is_private}"
+        uid = f"mem_{scope.group_id}_{scope.user_id}_{scope.is_private}_{_safe_preset_key(scope.preset_key)}"
         response_stream = ARC_AI.get_response_stream(
             self.memory_mode,
             msg,
@@ -803,7 +900,7 @@ class JianerMemoryService:
     def _store_memories_and_advance(self, scope: DueScope, items: List[MemoryItem], max_seq: int) -> bool:
         conn = self._connect_rw()
         try:
-            table = mem_table_name(scope.group_id, scope.user_id, bool(scope.is_private))
+            table = mem_table_name(scope.group_id, scope.user_id, bool(scope.is_private), scope.preset_key)
             self._ensure_mem_table(conn, table)
             now = _now_ts()
             with conn:
@@ -814,11 +911,15 @@ class JianerMemoryService:
                     )
                 conn.execute(
                     """
-                    UPDATE memory_state
-                    SET last_seq = ?, last_generated_at = ?
-                    WHERE group_id = ? AND user_id = ? AND is_private = ?;
+                    INSERT INTO memory_state(group_id, user_id, is_private, preset_key, raw_table, last_seq, last_generated_at)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(group_id, user_id, is_private, preset_key)
+                    DO UPDATE SET
+                        raw_table=excluded.raw_table,
+                        last_seq=excluded.last_seq,
+                        last_generated_at=excluded.last_generated_at;
                     """,
-                    (int(max_seq), int(now), scope.group_id, scope.user_id, int(scope.is_private)),
+                    (scope.group_id, scope.user_id, int(scope.is_private), str(scope.preset_key), str(scope.raw_table), int(max_seq), int(now)),
                 )
             return True
         except Exception as e:
@@ -833,14 +934,14 @@ class JianerMemoryService:
         user_id: Any,
         is_private: bool,
         query_text: str,
+        preset_key: str = "default",
         topk: int = 6,
         max_chars: int = 1800,
     ) -> str:
-        gid = "p" if is_private else _digits_only(group_id)
-        uid = _digits_only(user_id)
+        gid, uid, _ = _scope_ids_from_event(None if is_private else group_id, user_id)
         if not uid:
             return ""
-        table = mem_table_name(gid, uid, is_private)
+        table = mem_table_name(gid, uid, is_private, preset_key)
         candidates = await asyncio.to_thread(self._fetch_memory_candidates, table)
         if not candidates:
             return ""
