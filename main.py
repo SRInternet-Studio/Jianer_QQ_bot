@@ -7,6 +7,7 @@
 # import Tools functions
 from Tools.tools import * 
 from Tools.suffix_manager import SuffixManager
+from Tools.jianer_memory import JianerMemoryService
 print(title() + "\nWelcome to Jianer QQ Bot, Starting Kernal now...", end="\r") 
 
 # from Tools.GoogleAI import genai, Context, Parts, Roles, Schema
@@ -76,6 +77,39 @@ user_lists = {}
 # cmc = ContextManager() # Gemini 的上下文管理器
 # tools = []
 suffix_manager = SuffixManager()
+
+memory_db_path = config.others.get("memory_db_path", "jianer_memory.db")
+memory_mode = config.others.get("memory_mode", EnableNetwork)
+memory_enabled_default = bool(config.others.get("memory_enabled_default", True))
+memory_interval_default = int(config.others.get("memory_interval_seconds_default", 6 * 3600))
+memory_topk = int(config.others.get("memory_topk", 6))
+memory_scheduler_tick = int(config.others.get("memory_scheduler_tick_seconds", 30))
+memory_min_new_rows = int(config.others.get("memory_min_new_rows_to_generate", 12))
+memory_max_raw_rows = int(config.others.get("memory_max_raw_rows_per_generation", 200))
+memory_max_chars = int(config.others.get("memory_max_chars_per_generation", 12000))
+memory_cleanup_interval = int(config.others.get("memory_cleanup_interval_seconds", 6 * 3600))
+memory_cleanup_keep_days = int(config.others.get("memory_cleanup_keep_days", 30))
+memory_cleanup_min_weight = float(config.others.get("memory_cleanup_min_weight", 0.25))
+memory_cleanup_keep_max_rows = int(config.others.get("memory_cleanup_keep_max_rows", 3000))
+memory_global_optimize_interval = int(config.others.get("memory_global_optimize_interval_seconds", 24 * 3600))
+memory_global_candidate_limit = int(config.others.get("memory_global_candidate_limit", 200))
+
+memory_service = JianerMemoryService(
+    db_path=memory_db_path,
+    memory_mode=memory_mode,
+    default_enabled=memory_enabled_default,
+    default_interval_seconds=memory_interval_default,
+    scheduler_tick_seconds=memory_scheduler_tick,
+    max_raw_rows_per_generation=memory_max_raw_rows,
+    min_new_rows_to_generate=memory_min_new_rows,
+    max_chars_per_generation=memory_max_chars,
+    cleanup_interval_seconds=memory_cleanup_interval,
+    cleanup_keep_days=memory_cleanup_keep_days,
+    cleanup_min_weight=memory_cleanup_min_weight,
+    cleanup_keep_max_rows=memory_cleanup_keep_max_rows,
+    global_optimize_interval_seconds=memory_global_optimize_interval,
+    global_candidate_limit=memory_global_candidate_limit,
+)
 
 gptsovitsoff = False
 print(" " * 114, end="\r") # Staring Completed
@@ -378,6 +412,12 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
     ADMINS = Super_User + ROOT_User + Manage_User
     SUPERS = Super_User + ROOT_User
     event.time_str = f"{datetime.datetime.now().hour:02}:{datetime.datetime.now().minute:02}:{datetime.datetime.now().second:02}"
+
+    try:
+        if hasattr(event, "message") and hasattr(event, "user_id"):
+            memory_service.capture_message_event(event, Segments)
+    except Exception:
+        pass
     
     if stop_working:
         if ((user_id := getattr(event, "user_id", None)) and (message := getattr(event, "message", None)) 
@@ -397,6 +437,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         in_timing = True
         thread = threading.Thread(target=timing_message, args=(actions,))
         thread.start()
+        memory_service.start()
         
     # 执行永久加载插件
     local_vars = globals().copy()
@@ -490,6 +531,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                     
         # 初始化预设
         sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, event_user)
+        base_sys_prompt = sys_prompt
         presets = presets_tool.read_presets()
         
         if len(event.message) <= 0:
@@ -696,6 +738,88 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"成功切换到AI: {friendly_name}")))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"找不到AI配置: {target_ai}，请检查代码拼写。")))
+
+        elif user_message.startswith(f"{reminder}简儿记忆"):
+            cmd = user_message[len(reminder) :].strip()
+            parts = [p for p in cmd.split() if p]
+            action = parts[1] if len(parts) >= 2 else "帮助"
+
+            def parse_interval_seconds(s: str) -> int:
+                s = (s or "").strip().lower()
+                m = re.match(r"^(\d+)\s*([smhd]?)$", s)
+                if not m:
+                    return 0
+                n = int(m.group(1))
+                unit = m.group(2)
+                if unit == "s" or unit == "":
+                    return n
+                if unit == "m":
+                    return n * 60
+                if unit == "h":
+                    return n * 3600
+                if unit == "d":
+                    return n * 86400
+                return 0
+
+            if action in ("帮助", "help"):
+                info = f"""简儿记忆
+————————————————————
+记忆AI配置: {memory_mode}
+数据库: {memory_db_path}
+
+指令:
+{reminder}简儿记忆 状态
+{reminder}简儿记忆 开启 / 关闭
+{reminder}简儿记忆 间隔 6h/30m/3600
+{reminder}简儿记忆 立即生成
+"""
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(info)))
+
+            elif action == "状态":
+                st = await memory_service.get_status(event.group_id, event.user_id, False)
+                if not st:
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("未找到记忆状态。")))
+                    return
+                last_at = st.get("last_generated_at", 0) or 0
+                last_at_str = "从未" if int(last_at) <= 0 else datetime.datetime.fromtimestamp(int(last_at)).strftime("%Y-%m-%d %H:%M:%S")
+                msg = f"""简儿记忆状态
+————————————————————
+开启: {bool(st.get("enabled", 0))}
+间隔(秒): {st.get("interval_seconds", 0)}
+上次生成: {last_at_str}
+原始记录: {st.get("raw_count", 0)} (+{st.get("new_raw_count", 0)})
+个人/本群记忆: {st.get("mem_count", 0)}
+全局记忆: {st.get("global_count", 0)}
+"""
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(msg)))
+
+            elif action == "开启":
+                await memory_service.set_enabled(event.group_id, event.user_id, False, True)
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已开启简儿记忆。")))
+
+            elif action == "关闭":
+                await memory_service.set_enabled(event.group_id, event.user_id, False, False)
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已关闭简儿记忆。")))
+
+            elif action == "间隔":
+                if len(parts) < 3:
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("用法：#简儿记忆 间隔 6h/30m/3600")))
+                    return
+                seconds = parse_interval_seconds(parts[2])
+                if seconds <= 0:
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("间隔格式无效。")))
+                    return
+                await memory_service.set_interval_seconds(event.group_id, event.user_id, False, seconds)
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"已设置简儿记忆间隔为 {seconds} 秒。")))
+
+            elif action == "立即生成":
+                ok = await memory_service.generate_now(event.group_id, event.user_id, False)
+                await actions.send(
+                    group_id=event.group_id,
+                    message=Manager.Message(Segments.Text("已生成一轮简儿记忆。" if ok else "暂无足够新增聊天记录生成记忆。")),
+                )
+            else:
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("指令不支持，发送 #简儿记忆 帮助。")))
 
         elif "列出黑名单" == order:
           if str(event.user_id) in ADMINS:
@@ -1624,13 +1748,27 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                      # 这里可以尝试加载默认预设内容，如果 presets_tool.current_preset 指向了一个有效预设
                      pass # 暂时保持为空，或者您有默认的 sys_prompt 逻辑
 
+                persona_prompt = sys_prompt or base_sys_prompt
+                memory_service.update_persona(event.user_id, persona_prompt)
+                memory_context = await memory_service.build_memory_context(
+                    group_id=event.group_id,
+                    user_id=event.user_id,
+                    is_private=False,
+                    query_text=msg,
+                    topk=memory_topk,
+                )
+                if memory_context:
+                    final_sys_prompt = (persona_prompt + "\n\n" if persona_prompt else "") + memory_context
+                else:
+                    final_sys_prompt = persona_prompt
+
                 # 调用 ARC_AI 获取回复流
                 response_stream = ARC_AI.get_response_stream(
                     EnableNetwork,
                     msg,
                     user_lists,
                     event.user_id,
-                    sys_prompt,
+                    final_sys_prompt,
                     images
                 )
                 
