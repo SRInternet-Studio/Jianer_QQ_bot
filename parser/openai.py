@@ -135,8 +135,8 @@ class OpenAIParser(BaseParser):
                 response = self.client.chat.completions.create(**api_params)
                 
                 # 提取回复内容
-                if response.choices and response.choices[0].message:
-                    response_content = response.choices[0].message.content or self.if_return_none
+                response_content = self._extract_response_content(response)
+                if response_content and response_content != self.if_return_none:
                     logger.info(f"API调用成功，回复长度: {len(response_content)}")
                 else:
                     logger.warning("API返回空内容")
@@ -151,6 +151,30 @@ class OpenAIParser(BaseParser):
         except Exception as e:
             logger.error(f"API调用失败: {str(e)}")
             raise e
+
+    def _extract_response_content(self, response: Any) -> str:
+        if response is None:
+            return ""
+        if isinstance(response, str):
+            return response
+        if isinstance(response, dict):
+            choices = response.get("choices") or []
+            if choices:
+                msg = (choices[0] or {}).get("message") or {}
+                content = msg.get("content")
+                if content is not None:
+                    return str(content)
+            content = response.get("content")
+            return "" if content is None else str(content)
+
+        choices = getattr(response, "choices", None)
+        if choices:
+            first = choices[0]
+            msg = getattr(first, "message", None)
+            content = getattr(msg, "content", None) if msg else None
+            return "" if content is None else str(content)
+
+        return str(response)
     
     def _handle_stream_response(self, api_params: dict) -> str:
         """
@@ -170,11 +194,28 @@ class OpenAIParser(BaseParser):
             full_response = ""
             
             for chunk in stream:
-                if hasattr(chunk, 'choices') and chunk.choices and len(chunk.choices) > 0:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, 'content') and delta.content is not None:
-                        content = delta.content
-                        full_response += content
+                if chunk is None:
+                    continue
+                if isinstance(chunk, str):
+                    full_response += chunk
+                    continue
+                if isinstance(chunk, dict):
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = (choices[0] or {}).get("delta") or {}
+                    content = delta.get("content")
+                    if content is not None:
+                        full_response += str(content)
+                    continue
+
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                content = getattr(delta, "content", None) if delta else None
+                if content is not None:
+                    full_response += str(content)
             
             logger.info(f"流式响应完成，总长度: {len(full_response)}")
             return full_response.rstrip() if full_response else self.if_return_none
