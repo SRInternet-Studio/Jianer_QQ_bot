@@ -30,12 +30,27 @@ class StreamSplitter:
         try:
             buffer_threshold = 200 if type == 'openai' else 50
             
+            if isinstance(response_stream, (str, dict)):
+                response_stream = [response_stream]
+
             for chunk in response_stream:
+                chunk_text = None
                 match type:
                     case 'gemini':
-                        chunk_text = chunk.text
+                        if isinstance(chunk, str):
+                            chunk_text = chunk
+                        elif hasattr(chunk, "text"):
+                            chunk_text = chunk.text
                     case 'openai':
-                        chunk_text = chunk.choices[0].delta.content
+                        if isinstance(chunk, str):
+                            chunk_text = chunk
+                        elif isinstance(chunk, dict):
+                            choices = chunk.get("choices") or []
+                            delta = (choices[0].get("delta") if choices else {}) or {}
+                            chunk_text = delta.get("content")
+                        elif hasattr(chunk, "choices"):
+                            delta = getattr(chunk.choices[0], "delta", None) if chunk.choices else None
+                            chunk_text = getattr(delta, "content", None) if delta else None
                         
                 if chunk_text is None:
                     continue
