@@ -96,7 +96,7 @@ class StreamSplitter:
                     for msg in messages[1:-1] 
                 ) + messages[-1] 
                     
-        print(f"[{time.time()}] BUFFER: {repr(self.buffer)}， SPLIT_STR {repr("string.none" if self.split_str == "" else self.split_str)}")
+        print(f'[{time.time()}] BUFFER: {repr(self.buffer)}', SPLIT_STR, repr("string.none" if self.split_str == "" else self.split_str))
         
         if not self.is_balanced(message):
             self.buffer = message + self.buffer
