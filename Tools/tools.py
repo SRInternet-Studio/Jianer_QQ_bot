@@ -2,7 +2,7 @@ from PIL import Image
 from typing import Tuple, Optional, Any
 import platform
 import psutil
-import GPUtil
+import pynvml
 import io, gc, os
 import edge_tts
 
