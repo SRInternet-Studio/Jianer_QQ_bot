@@ -62,14 +62,28 @@ def get_system_info():
     used_memory = virtual_memory.used
     memory_usage_percentage = virtual_memory.percent
 
-    # GPU信息（是否有）
-    gpus = GPUtil.getGPUs()
-    if gpus:
-        gpu_count = len(gpus)
-        gpu_usage = [gpu.load for gpu in gpus]
-    else:
-        gpu_count = 0
-        gpu_usage = []
+    # GPU信息（使用pynvml）
+    gpu_count = 0
+    gpu_usage = []
+    try:
+        pynvml.nvmlInit()
+        try:
+            device_count = pynvml.nvmlDeviceGetCount()
+            if device_count > 0:
+                gpu_count = device_count
+                for i in range(device_count):
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                    utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    load = utilization.gpu / 100.0
+                    gpu_usage.append(load)
+        finally:
+            pynvml.nvmlShutdown()              # 无论是否成功获取，都关闭NVML
+    except pynvml.NVMLError as e:
+        # 没有NVIDIA驱动/GPU，或初始化失败，忽略错误
+        print(f"pynvml error: {e}")
+    except Exception as e:
+        # 其他意外错误
+        print(f"Unexpected error in GPU detection: {e}")
 
     return {
         "version_info": version_info,
