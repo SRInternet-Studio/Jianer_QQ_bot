@@ -1,7 +1,3 @@
-# Jianer_QQ_bot
-
- OneBot v11，群管，AI，娱乐，新一代QQ群机器人。
- 
 <div align="center">
 
 # <image src="https://github.com/user-attachments/assets/f63cbae0-7251-496b-b493-6e695ac1b25f" height="45"/>  简儿 Jianer QQ bot
