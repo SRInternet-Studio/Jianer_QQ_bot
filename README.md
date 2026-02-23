@@ -1,11 +1,7 @@
 # Jianer_QQ_bot
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FSRInternet-Studio%2FJianer_QQ_bot.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FSRInternet-Studio%2FJianer_QQ_bot?ref=badge_shield)
 
  OneBot v11，群管，AI，娱乐，新一代QQ群机器人。
-
-
-## License
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FSRInternet-Studio%2FJianer_QQ_bot.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FSRInternet-Studio%2FJianer_QQ_bot?ref=badge_large)
+ 
 <div align="center">
 
 # <image src="https://github.com/user-attachments/assets/f63cbae0-7251-496b-b493-6e695ac1b25f" height="45"/>  简儿 Jianer QQ bot
