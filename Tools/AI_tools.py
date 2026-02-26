@@ -50,7 +50,7 @@ class StreamSplitter:
                 if time.time() - self.last_split_time >= 1.5:
                     self.last_split_time = time.time()
                     for r in self.check_and_split():
-                        if r != "":
+                        if r.strip():
                             yield r, self.enable_forward_msg_num
                         
             for r in self.check_and_split(True):
@@ -96,7 +96,7 @@ class StreamSplitter:
                     for msg in messages[1:-1] 
                 ) + messages[-1] 
                     
-        print(f'[{time.time()}] BUFFER: {repr(self.buffer)}', SPLIT_STR, repr("string.none" if self.split_str == "" else self.split_str))
+        print(f"[{time.time()}] BUFFER: {repr(self.buffer)}， SPLIT_STR {repr("string.none" if self.split_str == "" else self.split_str)}")
         
         if not self.is_balanced(message):
             self.buffer = message + self.buffer

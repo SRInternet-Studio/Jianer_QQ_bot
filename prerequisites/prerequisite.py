@@ -1,4 +1,9 @@
 import os, json, datetime
+from Hyper import Configurator
+if not hasattr(Configurator, "cm") or not Configurator.cm:
+    Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
+from Hyper import Events
+from typing import Union, Optional, Tuple
 # 初始化预设常量 
 
 # 配置文件名
@@ -31,7 +36,7 @@ def write_presets(data):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
-def gen_presets(uid, bot_name, event_user):
+def gen_presets(uid, bot_name, bot_name_en, event_user):
     # 初始化统一预设读写变量 prerequisite_editor 和 prerequisite_readerq
     global current_preset
     if not os.path.exists(CONFIG_FILE) or os.stat(CONFIG_FILE).st_size == 0:
@@ -69,7 +74,46 @@ def gen_presets(uid, bot_name, event_user):
             
     # 替换实时变量
     sys_prompt = sys_prompt.replace("{self.bot_name}",bot_name)
+    sys_prompt = sys_prompt.replace("{self.bot_name_en}",bot_name_en)
     sys_prompt = sys_prompt.replace("{self.event_user}",event_user)
     sys_prompt = sys_prompt.replace("{self.event_user_id}",str(uid))
 
     return sys_prompt
+
+def change_presets(presets: dict, order: str,
+                   event: Union[Events.GroupMessageEvent, Events.PrivateMessageEvent]):
+    selected_preset_id = None
+    for preset_id, preset_data in presets.items():
+        # print(f"检查预设: {order} - {preset_data['name']}")
+        if preset_data["name"] == order:
+            selected_preset_id = preset_id
+            break
+
+    if selected_preset_id:
+        # 将用户 ID 添加到所选预设的 uid 列表中
+        if "uid" not in presets[selected_preset_id]:
+            presets[selected_preset_id]["uid"] = []
+        if event.user_id not in presets[selected_preset_id]["uid"]:
+            presets[selected_preset_id]["uid"].append(event.user_id)
+
+        # 从其他预设中移除用户 ID
+        for preset_id, preset_data in presets.items():
+            if preset_id != selected_preset_id and "uid" in preset_data:
+                if event.user_id in preset_data["uid"]:
+                    presets[preset_id]["uid"].remove(event.user_id)
+
+        write_presets(presets)
+        return presets, presets[selected_preset_id]["info"] if selected_preset_id else "", True
+    
+    return presets, "", False
+
+def list_presets(presets: dict, current_preset: str, reminder: str):
+    preset_list = "\n".join(
+        [
+            f"    {reminder}{data['name']}（当前） - {data['info']}"
+            if data['name'] == current_preset
+            else f"    {reminder}{data['name']} - {data['info']}"
+            for data in presets.values()
+        ]
+    )
+    return preset_list

@@ -8,15 +8,16 @@
 from Tools.tools import * 
 print(title() + "\nWelcome to Jianer QQ Bot, Starting Kernal now...", end="\r") 
 
-from Tools.GoogleAI import genai, Context, Parts, Roles, Schema
-from Tools.SearchOnline import network_gpt as SearchOnline
-from Tools.deepseek import dsr114 as deepseek
+from Tools.GoogleAI import Context
+from Tools.Sanitizer_Tools import sanitize_for_tts
+from AI_bot.AIKernal import AIKernal
+from AI_bot.ContextManager import ContextManager, user_lists
+
 import prerequisites.prerequisite as presets_tool
 
 # import requirements
 import faulthandler
 faulthandler.enable()
-from urllib.parse import urlparse, urlunparse
 
 import sys, os, asyncio, traceback, threading
 import importlib.util   
@@ -49,7 +50,7 @@ Manage_User: list = []
 
 logger = Logger.Logger()
 logger.set_level(config.log_level)
-version_name = "3.0 - Next Preview Ultra"
+version_name = "3.1 - 𝑵𝒆𝒙𝒕 𝑹𝒆𝒍𝒆𝒂𝒔𝒆"
 
 stop_working = False
 Wait_for_add_in = False
@@ -64,44 +65,11 @@ emoji_plus_one_off = False
 self_service_titles = False
 
 # AI Settings
-EnableNetwork = config.others["default_mode"]
-user_lists = {}
-class Tools:
-    pass
-
-class ContextManager:
-    def __init__(self):
-        self.groups: dict[int, dict[int, Context]] = {}
-
-    def get_context(self, uin: int, gid: int):
-        try:
-            return self.groups[gid][uin]
-        except KeyError:
-            if self.groups.get(gid):
-                self.groups[gid][uin] = Context(key, model, tools=tools)
-                return self.groups[gid][uin]
-            else:
-                self.groups[gid] = {}
-                self.groups[gid][uin] = Context(key, model, tools=tools)
-                return self.groups[gid][uin]
-
-generation_config = {
-    "temperature": 1,
-    "top_p": 0.95,
-    "top_k": 64,
-    "max_output_tokens": 8192,
-    "response_mime_type": "text/plain",
-}
-
+EnableNetwork = config.others.get("default_mode", "Ds")
 sys_prompt = ""
-model = genai.GenerativeModel()
-cmc = ContextManager() # Gemini 的上下文管理器
-tools = []
-
-key = config.others["gemini_key"]
-genai.configure(api_key=key)
-
+cmc = ContextManager() # 上下文管理器
 gptsovitsoff = False
+
 print(" " * 114, end="\r") # Staring Completed
 
 # Plugin like
@@ -165,7 +133,8 @@ def load_plugins():
                             loaded_plugins.append(unique_module_name) 
                             if hasattr(module, 'HELP_MESSAGE'):
                                 if isinstance(module.HELP_MESSAGE, str):
-                                    plugins_help += f"\n       {module.HELP_MESSAGE}"
+                                    for help_message in [line.strip() for line in module.HELP_MESSAGE.splitlines() if line.strip()]:
+                                        plugins_help += f"\n       {help_message}"
 
                             print(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
                         else:
@@ -223,8 +192,9 @@ def load_plugins():
                         plugins.append(module)  # 重要：把整个模块全tm加入到列表
                         loaded_plugins.append(unique_module_name)
                         if hasattr(module, 'HELP_MESSAGE'):
-                                if isinstance(module.HELP_MESSAGE, str):
-                                    plugins_help += f"\n       {module.HELP_MESSAGE}"
+                            if isinstance(module.HELP_MESSAGE, str):
+                                for help_message in [line.strip() for line in module.HELP_MESSAGE.splitlines() if line.strip()]:
+                                    plugins_help += f"\n       {help_message}"
 
                         print(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
                     else:
@@ -292,12 +262,6 @@ async def execute_plugins(isAny: bool, **main_context) -> bool: # 接受 main.py
     
     return has_plugin
 
-def replace_scheme_with_http(url: str) -> str:
-    parsed_url = urlparse(url)
-    if parsed_url.scheme == 'https':
-        parsed_url = parsed_url._replace(scheme='http')
-    return urlunparse(parsed_url)
-
 def load_blacklist():
     try:
         with open("blacklist.sr", "r", encoding="utf-8") as f:
@@ -316,28 +280,50 @@ def timing_message(actions: Listener.Actions):
             continue
         
         with open("timing_message.ini", "r", encoding="utf-8") as f:
-            send_time = f.read()
-
-        send_time = send_time.split("\n")
-        send_time = send_time[0].split("⊕")
-
+            content = f.read().strip()
+        
+        if "⊕" in content:
+            # 找到第一个换行符的位置
+            first_newline_pos = content.find("\n")
+            if first_newline_pos != -1:
+                # 如果有换行，只在第一行查找⊕符号
+                first_line = content[:first_newline_pos]
+                remaining_lines = content[first_newline_pos:]
+                if "⊕" in first_line:
+                    time_part, message_part = first_line.split("⊕", 1)
+                    # 合并消息部分和剩余行
+                    full_message = message_part + remaining_lines
+                else:
+                    # 如果第一行没有⊕符号，使用整个内容作为消息
+                    full_message = content
+            else:
+                # 如果没有换行，直接分割整个内容
+                time_part, full_message = content.split("⊕", 1)
+        else:
+            # 如果没有⊕符号，使用整个内容作为消息
+            full_message = content
+            time_part = ""
+        
         now = datetime.datetime.now()
-        print(f"Current: {now.hour:02}:{now.minute:02}, target: {send_time}")
-        if f"{now.hour:02}:{now.minute:02}" == send_time[0]:
+        print(f"Current: {now.hour:02}:{now.minute:02}, target: {time_part}")
+        if time_part and f"{now.hour:02}:{now.minute:02}" == time_part:
             print("send timing messages")
-            asyncio.run(send_msg_all_groups(send_time[1], actions))
-
+            asyncio.run(send_msg_all_groups(full_message, actions))
+        
         time.sleep(60 - now.second)
         
-async def send_msg_all_groups(text, actions: Listener.Actions):
+async def send_msg_all_groups(text, actions: Listener.Actions, message: Manager.Message = None):
     echo = await actions.custom.get_group_list()
     result = Manager.Ret.fetch(echo)
     blacklist = load_blacklist()  # 必须在发送消息前加载黑名单
     print(f"sys: 群发 {result.data.raw}")
     for group in result.data.raw:
-        group_id = str(group['group_id'])  # 将group_id转为字符串类型,不然来个error会溶血
-        if group_id not in blacklist:  # 检查群组 ID 是否在黑名单中,在就别给lz发
-            await actions.send(group_id=group['group_id'], message=Manager.Message(Segments.Text(text)))
+        group_id = str(group['group_id'])  # 将group_id转为字符串
+        if group_id not in blacklist:  # 检查群组 ID 是否在黑名单中
+            if message:
+                await actions.send(group_id=group['group_id'], message=message)
+            else:
+                await actions.send(group_id=group['group_id'], message=Manager.Message(Segments.Text(text)))
             time.sleep(random.random()*3)
         else:
             print(f"群聊 {group_id} 在黑名单内，取消发送")
@@ -395,10 +381,12 @@ def Write_Settings(s: list, m: list) -> bool:
 @Listener.reg
 @Logic.ErrorHandler().handle_async
 async def handler(event: Events.Event, actions: Listener.Actions) -> None:
-    global in_timing, bot_name, bot_name_en, reminder, config, ONE_SLOGAN, CONFUSED_WORD, stop_working, Wait_for_add_in
-    global Super_User, Manage_User, ROOT_User
+    global in_timing, bot_name, bot_name_en, reminder, config, ONE_SLOGAN, CONFUSED_WORD, stop_working, Wait_for_add_in, version_name
+    global Super_User, Manage_User, ROOT_User # 全局用户组
+    global cmc, user_lists, sys_prompt, EnableNetwork # AI对话所必须
     ADMINS = Super_User + ROOT_User + Manage_User
     SUPERS = Super_User + ROOT_User
+    AIbot = AIKernal(actions, config, bot_name, reminder)
     event.time_str = f"{datetime.datetime.now().hour:02}:{datetime.datetime.now().minute:02}:{datetime.datetime.now().second:02}"
     
     if stop_working:
@@ -427,10 +415,21 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         return  # 只传递 event 作为位置参数
     
     if isinstance(event, Events.NotifyEvent): # 优先判断自定义事件
-        if str(event.sub_type) == "poke" and event.group_id and int(event.target_id) == int(event.self_id): # 被戳一戳
+        if str(event.sub_type) == "poke" and int(event.target_id) == int(event.self_id): # 被戳一戳
             print(f"({event.user_id}) POKED")
             try:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(random.choice(config.others["poke_rejection_phrases"]))))
+                if event.group_id:
+                    poke_result = await actions.custom.group_poke(group_id=event.group_id, user_id=event.user_id)
+                    poke_result = Manager.Ret.fetch(poke_result).data.raw
+                    if poke_result.get("status", "error") != "ok":
+                        print(f"sys: 戳一戳失败 {poke_result}")
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(random.choice(config.others["poke_rejection_phrases"]))))
+                elif event.user_id:
+                    poke_result = await actions.custom.friend_poke(user_id=event.user_id)
+                    poke_result = Manager.Ret.fetch(poke_result).data.raw
+                    if poke_result.get("status", "error") != "ok":
+                        print(f"sys: 戳一戳失败 {poke_result}")
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(random.choice(config.others["poke_rejection_phrases"]))))
             except KeyError:
                 print("不接受戳一戳")
                 
@@ -459,9 +458,9 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(f"http://q2.qlogo.cn/headimg_dl?dst_uin={user}&spec=640"), Segments.Text("欢迎"), Segments.At(user), Segments.Text(welcome)))
         
     elif isinstance(event, Events.GroupMemberDecreaseEvent):
-        s, user_nick = await get_user_info(event.user_id, Manager, actions)
-        if s:
-            user_nick = f"@{user_nick['nickname']} "
+        user_nick = await get_user_nickname(event.user_id, Manager, actions)
+        if user_nick:
+            user_nick = f"@{user_nick} "
         else:
             user_nick = "有人又"
 
@@ -491,33 +490,66 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             except:
                 traceback.print_exc()
           
-    elif isinstance(event, Events.FriendAddEvent):
-        print("sys: 同意好友")
-        await actions.set_friend_add_request(flag=event.flag,approve=True,remark="")
+    # elif isinstance(event, Events.FriendAddEvent):
+    #     print("sys: 同意好友")
+    #     await actions.custom.set_friend_add_request(flag=event.flag, approve=True, reason="")
+
+    elif isinstance(event, Events.PrivateMessageEvent):
+        event_user = await get_user_nickname(event.user_id, Manager, actions)
+        user_message, order = str(event.message).strip(), ""
+        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user)
+        presets = presets_tool.read_presets()
+        if user_message.startswith(reminder):
+            order_i = user_message.find(reminder)
+            if order_i != -1:
+                order = user_message[order_i + len(reminder):].strip()
+                print(f"({event_user}) ORDER: {repr(order)}")
+
+            if "帮助" == order or "用户帮助" == order:
+                content = help_message(event)
+                await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
+                return
+            elif "角色扮演" == order:
+                prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
+————————————————————
+{presets_tool.list_presets(presets, presets_tool.current_preset, reminder)}
+
+发送相应的关键词，{bot_name}会尽力扮演不同角色和你交流哒！⌯>ᴗoᴗ⌯ .ᐟ.ᐟ
+————————————————————
+若您要管理这些角色，请前往群聊中发送相关指令哦o((>ω< ))o"""
+
+                await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(prerequisites_info)))
+                return
+            else:
+                presets, p_info, is_changed = presets_tool.change_presets(presets, order, event)
+                if is_changed:
+                    # 清除ContextManager和user_lists中的单个用户上下文
+                    cmc.del_context(event.user_id, event.group_id)
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(p_info)))
+                    return
+
+        cmc, user_lists, result = await AIbot.generate_response(EnableNetwork, cmc, sys_prompt, user_lists, event)
             
     elif isinstance(event, Events.GroupMessageEvent):
-        global user_lists
-        global sys_prompt
         global second_start
-        global EnableNetwork
         global generating
         global CONFIG_FILE, PRESET_DIR, NORMAL_PRESET
-        global model, cmc, emoji_plus_one_off
+        global emoji_plus_one_off
 
-        s, event_user = await get_user_info(event.user_id, Manager, actions)
-        if s:
-            event_user = event_user['nickname']
+        event_user = await get_user_nickname(event.user_id, Manager, actions)
+        if event_user :
+            event_user = event_user
         else:
             event_user = str(event.user_id)
                     
         # 初始化预设
-        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, event_user)
+        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user)
         presets = presets_tool.read_presets()
         
         if len(event.message) <= 0:
             return  # 只在函数中有效
         
-        user_message = str(event.message)
+        user_message = str(event.message).strip()
         order = ""
 
         if "ping" == user_message:
@@ -526,8 +558,12 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             
         elif f"{bot_name}真棒" in user_message and str(reminder) not in user_message:
             try:
-                compliments: list = config.others["compliment"]
+                compliments: list = config.others.get("compliment", ["谢谢夸奖 (◍•ᴗ•◍)❤"])
                 m = str(compliments[random.randint(0, len(compliments))])
+                compliment_result = await actions.custom.set_msg_emoji_like(group_id=event.group_id, message_id=event.message_id,emoji_id="66", is_add=True)
+                compliment_result = Manager.Ret.fetch(compliment_result).data.raw
+                if compliment_result.get("status", "error") != "ok":
+                    print(f"sys: 表情回复失败 {compliment_result}")
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(m)))
             except:
                 print("不接受夸赞")        
@@ -541,6 +577,18 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 print(f"emoji +1 延迟 {abs(datetime.datetime.now() - emoji_send_count)} s")
         
         if user_message.startswith(reminder):
+            if int(event.group_id) in config.black_list:
+                print(f"sys: 黑名单内，拒绝群聊 {event.group_id} 的消息")
+                await actions.send(group_id=event.group_id, message=Manager.Message(
+                    Segments.Text(f'''❌ Error 403: Chat location restriction
+Source Model: {EnableNetwork}
+Location: This chat context is not permitted.
+Version: {version_name}
+Document: jianer.isok.dev
+
+For more information, see the administrator or check the system logs.''')))
+                return
+    
             order_i = user_message.find(reminder)
             if order_i != -1:
                 order = user_message[order_i + len(reminder):].strip()
@@ -570,7 +618,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-外部后端已重载已完成。发送 {reminder}插件视角 以查看更多信息。''')))
+外部后端已重载完成。发送 {reminder}插件视角 以查看更多信息。''')))
                 
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
@@ -612,7 +660,14 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 new_path = os.path.join(dirname, new_name)
 
                 if not basename.startswith("d_"):
-                    os.rename(found_path, new_path)
+                    try:
+                        os.rename(found_path, new_path)
+                    except Exception as e:
+                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
+————————————————————
+失败: 禁用插件 {plugin_name} 时发生错误。
+错误信息：{str(e)}''')))
+                        return
 
                 plugins = load_plugins()
 
@@ -659,7 +714,14 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 if basename.startswith("d_"):
                     original_name = basename[2:]  # 去除 d_ 前缀，这意味着插件可以被执行
                     original_path = os.path.join(dirname, original_name)
-                    os.rename(found_path, original_path)
+                    try:
+                        os.rename(found_path, original_path)
+                    except Exception as e:
+                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
+————————————————————
+失败: 启用插件 {plugin_name} 时发生错误。
+错误信息：{str(e)}''')))
+                        return
 
                 plugins = load_plugins() # 自动重载插件
 
@@ -668,21 +730,20 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 插件 {plugin_name} 已经成功启用''')))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
-
-        elif "默认4" == order:
+        elif "GPT-4" == order:
             EnableNetwork = "Net"
             print(f"sys: AI Mode change to ChatGPT-4")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("嗯……我好像升级了！o((>ω< ))o")))
-        elif "深度" == order:
+        elif "DeepSeek" == order:
             EnableNetwork = "Ds"
             print(f"sys: AI Mode change to DeepSeek")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("服务器……繁忙？ε٩(๑> ₃ <)۶з")))
-        elif "默认3.5" == order:
-            EnableNetwork = "Normal"
+        elif "GPT-3.5" == order:
+            EnableNetwork = "GPT-3.5"
             print(f"sys: AI Mode change to ChatGPT-3.5")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("切换到大模型中运行ο(=•ω＜=)ρ⌒☆")))
-        elif "读图" == order:
-            EnableNetwork = "Pixmap"
+        elif "Gemini" == order:
+            EnableNetwork = "GoogleGemini"
             print(f"sys: AI Mode change to Gemini")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}打开了新视界！o(*≧▽≦)ツ")))
 
@@ -793,14 +854,14 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 if "管理 M " in order:
                     Toset = order[order.find("管理 M ") + len("管理 M "):].strip() if Toset == "" else Toset
                     print(f"try to get_user {Toset}")
-                    _, nikename = await get_user_info(Toset, Manager, actions)
+                    nikename = await get_user_nickname(Toset, Manager, actions)
                     print(str(nikename))
                     if len(nikename) == 0:
                         r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
 失败: {Toset} 不是一个有效的用户。'''
                     else:
-                        nikename = nikename['nickname']
+                        nikename = nikename
                         m = Manage_User
                         s = Super_User
                         if Toset in Manage_User:
@@ -843,14 +904,14 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 elif "管理 S " in order:
                     Toset = order[order.find("管理 S ") + len("管理 S "):].strip() if Toset == "" else Toset
                     print(f"try to get_user {Toset}")
-                    _, nikename = await get_user_info(Toset, Manager, actions)
+                    nikename = await get_user_nickname(Toset, Manager, actions)
                     print(str(nikename))
                     if len(nikename) == 0:
                         r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
 失败: {Toset} 不是一个有效的用户'''
                     else:
-                        nikename = nikename['nickname']
+                        nikename = nikename
                         m = Manage_User
                         s = Super_User
                         if Toset in Manage_User:
@@ -902,9 +963,9 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             
         elif "让我访问" in order:
             if str(event.user_id) in ADMINS:
-                manage_users = await asyncio.gather(*[get_user_nickname(uid, Manager, actions) for uid in Manage_User])
-                super_users = await asyncio.gather(*[get_user_nickname(uid, Manager, actions) for uid in Super_User])
-                root_users = await asyncio.gather(*[get_user_nickname(uid, Manager, actions) for uid in ROOT_User])
+                manage_users = await asyncio.gather(*[get_user_nickname_with_userid(uid, Manager, actions) for uid in Manage_User])
+                super_users = await asyncio.gather(*[get_user_nickname_with_userid(uid, Manager, actions) for uid in Super_User])
+                root_users = await asyncio.gather(*[get_user_nickname_with_userid(uid, Manager, actions) for uid in ROOT_User])
                 r = f"""{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
 Manage_User: {", ".join(manage_users)}
@@ -937,7 +998,10 @@ If you are a Super_User or ROOT_User, you can manage these users. Use {reminder}
 if failed_plugins else "无"}'''
 
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(status)))
-
+        elif "用户帮助" == order:
+            content = help_message(event)
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(content)))
+            
         elif "帮助" == order:
             if str(event.user_id) in ADMINS:
                 content = [
@@ -951,8 +1015,8 @@ if failed_plugins else "无"}'''
                     (f"{reminder}禁用插件（插件名称）", "忽略特定插件"),
                     (f"{reminder}重载插件", "重新加载所有插件"),
                     (f"{reminder}群发 (内容)", "在所有群聊中（黑名单群聊除外）发送一条消息"),
-                    (f"{reminder}冷静 (@QQ+时间)", "冷静用户一段时间"),
-                    (f"{reminder}取消冷静 (@QQ)", "解除用户冷静"),
+                    (f"{reminder}冷静 (@QQ+时间)/(@all)", "冷静用户一段时间"),
+                    (f"{reminder}取消冷静 (@QQ)/(@all)", "解除用户冷静"),
                     (f"{reminder}送飞机票 (@QQ)", "将用户移出群聊"),
                     ("撤回【引用消息】", "撤回指定消息"),
                     (f"{reminder}群发黑名单", "管理群发消息时不会发送到的群聊"),
@@ -976,49 +1040,54 @@ if failed_plugins else "无"}'''
                 
                 content = "\n".join([
                     f"管理我们的{bot_name}\n————————————————————",
+                    f"你拥有管理{bot_name}的权限，以下是你可以使用的命令。若要查看普通帮助，请@{bot_name} 或发送【{reminder}用户帮助】",
                     *command_lines,
                     "你的每一步操作，与用户息息相关。"
                 ])
                 
             else:
-                content = help_message()
+                content = help_message(event)
                 
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
 
         elif (isinstance(event.message[0], Segments.At) and 
-              int(event.message[0].qq) == event.self_id): 
+              str(event.message[0].qq) == str(event.self_id)): 
+            
+            has_valid_content = False
+            for item in event.message[1:]:
+                if isinstance(item, Segments.Text):
+                    if str(item).strip():
+                        has_valid_content = True
+                        break
+                else:
+                    has_valid_content = True
 
-            if (all(isinstance(item, (Segments.At, Segments.Text)) for item in event.message) and 
-                [str(s) for s in event.message if isinstance(s, Segments.Text) and not str(s).strip()]):
-
-                content = help_message()
-            else:
-                content = f'''你要询问什么呢？嘻嘻(●'◡'●)
+            content = help_message(event) if not has_valid_content else f'''你要询问什么呢？嘻嘻(●'◡'●)
 和我聊天不需要@我哟(＾Ｕ＾)ノ~
 直接在你想对{bot_name}想说的话前面加上 {reminder} 就行啦'''
-
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(content)))
 
-        elif "关于" == order:
-            global version_name
+        elif "关于" == order: 
+            framework = await actions.get_version_info()
+            framework = framework.data.raw
             about = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
 构建信息：
 版本：{version_name}
-由 Lagrange.OneBot 驱动
-基于 HypeR_bot 框架制作
+由 {framework.get("app_name")} {framework.get("protocol_version")}-{framework.get("app_version")} 驱动
+基于 Hype𝐑_bot 框架制作
 ————————————————————
 第三方API
 1. Mirokoi API
 2. Lolicon API
-2. LoliAPI API
+3. LoliAPI API
 4. ChatGPT 3.5
 5. ChatGPT 4o-mini
 6. Google gemini-2.0
-7. GPT-SoVITS
+7. DeepSeek V3
 8. EdgeTTS
 ————————————————————
-© 2019~2025 思锐工作室 保留所有权利'''
+jianer.isok.dev © 2019~{datetime.datetime.now().year} SR思锐团队 保留所有权利'''
 
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(about)))
 
@@ -1032,18 +1101,9 @@ if failed_plugins else "无"}'''
 如果想要关闭群发功能，请联系服务器管理员删除 `timing_message.ini` 文件。\n在关闭群发后，使用 -修改 功能即可重新启用。''')))
             
         elif f"{reminder}角色扮演" == user_message:
-            preset_list = "\n".join(
-                [
-                    f"    {reminder}{data['name']}（当前） - {data['info']}"
-                    if data['name'] == presets_tool.current_preset
-                    else f"    {reminder}{data['name']} - {data['info']}"
-                    for data in presets.values()
-                ]
-            )
-
             prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
 ————————————————————
-{preset_list}
+{presets_tool.list_presets(presets, presets_tool.current_preset, reminder)}
 
 发送相应的关键词，{bot_name}会尽力扮演不同角色和你交流哒！⌯>ᴗoᴗ⌯ .ᐟ.ᐟ
 ————————————————————
@@ -1189,7 +1249,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
             if str(event.user_id) in ADMINS:
                 del cmc
                 cmc = ContextManager()
-                user_lists.clear()
+                user_lists = {}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"卸下包袱，{bot_name}更轻松了~ (/≧▽≦)/")))
                 r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 手动清空了所有用户的 AI 对话上下文'''
                 await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
@@ -1207,7 +1267,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                         r = f'''{bot_name}不能识别给定的时间是什么 Σ( ° △ °|||)︴
 举个🌰子：{reminder}修改 00:00 早安 —> 即可让{bot_name}在0点0分准时问候早安噢⌯oᴗo⌯'''
                     else:
-                        timing_settings = f"{tm[:5]}⊕{tm[6::]}"
+                        timing_settings = f"{tm[:5]}⊕{tm[6::].strip()}"
                         with open("timing_message.ini", "w", encoding="utf-8") as f:
                             f.write(timing_settings)
                             f.close()
@@ -1222,21 +1282,30 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
             
-        elif "群发" in order:
+        elif f"{reminder}群发" in user_message:
             if str(event.user_id) in ADMINS:
                 words = order.split(" ")
-                if len(words) < 2:
+                if len(words) < 2 and len(event.message) == 1:
                     r = f'''群发格式错误 Σ( ° △ °|||)︴
 举个🌰子：{reminder}群发 {bot_name}有更新新功能啦！ —> 在所有群聊中发送消息 “{bot_name}有更新新功能啦！”'''
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(r)))
                 else:
+                    print(f"消息长度: {len(event.message)}") 
+                    if len(event.message) > 0 and isinstance(event.message[0], Segments.Text):
+                        new_text = str(event.message[0]).replace(f"{reminder}群发 ", "", 1) if f"{reminder}群发 " in str(event.message[0]) else str(event.message[0]).replace(f"{reminder}群发", "", 1)
+                        if len(event.message) > 1:
+                            m = Manager.Message(Segments.Text(new_text), *event.message[1:])
+                        else:
+                            m = Manager.Message(Segments.Text(new_text))
+                    else:
+                        m = event.message
+
                     words.pop(0)
                     word = " ".join(words)
-                    r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 启动群发消息:
-“{word}”'''
-                    await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f'''已启动群发消息 “{word}”''')))
-                    await send_msg_all_groups(word, actions)
+                    r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 启动群发消息：\n'''
+                    await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin), *m)) #管理员操作通知ROOT用户
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f'''已启动群发消息：\n'''), *m))
+                    await send_msg_all_groups(word, actions, m)
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
                 
@@ -1259,12 +1328,22 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
             if start_index != -1:
                 result = order[start_index + len("取消冷静 "):].strip()
                 numbers = re.findall(r'\d+', result)
+                complete = False
                 for i in event.message:
                     if isinstance(i, Segments.At):
                         print("At in loading...")
                         userid114 = numbers[0]  
                         time114 = 0
                         await actions.set_group_ban(group_id=event.group_id,user_id=userid114,duration=time114)
+                        complete = True
+                        break
+
+                if not complete:
+                    if "@all" in order:
+                        await actions.custom.set_group_whole_ban(group_id=event.group_id, enable=False)
+                        complete = True
+                    else:
+                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}取消冷静 @anyone/@all\n参考：{reminder}取消冷静 @Harcic#8042")))
      
            else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
@@ -1292,12 +1371,17 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                         
                         if complete is not None:
                             if not complete:
-                                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}冷静 @anyone (seconds of duration)\n参考：{reminder}冷静 @Harcic#8042 128")))
+                                if "@all" in order:
+                                    await actions.custom.set_group_whole_ban(group_id=event.group_id, enable=True)
+                                    complete = True
+                                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：已冷静。")))
+                                else:
+                                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}冷静 @anyone/@all (seconds of duration)\n参考：{reminder}冷静 @Harcic#8042 128")))
                             else:
                                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：已冷静，时长 {time114} 秒。")))
                     
                 except Exception as e:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}冷静 @anyone (seconds of duration)\n参考：{reminder}冷静 @Harcic#8042 128")))
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}冷静 @anyone/@all (seconds of duration)\n参考：{reminder}冷静 @Harcic#8042 128")))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
           
@@ -1405,32 +1489,11 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
         else:
             # 没有匹配到用户发送的任何关键字，进入二级响应
             # 1. 检查用户是否是想要切换预设
-            selected_preset_id = None
-            for preset_id, preset_data in presets.items():
-                if preset_data["name"] == order:
-                    selected_preset_id = preset_id
-                    break
-
-            if selected_preset_id:
-                # 将用户 ID 添加到所选预设的 uid 列表中
-                if "uid" not in presets[selected_preset_id]:
-                    presets[selected_preset_id]["uid"] = []
-                if event.user_id not in presets[selected_preset_id]["uid"]:
-                    presets[selected_preset_id]["uid"].append(event.user_id)
-
-                # 从其他预设中移除用户 ID
-                for preset_id, preset_data in presets.items():
-                    if preset_id != selected_preset_id and "uid" in preset_data:
-                        if event.user_id in preset_data["uid"]:
-                            presets[preset_id]["uid"].remove(event.user_id)
-
-                # 保存更新后的预设
-                presets_tool.write_presets(presets)
-                del cmc # 注销
-                cmc = ContextManager()
-                user_lists.clear()
-                
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(presets[selected_preset_id]["info"])))
+            presets, p_info, is_changed = presets_tool.change_presets(presets, order, event)
+            if is_changed:
+                # 清除ContextManager和user_lists中的单个用户上下文
+                cmc.del_context(event.user_id, event.group_id)
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(p_info)))
                 return 
 
 
@@ -1445,150 +1508,11 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 return
             
             # 3. 全都匹配不到，进入AI回复
-            MAX_MESSAGE_LENGTH = 3
             if len(order) < 2:  # 不响应小于两个字的废话
                 return
-            
-            url = ""
-            sended = False
-            sendedID = []
-            messages_for_node = []
-            enable_forward_msg_num = False
-            result = ""
-            
-            async def process_reply_message():
-                # 优先处理引用消息
-                nonlocal msg
-                if isinstance(event.message[0], Segments.Reply):
-                    content = await actions.get_msg(event.message[0].id)
-                    message = gen_message({"message": content.data["message"]})
-                    for i in message:
-                        if isinstance(i, Segments.Text):
-                            msg += f"{i.text} "
-
-            async def build_message_content():
-                new = []
-                # 处理引用消息中的内容
-                if isinstance(event.message[0], Segments.Reply):
-                    content = await actions.get_msg(event.message[0].id)
-                    message = gen_message({"message": content.data["message"]})
-                    for i in message:
-                        handle_content_item(i, new)
-                        
-                # 处理当前消息内容
-                for i in event.message:
-                    handle_content_item(i, new)
-                return new
-
-            def handle_content_item(item, container):
-                if isinstance(item, Segments.Text):
-                    container.append(Parts.Text(item.text.replace(reminder, "", 1)))
-                elif isinstance(item, Segments.Image):
-                    url = item.file if item.file.startswith("http") else item.url
-                    print(f"AI: URL位置 {replace_scheme_with_http(url)}")
-                    container.append(Parts.File.upload_from_url(replace_scheme_with_http(url)))
-                    print("AI: 有图")
-
-            async def handle_message_stream(response_stream, is_openai=True):
-                nonlocal result, sended, enable_forward_msg_num
-                for partial, r_type in response_stream:
-                    if is_openai:
-                        if r_type != 'message':
-                            user_lists = partial
-                            continue
-
-                    message = Segments.Text(str(partial))
-                    if enable_forward_msg_num:
-                        messages_for_node.append(message)
-                    else:
-                        if not sended:
-                            await actions.send(
-                                group_id=event.group_id,
-                                message=Manager.Message(Segments.Reply(event.message_id), message)
-                            )
-                        else:
-                            await actions.send(
-                                group_id=event.group_id,
-                                message=Manager.Message(message)
-                            )
-                        messages_for_node.append(message)
-                    
-                    if len(messages_for_node) > MAX_MESSAGE_LENGTH - 1 and not enable_forward_msg_num:
-                        enable_forward_msg_num = True
-
-                    if enable_forward_msg_num and len(messages_for_node) == MAX_MESSAGE_LENGTH + 1:
-                        sendedID.append(await actions.send(
-                            group_id=event.group_id,
-                            message=Manager.Message(Segments.Text(r"**[thinking]**"))
-                        ))
-
-                    sended = True
-                    result += str(partial) + '\n'
-
-            async def finalize_messages():
-                if enable_forward_msg_num:
-                    # 删除临时消息
-                    for msg_id in sendedID:
-                        await actions.del_message(msg_id.data.message_id) # 禁用消息连续撤回以防止QQ检测
-                    
-                    for m in range(len(messages_for_node)):
-                        messages_for_node[m] = Segments.CustomNode(
-                            str(event.self_id),
-                            bot_name,
-                            Manager.Message(messages_for_node[m])
-                        )
-                    
-                    # 发送合并转发
-                    if len(messages_for_node) > MAX_MESSAGE_LENGTH:
-                        await actions.send_group_forward_msg(
-                            group_id=event.group_id,
-                            message=Manager.Message(*messages_for_node)
-                        )
 
             try:
-                match EnableNetwork:
-                    case "Pixmap":
-                        new = await build_message_content()
-                        model = genai.GenerativeModel(
-                            model_name="gemini-2.0-flash-thinking-exp-01-21",
-                            generation_config=generation_config,
-                            system_instruction=sys_prompt or None,
-                        )
-                        response_stream = cmc.get_context(event.user_id, event.group_id).gen_content(Roles.User(*new))
-                        await handle_message_stream(response_stream, False)
-
-                    case "Normal" | "Net":
-                        model_name = "gpt-3.5-turbo-16k" if EnableNetwork == "Normal" else "gpt-4o-mini"
-                        msg = ""
-                        await process_reply_message()
-                        msg += order
-                        search = SearchOnline(
-                            sys_prompt, msg, user_lists, event.user_id, 
-                            model_name, bot_name, 
-                            config.others["openai_key"]
-                        )
-                        await handle_message_stream(search.Response())
-
-                    case "Ds":
-                        msg = ""
-                        await process_reply_message()
-                        msg += order
-                        search = deepseek(
-                            sys_prompt, msg, user_lists, event.user_id,
-                            "deepseek-chat", bot_name,
-                            config.others["deepseek_key"]
-                        )
-                        await handle_message_stream(search.Response())
-
-                result = result.rstrip()
-                await finalize_messages()
-                
-                if not sended:
-                    await actions.send(
-                        group_id=event.group_id,
-                        message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(result))
-                    )
-                    
+                cmc, user_lists, result = await AIbot.generate_response(EnableNetwork, cmc, sys_prompt, user_lists, event)
                 if gptsovitsoff == False:
                     """EdgeTTS 语音回复"""
                     TTSettings: dict = {}
@@ -1598,16 +1522,31 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                         else:             
                             TTSettings = dict(config.others["TTS"])
                     
-                    communicate_completed: bool = False
+                    audio_file_path = None
                     if TTSettings != {}:
-                        communicate_completed = await amain(result, TTSettings["voiceColor"], TTSettings["rate"], TTSettings["volume"], TTSettings["pitch"])
+                        audio_file_path = await amain(sanitize_for_tts(result), TTSettings.get("voiceColor", "zh-CN-XiaoyiNeural"), 
+                                                      TTSettings.get("rate", "+0%"), TTSettings.get("volume", "+0%"), TTSettings.get("pitch", "+0Hz"))
                     else:
                         print("EdgeTTS 配置文件不完整，或未配置，使用默认音色。")
-                        communicate_completed = await amain(result, "zh-CN-XiaoyiNeural", "+0%", "+0%", "+0Hz")
+                        audio_file_path = await amain(sanitize_for_tts(result), "zh-CN-XiaoyiNeural", "+0%", "+0%", "+0Hz")
 
-                    if communicate_completed and os.path.isfile(communicate_completed):
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Record(os.path.abspath(communicate_completed))))
-                        os.remove(communicate_completed)
+                    if audio_file_path and isinstance(audio_file_path, str) and os.path.isfile(audio_file_path):
+                        print(f"发送音频：{os.path.abspath(audio_file_path)}")
+                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Record(os.path.abspath(audio_file_path))))
+                        await asyncio.sleep(3)
+                        try:
+                            if os.path.exists(audio_file_path):
+                                os.remove(audio_file_path)
+                                print(f"删除音频 {os.path.basename(audio_file_path)} 成功。")
+                        except Exception:
+                            try:
+                                import gc
+                                gc.collect()  # 强制垃圾回收
+                                await asyncio.sleep(1)
+                                if os.path.exists(audio_file_path):
+                                    os.remove(audio_file_path)
+                            except Exception as e:
+                                print(f"强制删除缓存音频 {audio_file_path} 失败: {e}")
 
             except UnboundLocalError:
                 raise
@@ -1615,19 +1554,26 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(f"哎呀，你问的问题太复杂了，{bot_name}想不出来了 ┭┮﹏┭┮")))
             except Exception as e:
                 print(traceback.format_exc())
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(f"{type(e)}\n{url}\n{bot_name}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3")))
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(f"{type(e)}\n{bot_name}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3")))
       
-def help_message() -> str:
+def help_message(event) -> str:
     global EnableNetwork, bot_name, reminder, plugins_help
-    return f'''如何与{bot_name}交流( •̀ ω •́ )✧
-    注：对话前必须加上 {reminder} 噢！~
+    if isinstance(event, Events.GroupMessageEvent):
+        return f'''如何与{bot_name}交流( •̀ ω •́ )✧
+       注：对话前必须加上 {reminder} 噢！~
        {reminder}(任意问题，必填) —> {bot_name}回复
-       {reminder}读图{"（当前）" if EnableNetwork == "Pixmap" else ""} —> {bot_name}可以回复您发送的图片✅
-       {reminder}默认4{"（当前）" if EnableNetwork == "Net" else ""} —> {bot_name}更富有创造力的回复通道 🌟
-       {reminder}默认3.5{"（当前）" if EnableNetwork == "Normal" else ""} —> {bot_name}的快速回复通道🎈
-       {reminder}深度{"（当前）" if EnableNetwork == "Ds" else ""} —> 更加人性化和深度地回复问题✨{plugins_help}
+       {reminder}Gemini{"（当前）" if EnableNetwork == "GoogleGemini" else ""} —> {bot_name}切换到Google的多模态模型Gemini✅
+       {reminder}GPT-4{"（当前）" if EnableNetwork == "Net" else ""} —> {bot_name}切换到OpenAI的GPT4回复🌟
+       {reminder}GPT-3.5{"（当前）" if EnableNetwork == "GPT-3.5" else ""} —> {bot_name}切换到OpenAI最经典的模型回复🎈
+       {reminder}DeepSeek{"（当前）" if EnableNetwork == "Ds" else ""} —> {bot_name}切换到DeepSeek模型✨{plugins_help}
        {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮
        {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
+快来聊天吧(*≧︶≦)'''
+    elif isinstance(event, Events.PrivateMessageEvent):
+        return f'''如何与{bot_name}私聊( •̀ ω •́ )✧
+       (任意问题，必填) —> {bot_name}回复
+       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
+其余功能请到群聊中使用哦o((>ω< ))o
 快来聊天吧(*≧︶≦)'''
 
 Listener.run()

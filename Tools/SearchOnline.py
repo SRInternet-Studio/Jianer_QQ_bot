@@ -76,6 +76,6 @@ class network_gpt():
                 
         except Exception as e:
             print(traceback.format_exc())
-            yield self.user_lists, f"{type(e)}\n{self.bn}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", 'message'
+            yield f"{type(e)}\n{self.bn}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", 'message'
 
         

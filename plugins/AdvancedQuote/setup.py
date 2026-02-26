@@ -22,7 +22,7 @@ async def on_message(event, actions, Manager, Segments, os, gen_message):
                         imageurl = i.url
                     print(imageurl)
                     
-            quoteimage = await Quote.handle(event.message, actions, imageurl)
+            quoteimage = await Quote.handle(event.message, actions, imageurl, Manager, Segments)
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), quoteimage))
             os.remove("./temps/web_.png")
         else:

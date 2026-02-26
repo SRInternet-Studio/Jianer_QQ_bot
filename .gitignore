@@ -172,3 +172,4 @@ config.json.save
 plugins/CloudBlacklistConsole/blacklist_personal.json
 data/
 lgr/
+prerequisites/current.json

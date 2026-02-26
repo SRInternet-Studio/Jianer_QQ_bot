@@ -2,6 +2,7 @@ import os
 from Hyper import Segments
 from Hyper.Events import *
 from Tools.site_catch import Catcher
+from Tools import tools as t
 
 # 生成图像的主要函数
 async def get_image(quote, ava_url, name, uin):
@@ -22,7 +23,7 @@ async def get_image(quote, ava_url, name, uin):
     return res
 
 # 处理消息的函数
-async def handle(message, actions, images=None) -> Segments.Image:
+async def handle(message, actions, images=None, Manager=None, Segments=None) -> Segments.Image:
     if isinstance(message[0], Segments.Reply):
         msg_id = message[0].id
     else:
@@ -34,7 +35,9 @@ async def handle(message, actions, images=None) -> Segments.Image:
     uin = content.data["sender"]["user_id"]
     message = content.data["message"]
     message = gen_message({"message": message})
-    text = str(message).replace("[图片]", "")
+    if hasattr(t, "replace_at_with_nickname"):
+        text = await t.replace_at_with_nickname(message, Manager, Segments, actions)
+    text = str(text).replace("[图片]", "")
     if images is not None:
         print("有图")
         await get_image(text, images, name, uin)  # 传递 uin 参数
