@@ -1,6 +1,4 @@
-asyncio
-datetime
-emoji
+﻿emoji
 openai>=1.35.12
 requests
 aiohttp
@@ -20,3 +18,5 @@ flask-cors
 flask-socketio
 playwright
 pymysql
+pydantic
+playwright
