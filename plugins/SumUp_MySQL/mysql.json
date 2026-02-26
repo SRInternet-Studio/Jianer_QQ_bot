@@ -1,0 +1,7 @@
+{
+    "host": "127.0.0.1",
+    "user": "root",
+    "password": "password",
+    "database": "jianer_chat_db",
+    "port": 3306
+}
