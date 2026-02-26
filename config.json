@@ -1,0 +1,44 @@
+{
+    "owner": [
+      0
+    ],
+    "black_list": [
+    ],
+    "silents": [
+    ],
+    "Connection": {
+      "mode": "FWS",
+      "host": "127.0.0.1",
+      "port": 5004,
+      "listener_host": "127.0.0.1",
+      "listener_port": 5003,
+      "retries": 5,
+      "satori_token": ""
+    },
+    "Log_level": "DEBUG",
+    "protocol": "OneBot",
+    "Others": {
+      "gemini_key": "",
+      "openai_key": "",
+      "deepseek_key": "",
+      "default_mode": "deepseek",
+      "bot_name": "简儿",
+      "bot_name_en": "Jianer",
+      "ROOT_User": [""],
+      "Auto_approval": [""],
+      "reminder": "~",
+      "slogan": "简单 可爱 个性 全知",
+      "TTS": {
+        "voiceColor": "zh-CN-XiaoyiNeural",
+        "rate": "+0%",
+        "volume": "+0%",
+        "pitch": "+0Hz"
+      },
+      "compliment": [
+        "啊！老……老公，别怎么说啦，人……人家好害羞的啦，人家还会努力的(*ᴗ͈ˬᴗ͈)ꕤ*.ﾟ",
+        "啊~老公~你不要这么夸人家啦~〃∀〃",
+        "唔……谢……谢谢老公啦🥰~"
+      ]
+    },
+    "uin": 0
+}
