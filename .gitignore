@@ -10,7 +10,6 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -170,6 +169,5 @@ lgr/appsettings.json
 lgr/keystore.json
 config.json.save
 plugins/CloudBlacklistConsole/blacklist_personal.json
-data/
 lgr/
 prerequisites/current.json
