@@ -1,5 +1,9 @@
 # 更新日志
 
+## JianerNext4 Dev-20260228a
+
+- 优化了一些问题.
+
 ## JianerNext4 Dev-20260116a
 
 ### 新增

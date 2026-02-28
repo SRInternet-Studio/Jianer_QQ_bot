@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 from google import genai
 from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
 
@@ -13,4 +14,4 @@ response = client.models.generate_content(model='gemini-2.0-flash-exp',
         tools=[google_search_tool],
         response_modalities=["TEXT"],
     ))
-print(response.text)
+project_log(response.text)

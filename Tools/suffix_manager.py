@@ -1,7 +1,9 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import json
 import os
 import re
 import random
+import time
 
 class SuffixManager:
     def __init__(self, config_file="suffix_config.json"):
@@ -13,13 +15,39 @@ class SuffixManager:
         self.load_config()
 
     def load_config(self):
-        if os.path.exists(self.config_file):
+        if not os.path.exists(self.config_file):
+            self.save_config()
+            return
+
+        try:
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                raw = f.read()
+
+            if not raw.strip():
+                self.config = {"global_suffix": "", "user_suffixes": {}}
+                self.save_config()
+                return
+
+            loaded = json.loads(raw)
+            if not isinstance(loaded, dict):
+                raise ValueError("配置文件根节点必须是对象")
+
+            loaded.setdefault("global_suffix", "")
+            loaded.setdefault("user_suffixes", {})
+            if not isinstance(loaded.get("user_suffixes"), dict):
+                loaded["user_suffixes"] = {}
+
+            self.config = loaded
+        except Exception as e:
             try:
-                with open(self.config_file, "r", encoding="utf-8") as f:
-                    self.config = json.load(f)
-            except Exception as e:
-                print(f"SuffixManager: 加载配置文件失败: {e}")
-        else:
+                if os.path.exists(self.config_file) and os.path.getsize(self.config_file) > 0:
+                    backup_path = f"{self.config_file}.bak.{int(time.time())}"
+                    os.replace(self.config_file, backup_path)
+            except Exception:
+                pass
+
+            project_log(f"SuffixManager: 加载配置文件失败: {e}", level=LOG_LEVELS.ERROR)
+            self.config = {"global_suffix": "", "user_suffixes": {}}
             self.save_config()
 
     def save_config(self):
@@ -27,7 +55,7 @@ class SuffixManager:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            print(f"SuffixManager: 保存配置文件失败: {e}")
+            project_log(f"SuffixManager: 保存配置文件失败: {e}", level=LOG_LEVELS.ERROR)
 
     def set_global_suffix(self, suffix):
         self.config["global_suffix"] = suffix

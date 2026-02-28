@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import subprocess, gc
 from plugins.RunCommand.execute_command import execute_command
 from plugins.RunCommand.DANGEROUS_PATTERNS import DANGEROUS_PATTERNS
@@ -14,7 +15,7 @@ async def on_message(event, actions, Manager, Segments, re, order, Super_User, R
         command_lower = command.lower()
         
         # 日志记录
-        print(f"检查并执行命令: {command}")
+        project_log(f"检查并执行命令: {command}")
         r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 执行了以下命令: \n {command}'''
         await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
         
@@ -24,10 +25,10 @@ async def on_message(event, actions, Manager, Segments, re, order, Super_User, R
                 re.compile(pattern)
                 if re.search(pattern, command_lower):
                     is_dangerous = True
-                    print(f"检测到危险命令: {pattern}")
+                    project_log(f"检测到危险命令: {pattern}")
                     break
             except re.error as e:
-                print(f"✗ 无效屏蔽词条: {pattern}\n   错误: {e}")
+                project_log(f"✗ 无效屏蔽词条: {pattern}\n   错误: {e}", level=LOG_LEVELS.ERROR)
         
         if is_dangerous:
             await actions.send(group_id=event.group_id, 
@@ -69,7 +70,7 @@ async def get_user_info(uid, Manager, actions):
             raise ValueError(f"{uid} is not a valid user ID.")
         return True, info.data.raw
     except Exception as e:
-        print(f"tools: 获取用户 {uid} 信息失败: {e}")
+        project_log(f"tools: 获取用户 {uid} 信息失败: {e}", level=LOG_LEVELS.ERROR)
         return False, str(uid)
     
 async def get_user_nickname(uid, Manager, actions) -> str:

@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import openai, time
 import traceback
 from Tools.AI_tools import *
@@ -35,7 +36,7 @@ class dsr114():
                 user_input = [user_input[0]] + user_input[num_to_remove + 1:] 
 
             user_input.append({"role": "user", "content": input_data})
-            print(str(self.uid) + " 的上下文：" + str(len(user_input)))
+            project_log(str(self.uid) + " 的上下文：" + str(len(user_input)))
 
             openai.api_key = self.key
             openai.base_url = "https://api.deepseek.com/"
@@ -53,13 +54,13 @@ class dsr114():
 
                 splitter = StreamSplitter()
                 for message, _ in splitter.split_stream(chat_completion, 'openai'):
-                    # print(f"[{time.time()}] RESPONSE: {repr(message)}")
+                    # project_log(f"[{time.time()}] RESPONSE: {repr(message)}")
                     yield message, 'message'
 
                 try: # 仅在使用 reasoner 模型时需要
                     reasoning = chat_completion.choices[0].message.model_extra['reasoning_content']
                 except Exception:
-                    # print("无法使用思考")
+                    # project_log("无法使用思考")
                     reasoning = ""
 
                 user_input.append({"role": "assistant", "content": splitter.full_content})
@@ -67,7 +68,7 @@ class dsr114():
                 yield user_lists, 'user_lists'
 
             except openai.NotFoundError as e:
-                print(f"OpenAI API Error: {e}")
+                project_log(f"OpenAI API Error: {e}", level=LOG_LEVELS.ERROR)
                 yield f"模型 '{mode}' 无法找到. 请检查模型名称是否正确，以及你的API KEY是否有权限访问该模型。\
 {self.bn}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", 'message'
 
@@ -80,10 +81,10 @@ class dsr114():
                     raise 
 
             except openai.BadRequestError as e:
-                print(f"Deepseek bad request Error: {e}")
+                project_log(f"Deepseek bad request Error: {e}", level=LOG_LEVELS.ERROR)
                 yield f"与 DeepSeek 通信出现问题: {e}。\
 {self.bn}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", 'message'
 
         except Exception as e:
-            print(traceback.format_exc())
+            project_log(traceback.format_exc(), level=LOG_LEVELS.ERROR)
             yield f"{type(e)}\n{self.bn}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", 'message'

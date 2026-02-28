@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import openai, time
 import traceback
 from Tools.AI_tools import *
@@ -32,7 +33,7 @@ class network_gpt():
             user_input.append({"role": "system","content": self.prompt})
             user_input.append({"role": "user", "content": input_data})
 
-            print(str(self.uid) + " 的上下文：" + str(len(user_input)))
+            project_log(str(self.uid) + " 的上下文：" + str(len(user_input)))
 
             # client = OpenAI(
             #     # This is the default and can be omitted
@@ -48,7 +49,7 @@ class network_gpt():
             openai.base_url = "https://free.v36.cm/v1/"
             openai.default_headers = {"x-foo": "true"}  
 
-           # print(f"\n{user_input}\n")
+           # project_log(f"\n{user_input}\n")
 
             try:
                 chat_completion = openai.chat.completions.create(
@@ -59,7 +60,7 @@ class network_gpt():
 
                 splitter = StreamSplitter()
                 for message, _ in splitter.split_stream(chat_completion, 'openai'):
-                    print(f"[{time.time()}] YIELD: {repr(message)}")
+                    project_log(f"[{time.time()}] YIELD: {repr(message)}")
                     yield message, 'message'
                     
                 user_input.append({"role": "assistant", "content": splitter.full_content})
@@ -75,7 +76,7 @@ class network_gpt():
                     raise 
                 
         except Exception as e:
-            print(traceback.format_exc())
+            project_log(traceback.format_exc(), level=LOG_LEVELS.ERROR)
             yield self.user_lists, f"{type(e)}\n{self.bn}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", 'message'
 
         

@@ -1,4 +1,4 @@
-﻿emoji
+emoji
 openai>=1.35.12
 requests
 aiohttp
@@ -16,4 +16,9 @@ edge_tts
 pyGithub
 pydantic
 playwright
-
+numpy>=2.0.0
+pyecharts>=2.0.0
+aiofiles>=23.2.1
+networkx
+jieba
+pandas

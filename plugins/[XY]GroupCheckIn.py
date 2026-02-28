@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 from Hyper import Configurator
 import json
 import os
@@ -40,9 +41,9 @@ class CheckInManager:
             self.page = None
             self.playwright = None
         except Exception as e:
-            print(f"[签到系统]初始化失败: {e}")
-            print(f"[签到系统]当前工作目录: {os.getcwd()}")
-            print(f"[签到系统]配置路径: {os.path.abspath('./data/check_in/')}")
+            project_log(f"[签到系统]初始化失败: {e}", level=LOG_LEVELS.ERROR)
+            project_log(f"[签到系统]当前工作目录: {os.getcwd()}")
+            project_log(f"[签到系统]配置路径: {os.path.abspath('./data/check_in/')}")
             raise e
 
     def _load_custom_commands(self):
@@ -51,7 +52,7 @@ class CheckInManager:
                 with open(self.command_file, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
-                print(f"[签到系统]加载自定义签到指令失败: {e}")
+                project_log(f"[签到系统]加载自定义签到指令失败: {e}", level=LOG_LEVELS.ERROR)
         return ["签到"]
 
     def _save_custom_commands(self):
@@ -59,7 +60,7 @@ class CheckInManager:
             with open(self.command_file, "w", encoding="utf-8") as f:
                 json.dump(self.custom_commands, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[签到系统]保存自定义签到指令失败: {e}")
+            project_log(f"[签到系统]保存自定义签到指令失败: {e}", level=LOG_LEVELS.ERROR)
 
     def add_command(self, cmd: str) -> bool:
         cmd = cmd.strip()
@@ -87,7 +88,7 @@ class CheckInManager:
                 os.makedirs(os.path.dirname(config_path), exist_ok=True)
                 with open(config_path, "w", encoding="utf-8") as f:
                     json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
-                print(f"[签到系统]已创建默认配置文件: {config_path}")
+                project_log(f"[签到系统]已创建默认配置文件: {config_path}")
             with open(config_path, "r", encoding="utf-8") as f:
                 loaded_config = json.load(f)
                 for key, value in DEFAULT_CONFIG.items():
@@ -95,7 +96,7 @@ class CheckInManager:
                         loaded_config[key] = value
                 return loaded_config
         except Exception as e:
-            print(f"[签到系统]配置文件操作失败: {e}")
+            project_log(f"[签到系统]配置文件操作失败: {e}", level=LOG_LEVELS.ERROR)
             return DEFAULT_CONFIG
 
     def _get_user_data_path(self, user_id: str) -> str:
@@ -135,7 +136,7 @@ class CheckInManager:
             self.daily_data = {"count": 0, "users": []}
             self.last_date = today
             self._save_daily_data()
-            print(f"[签到系统]创建新的每日签到数据: {today}")
+            project_log(f"[签到系统]创建新的每日签到数据: {today}")
             
         return self.daily_data
 
@@ -152,7 +153,7 @@ class CheckInManager:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.daily_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[签到系统]保存每日数据出错: {e}")
+            project_log(f"[签到系统]保存每日数据出错: {e}", level=LOG_LEVELS.ERROR)
 
     def _create_default_template(self, template_path):
         try:
@@ -265,10 +266,10 @@ class CheckInManager:
             
             with open(template_path, "w", encoding="utf-8") as f:
                 f.write(default_template)
-            print(f"[签到系统]已创建默认模板文件: {template_path}")
+            project_log(f"[签到系统]已创建默认模板文件: {template_path}")
             
         except Exception as e:
-            print(f"[签到系统]创建默认模板失败: {e}")
+            project_log(f"[签到系统]创建默认模板失败: {e}", level=LOG_LEVELS.ERROR)
             raise e
 
     def toggle_mode(self):
@@ -290,7 +291,7 @@ class CheckInManager:
             elif self.page is None:
                 self.page = await self.browser.new_page(viewport={"width": 800, "height": 600})
         except Exception as e:
-            print(f"[签到系统]浏览器启动失败: {e}")
+            project_log(f"[签到系统]浏览器启动失败: {e}", level=LOG_LEVELS.ERROR)
             raise
 
     async def close_browser(self):
@@ -302,7 +303,7 @@ class CheckInManager:
             if self.playwright:
                 await self.playwright.stop()
         except Exception as e:
-            print(f"[签到系统]关闭浏览器失败: {e}")
+            project_log(f"[签到系统]关闭浏览器失败: {e}", level=LOG_LEVELS.ERROR)
 
     async def generate_image(self, user_id, nickname, rewards, hitokoto_text):
         try:
@@ -341,7 +342,7 @@ class CheckInManager:
                 await browser.close()
                 return img_path
         except Exception as e:
-            print(f"[签到系统]生成图片失败: {e}")
+            project_log(f"[签到系统]生成图片失败: {e}", level=LOG_LEVELS.ERROR)
             raise Exception(f"生成签到图片失败: {str(e)}")
         finally:
             if self.browser_lock.locked():
@@ -359,11 +360,11 @@ class CheckInManager:
                     if current_time - file_time > 3600:
                         try:
                             os.remove(file_path)
-                            print(f"[签到系统]已清理过期图片: {filename}")
+                            project_log(f"[签到系统]已清理过期图片: {filename}")
                         except Exception as e:
-                            print(f"[签到系统]清理过期图片失败 {filename}: {e}")
+                            project_log(f"[签到系统]清理过期图片失败 {filename}: {e}", level=LOG_LEVELS.ERROR)
         except Exception as e:
-            print(f"[签到系统]清理过期图片时出错: {e}")
+            project_log(f"[签到系统]清理过期图片时出错: {e}", level=LOG_LEVELS.ERROR)
 
     def check_in(self, user_id: str) -> dict:
         user_id = str(user_id)
@@ -522,7 +523,7 @@ async def on_message(event, actions, Manager, Segments):
                 hitokoto_data = hitokoto_response.json()
                 hitokoto_text = f"{hitokoto_data['hitokoto']} —— {hitokoto_data.get('from_who', '未知')}, {hitokoto_data.get('from', '未知')}"
         except Exception as e:
-            print(f"[签到系统]获取一言失败: {e}")
+            project_log(f"[签到系统]获取一言失败: {e}", level=LOG_LEVELS.ERROR)
             hitokoto_text = "一言获取失败..."
 
         rewards = result["rewards"]
@@ -536,7 +537,7 @@ async def on_message(event, actions, Manager, Segments):
                     hitokoto_text
                 )
                 
-                print(f"[签到系统]准备发送图片: {img_path}")
+                project_log(f"[签到系统]准备发送图片: {img_path}")
                 
                 await actions.send(
                     group_id=event.group_id,
@@ -549,12 +550,12 @@ async def on_message(event, actions, Manager, Segments):
                 try:
                     if os.path.exists(img_path):
                         os.remove(img_path)
-                        print(f"[签到系统]已清理临时文件: {img_path}")
+                        project_log(f"[签到系统]已清理临时文件: {img_path}")
                 except Exception as e:
-                    print(f"[签到系统]清理文件失败: {str(e)}")
+                    project_log(f"[签到系统]清理文件失败: {str(e)}", level=LOG_LEVELS.ERROR)
                     
             except Exception as e:
-                print(f"[签到系统]发送图片失败: {str(e)}")
+                project_log(f"[签到系统]发送图片失败: {str(e)}", level=LOG_LEVELS.ERROR)
                 check_in_manager.config["签到模式"] = "text"
         
         if check_in_manager.config["签到模式"] == "text":
@@ -585,6 +586,6 @@ async def on_message(event, actions, Manager, Segments):
         )
         return True
 
-print("[Xiaoyi_QQ]签到插件已加载")
-print("Version: 1.2.3")
-print("Author: Xiaoyi")
+project_log("[Xiaoyi_QQ]签到插件已加载")
+project_log("Version: 1.2.3")
+project_log("Author: Xiaoyi")

@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import os
 import requests
 import shutil
@@ -18,23 +19,23 @@ async def on_message(event, actions: Listener.Actions, Manager, Segments,reminde
                 hub_match = re.search(r'-hub\s+(\S+)', segment.text)
                 if hub_match:
                     hub_content = hub_match.group(1)
-                    print(f"提取到hub内容: {hub_content}")
+                    project_log(f"提取到hub内容: {hub_content}")
                     break
         
         if hub_content:
             content = await actions.get_msg(event.message[0].id)
-            print(content.data)
+            project_log(content.data)
             message = gen_message({"message": content.data["message"]})
             # 处理图片部分
             imageurl = None
             for i in message:
                 if isinstance(i, Segments.Image):
-                    print("应该有图")
+                    project_log("应该有图")
                     if i.file.startswith("http"):
                         imageurl = i.file
                     else:
                         imageurl = i.url
-                    print(imageurl)
+                    project_log(imageurl)
             
             if imageurl:
                 # 添加到HUB
@@ -65,15 +66,15 @@ def download_rename_image(image_url, new_name_without_ext, target_dir):
                     original_ext = '.jpg' #获取不到后缀名TM用jpg得了！
             new_filename = f"{new_name_without_ext}{original_ext}"
             # 下载img
-            print(f"正在下载图片: {image_url}")
+            project_log(f"正在下载图片: {image_url}")
             response = requests.get(image_url, stream=True)
             response.raise_for_status()
             # 保存img
             new_path = os.path.join(target_dir, new_filename)
             with open(new_path, 'wb') as out_file:
                 shutil.copyfileobj(response.raw, out_file)
-            print(f"图片已成功保存为: {new_path}")
+            project_log(f"图片已成功保存为: {new_path}")
             return new_path
         except Exception as e:
-            print(f"操作失败: {e}")
+            project_log(f"操作失败: {e}", level=LOG_LEVELS.ERROR)
             return None

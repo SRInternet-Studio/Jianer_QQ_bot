@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import os, json, datetime
 # 初始化预设常量 
 
@@ -19,10 +20,10 @@ def read_presets():
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        print(f"错误：配置文件 '{CONFIG_FILE}' 未找到。")
+        project_log(f"错误：配置文件 '{CONFIG_FILE}' 未找到。", level=LOG_LEVELS.ERROR)
         return {} 
     except json.JSONDecodeError as e:
-        print(f"JSON 解码错误：{e}")
+        project_log(f"JSON 解码错误：{e}", level=LOG_LEVELS.ERROR)
         return {} 
 
 def write_presets(data):
@@ -59,7 +60,7 @@ def gen_presets(uid, bot_name, event_user):
                 sys_prompt = f.read()
                 current_preset = preset_data["name"]
                 
-                print(f"[{datetime.datetime.now()}] '{current_preset}' 已载入系统预设")
+                project_log(f"[{datetime.datetime.now()}] '{current_preset}' 已载入系统预设")
     
     if sys_prompt == None:
         preset_path = os.path.join(PRESET_DIR, presets[NORMAL_PRESET]["path"])

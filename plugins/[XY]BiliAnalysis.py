@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 from Hyper import Configurator
 import re
 import httpx
@@ -259,7 +260,7 @@ UP主：{author_name}
             return True
             
     except Exception as e:
-        print(f"B站视频解析出错: {e}")
+        project_log(f"B站视频解析出错: {e}", level=LOG_LEVELS.ERROR)
         await actions.send(
             group_id=event.group_id,
             message=Manager.Message(
@@ -268,4 +269,4 @@ UP主：{author_name}
         )
         return True
 
-print("[Xiaoyi_QQ]B站视频解析插件已加载")
+project_log("[Xiaoyi_QQ]B站视频解析插件已加载")

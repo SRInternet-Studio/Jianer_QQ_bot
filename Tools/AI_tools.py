@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 import re
 import time
 import random
@@ -71,7 +72,7 @@ class StreamSplitter:
             for r in self.check_and_split(True):
                 yield r, self.enable_forward_msg_num
                 
-            print(f"[{datetime.now()}] FULL_CONTENT: {repr(self.full_content)}")
+            project_log(f"[{datetime.now()}] FULL_CONTENT: {repr(self.full_content)}")
         except:
             raise
     
@@ -111,7 +112,7 @@ class StreamSplitter:
                     for msg in messages[1:-1] 
                 ) + messages[-1] 
                     
-        print(f"[{time.time()}] BUFFER: {repr(self.buffer)}， SPLIT_STR {repr("string.none" if self.split_str == "" else self.split_str)}")
+        project_log(f"[{time.time()}] BUFFER: {repr(self.buffer)}， SPLIT_STR {repr("string.none" if self.split_str == "" else self.split_str)}")
         
         if not self.is_balanced(message):
             self.buffer = message + self.buffer

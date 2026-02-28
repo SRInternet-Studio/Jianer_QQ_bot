@@ -1,7 +1,8 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import asyncio
 from typing import Tuple, Optional
 from Hyper import Configurator
-import plugins.CloudBlacklistConsole.pathmagic # 保证寻找本地文件
+import plugins.d_CloudBlacklistConsole.pathmagic # 保证寻找本地文件
 
 from run import main
 import app.services.config_service as config_service
@@ -105,5 +106,5 @@ async def get_user_info(uid, Manager, actions) -> Tuple[bool, Optional[dict]]:
         info = Manager.Ret.fetch(await actions.custom.get_stranger_info(user_id=uid, no_cache=True))
         return True, info.data.raw
     except Exception as e:
-        print(f"tools: 获取用户 {uid} 信息失败: {e}")
+        project_log(f"tools: 获取用户 {uid} 信息失败: {e}", level=LOG_LEVELS.ERROR)
         return False, str(uid)

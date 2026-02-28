@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 from Hyper import Configurator
 Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
 import aiohttp, os
@@ -34,7 +35,7 @@ async def on_message(event, actions, Manager, Segments, order, time, cooldowns1,
                 for TagIndex in range(len(tags)):
                     url_setted = url_setted + "&tag=" + tags[TagIndex]
 
-                print(url_setted)
+                project_log(url_setted)
 
                 try:
                     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), timeout=aiohttp.ClientTimeout(10)) as session:
@@ -43,10 +44,10 @@ async def on_message(event, actions, Manager, Segments, order, time, cooldowns1,
                 except Exception as e:
                     request = "Failed\n" + traceback.format_exc()
 
-                print("请求成功")
+                project_log("请求成功")
 
                 if "Failed" in request:
-                    print(request)
+                    project_log(request)
                     emessage = f'''{bot_name}无法访问接口了，请稍后重试 ε(┬┬﹏┬┬)3'''
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(emessage)))
                     
@@ -84,7 +85,7 @@ AI参与：{'是' if data['aiType'] == 1 else '否'}
 
                             os.remove(url)
                         # get_returned = await actions.get_msg(image_id.data.message_id)
-                        # print(get_returned.data)
+                        # project_log(get_returned.data)
                         else:
                             await actions.del_message(selfID.data.message_id)
                             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"你要的图片实在太涩啦！{bot_name}都不敢看了 (⓿_⓿)")))

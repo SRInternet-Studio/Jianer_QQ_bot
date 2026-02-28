@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 from PIL import Image
 from typing import Tuple, Optional, Any
 import platform
@@ -28,7 +29,7 @@ async def amain(TEXT, voiceColor, rate, volume, pitch):
         await communicate.save(output_path)
         return output_path
     except Exception as e:
-        print(e)
+        project_log(e)
         return False
 
 def seconds_to_hms(total_seconds):
@@ -45,7 +46,7 @@ def verfiy_pixiv(file_path):
         img.close()
         return True
     except (IOError, SyntaxError) as e:
-        print(f"Error: {e}")
+        project_log(f"Error: {e}", level=LOG_LEVELS.ERROR)
         return False
 
 def get_system_info():
@@ -75,7 +76,7 @@ def get_system_info():
             gpu_count = 0
             gpu_usage = []
     except Exception as e:
-        print(f"Error getting GPU info: {e}")
+        project_log(f"Error getting GPU info: {e}", level=LOG_LEVELS.ERROR)
         gpu_count = 0
         gpu_usage = []
 
@@ -123,7 +124,7 @@ async def get_user_info(uid, Manager, actions) -> Tuple[bool, Optional[dict]]:
             
         return True, info.data.raw
     except Exception as e:
-        print(f"tools: 获取用户 {uid} 信息失败: {e}")
+        project_log(f"tools: 获取用户 {uid} 信息失败: {e}", level=LOG_LEVELS.ERROR)
         return False, str(uid)
     
 async def get_user_nickname(uid, Manager, actions) -> str:

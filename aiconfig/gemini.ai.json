@@ -1,0 +1,9 @@
+{
+  "FriendlyName": "gemini",
+  "Model": "gemini-3-flash-preview",
+  "ResponseType": "openai",
+  "ApiKey": "sk-Om33ZTOnFP9FRyJ41tVuode7nGteCiF4fr315e5zsNH1Ofr4",
+  "BaseUrl": "https://rinkoai.com/v1",
+  "Temperature": 0.7,
+  "MaxTokens": 8192
+}

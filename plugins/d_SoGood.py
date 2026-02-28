@@ -2,6 +2,8 @@ import asyncio
 import random
 import time
 import httpx
+import os
+import sqlite3
 from random import randint
 import dataclasses
 import json
@@ -34,9 +36,49 @@ class UserInfo:
     def build(cls) -> "UserInfo":
         return cls(randint(0, 100), int(time.time()))
 
-users: dict[str, UserInfo] = {}
 with open("./assets/quick.json", "r", encoding="utf-8") as f:
     words = json.load(f)["ele"]
+
+DB_PATH = os.path.join(".", "data", "sogood.db")
+
+def _connect():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    return conn
+
+def _ensure_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sogood_users (
+                uin TEXT PRIMARY KEY,
+                goodness INTEGER NOT NULL,
+                ts INTEGER NOT NULL
+            );
+            """
+        )
+
+def _load_user(uin: str):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT goodness, ts FROM sogood_users WHERE uin = ?;",
+            (str(uin),),
+        ).fetchone()
+        if not row:
+            return None
+        return UserInfo(int(row[0]), int(row[1]))
+
+def _save_user(uin: str, info: UserInfo):
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sogood_users (uin, goodness, ts) VALUES (?, ?, ?);",
+            (str(uin), int(info.goodness), int(info.time)),
+        )
+
+_ensure_db()
 
 
 async def on_message(event, actions, Manager, Events: Events, Segments, reminder):
@@ -53,13 +95,15 @@ async def on_message(event, actions, Manager, Events: Events, Segments, reminder
             else:
                 return
 
-            if str(uin) not in users.keys():
-                users[str(uin)] = UserInfo.build()
+            info = _load_user(str(uin))
+            if info is None:
+                info = UserInfo.build()
+                _save_user(str(uin), info)
 
             msg = Manager.Message(
                 Segments.At(uin),
                 Segments.Text(
-                    f" {name}今天的分数: {users[str(uin)].goodness}\n评级: {users[str(uin)].level}")
+                    f" {name}今天的分数: {info.goodness}\n评级: {info.level}")
             )
 
             await actions.send(

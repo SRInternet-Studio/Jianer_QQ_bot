@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 from playwright.async_api import async_playwright
 import os
 
@@ -6,7 +7,7 @@ async def capture_screenshot(url, output_path_base, extension="png", timeout=500
         return ""
     
     async with async_playwright() as p:
-        print(f"capturing {url}......")
+        project_log(f"capturing {url}......")
         images_num = 0
         output_path = f"{os.path.abspath(output_path_base)}_{images_num}.{extension}"
         while os.path.exists(output_path):
@@ -37,7 +38,7 @@ async def capture_full_page_screenshot(url, output_path_base, extension="png", t
         return ""
     
     async with async_playwright() as p:
-        print(f"capturing {url} (full page)......")
+        project_log(f"capturing {url} (full page)......")
         images_num = 0
         output_path = f"{os.path.abspath(output_path_base)}_{images_num}.{extension}"
         while os.path.exists(output_path):

@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import asyncio
 from playwright.async_api import async_playwright
 
@@ -40,7 +41,7 @@ class Catcher:
                 height = await self.page.evaluate("document.body.scrollHeight")
                 await self.page.set_viewport_size({"width": 1080, "height": int(height)})
             except Exception as e:
-                print(f"获取页面高度失败: {e}")
+                project_log(f"获取页面高度失败: {e}", level=LOG_LEVELS.ERROR)
                 await self.page.set_viewport_size({"width": 1080, "height": 720}) # 设置默认高度
         else:
             await self.page.set_viewport_size({"width": size[0], "height": size[1]})

@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 from Hyper import Segments
 from Hyper.Events import *
 from PIL import Image, ImageDraw, ImageFont
@@ -17,7 +18,7 @@ def replace_scheme_with_http(url: str) -> str:
 
 # 从 URL 打开图像的函数
 def open_from_url(url: str):
-    print(url)
+    project_log(url)
     return Image.open(BytesIO(httpx.get(replace_scheme_with_http(url)).content))
 
 # 判断是否是 Emoji 的函数
@@ -52,7 +53,7 @@ def render_emoji(char, font):
 # 生成图像的主要函数
 async def get_image(quote, ava_url, name, uin):
     if str(uin) == "1348472639":
-        print("3803")
+        project_log("3803")
         mask_path = "assets/quote/maskrbc.png"
     else:
         mask_path = "assets/quote/mask.png"
@@ -127,7 +128,7 @@ async def handle(message, actions, images=None) -> Segments.Image:
     message = gen_message({"message": message})
     text = str(message).replace("[图片]", "")
     if images is not None:
-        print("有图")
+        project_log("有图")
         await get_image(text, images, name, uin)  # 传递 uin 参数
     else:
         await get_image(text, f"http://q2.qlogo.cn/headimg_dl?dst_uin={uin}&spec=640", name, uin)  # 传递 uin 参数

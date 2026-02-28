@@ -1,4 +1,5 @@
-from plugins.Akintor.GameSession import *
+from Tools.log_helper import project_log, LOG_LEVELS
+from plugins.d_Akintor.GameSession import *
 from asyncio import sleep
 from datetime import datetime, timedelta
 import traceback
@@ -69,7 +70,7 @@ async def on_message(event, Events, actions, Manager, Segments, reminder):
                 await handle_timeout(event, actions, Manager, Segments)  
             except Exception as e:
                 await actions.send(group_id=gid,message=Manager.Message(Segments.Text(f'服务器出问题了，一会再来玩吧\n{e}')))
-                print(f"Akintor error:\n{traceback.format_exc()}")
+                project_log(f"Akintor error:\n{traceback.format_exc()}", level=LOG_LEVELS.ERROR)
         return True
     
     else:

@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 from typing import Union
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold, FunctionDeclaration
@@ -25,17 +26,17 @@ class Parts:
 
         @classmethod
         def upload_from_url(cls, url: str):
-            print(url)
+            project_log(url)
             response = httpx.get(url)
             path = f"./temps/google_{len(response.content)}_{len(url)}"
             with open(path, "wb") as f:
                 f.write(response.content)
 
             if "png" in url:
-                print("png in file")
+                project_log("png in file")
                 file = genai.upload_file(path, mime_type='image/png')
             else:
-                print("jpg in file")
+                project_log("jpg in file")
                 file = genai.upload_file(path, mime_type='image/jpeg')
             return cls(file)
 
@@ -118,7 +119,7 @@ class Context:
             
             
             #  config={'response_mime_type': 'application/json', 'response_schema': list[Schema],}
-            # print(content.res())
+            # project_log(content.res())
             # res = g_c.send_message(content.res(), safety_settings=self.safety)
             # del g_c
             
@@ -126,16 +127,16 @@ class Context:
             splitter = StreamSplitter()
             
             for message, enable_forward_msg_num in splitter.split_stream(res):
-                print(f"[{datetime.datetime.now()}] RESPONSE: {repr(message)}")
+                project_log(f"[{datetime.datetime.now()}] RESPONSE: {repr(message)}")
                 yield message, enable_forward_msg_num 
             
             # 添加到历史记录
             self.history.append(Roles.Model(Parts.Text(splitter.full_content)))
-            # print(splitter.full_content)
+            # project_log(splitter.full_content)
             
         except Exception as e:
             self.history = self.history[:len(self.history) - 1]
-            print(f"GoogleAI error: {e}")
+            project_log(f"GoogleAI error: {e}", level=LOG_LEVELS.ERROR)
             if any(keyword in str(traceback.format_exc()) for keyword in ["finish_reason: SAFETY", "safety_ratings"]):
                 yield "你发送的消息违规啦！快住嘴 (⓿_⓿)", 0
             else:

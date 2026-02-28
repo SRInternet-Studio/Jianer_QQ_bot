@@ -1,6 +1,16 @@
 import os
 import json
 from pathlib import Path
+import sys
+
+try:
+    PROJECT_ROOT_FOR_IMPORT = Path(__file__).resolve().parents[4]
+    if str(PROJECT_ROOT_FOR_IMPORT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT_FOR_IMPORT))
+    from Tools.log_helper import project_log
+except Exception:
+    def project_log(*args, **kwargs):
+        print(*args, **kwargs)
 
 # 获取项目根目录（兼容各种运行方式）
 def get_project_root():
@@ -32,5 +42,5 @@ def save_config(data):
 
 # 调试用路径输出
 if __name__ == '__main__':
-    print(f"Project root: {PROJECT_ROOT}")
-    print(f"Config file: {CONFIG_FILE}")
+    project_log(f"Project root: {PROJECT_ROOT}")
+    project_log(f"Config file: {CONFIG_FILE}")

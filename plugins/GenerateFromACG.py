@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 import requests
 from Hyper import Configurator
 Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
@@ -27,31 +28,31 @@ async def on_message(event, actions, Manager, Segments, order, time, cooldowns,
 
             if "随机" in result:
                 api = "https://api.iw233.cn/api.php?sort=random"
-                print("0")
+                project_log("0")
             elif "精选" in result:
                 api = "https://api.iw233.cn/api.php?sort=top"
-                print("1")
+                project_log("1")
             elif "白毛" in result:
                 api = "https://api.iw233.cn/api.php?sort=yin"
-                print("2")
+                project_log("2")
             elif "星空" in result:
                 api = "https://api.iw233.cn/api.php?sort=xing"
-                print("3")
+                project_log("3")
             elif "兽娘" in result:
                 api = "https://api.iw233.cn/api.php?sort=cat"
-                print("4")
+                project_log("4")
             elif "电脑壁纸" in result:
                 api = "https://api.iw233.cn/api.php?sort=pc"
-                print("5")
+                project_log("5")
             elif "手机壁纸" in result:
                 api = "https://api.iw233.cn/api.php?sort=mp"
-                print("6")
+                project_log("6")
             elif "头像" in result:
                 api = "https://www.loliapi.com/acg/pp/"
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(api), Segments.Text(f"{result}生成 结束！✧*。٩(>ω<*)و✧*。")))
                 await actions.del_message(selfID.data.message_id)
                 cooldowns[user_id] = current_time
-                print("7")
+                project_log("7")
                 return
 
             if api == "":
@@ -72,10 +73,10 @@ async def on_message(event, actions, Manager, Segments, order, time, cooldowns,
 
                 try:
                     response = requests.get(api, params=parameters)
-                    print(parameters)
+                    project_log(parameters)
                     outputurl = response.json()
                     output = outputurl["pic"][0]
-                    print(output)
+                    project_log(output)
 
                     image_id = await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(output), Segments.Text(f"{result}生成 结束！✧*。٩(>ω<*)و✧*。")))
                     await actions.del_message(selfID.data.message_id)

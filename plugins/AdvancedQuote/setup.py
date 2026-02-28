@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 import plugins.AdvancedQuote.AdvancedQuote as Quote
 from Hyper import Configurator
 Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
@@ -20,7 +21,7 @@ async def on_message(event, actions, Manager, Segments, os, gen_message):
                         imageurl = i.file
                     else:
                         imageurl = i.url
-                    print(imageurl)
+                    project_log(imageurl)
                     
             quoteimage = await Quote.handle(event.message, actions, imageurl)
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), quoteimage))

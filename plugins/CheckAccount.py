@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log, LOG_LEVELS
 import re
 import json, time, gc
 from datetime import datetime
@@ -24,7 +25,7 @@ async def on_message(event, actions: Listener.Actions, Manager, Segments,
     retry_time = 0
     while True:
         retry_time += 1
-        print(f"try to get_user {uid} time: {retry_time}")
+        project_log(f"try to get_user {uid} time: {retry_time}")
 
         gc.collect()
         nikename = Manager.Ret.fetch(await actions.custom.get_stranger_info(user_id=uid, no_cache=True)).data.raw
@@ -32,19 +33,19 @@ async def on_message(event, actions: Listener.Actions, Manager, Segments,
             r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
 失败: {uid} 不是一个有效的用户'''
-            print(f"get_user {uid} failed: didn't found user")
+            project_log(f"get_user {uid} failed: didn't found user", level=LOG_LEVELS.ERROR)
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
             break
 
         else:
             if str(nikename.get('user_id', '未知')) == str(uid):
                 avatar, r = parse_user_info(nikename, ADMINS, SUPERS, ROOT_User)
-                print(f"get_user {uid} successfully")
+                project_log(f"get_user {uid} successfully")
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(avatar), Segments.Text(r)))
                 break
             else:
                 if retry_time > MAX_retry:
-                    print(f"get_user {uid} failed: max retry")
+                    project_log(f"get_user {uid} failed: max retry", level=LOG_LEVELS.ERROR)
                     r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
 失败: 在 {MAX_retry} 次尝试连接服务器后，未能找到 {uid} 的信息'''
@@ -61,9 +62,9 @@ def parse_user_info(user_dict, ADMINS, SUPERS, ROOT_User):
         register_time = user_dict.get('RegisterTime', '')
         try:
             dt = datetime.strptime(register_time, '%Y-%m-%dT%H:%M:%SZ')
-            register_time = dt.strftime('%Y.%m.%d %H:%M:%S')
+            register_time = dt.strftime('%Y')
         except (ValueError, TypeError):
-            register_time = '未知时间'
+            register_time = '未知年份'
             
         business = user_dict.get('Business', [])
         is_vip = any(item.get('type') == 1 for item in business)
@@ -89,7 +90,7 @@ QID: {user_dict.get('q_id', '未知')}
 权限: {status_user}
 QQ等级: {user_dict.get('level', '未知')}
 个性签名: {user_dict.get('sign', '暂无签名')}
-注册时间: {register_time}
+注册年份: {register_time}
 超级会员: {'是' if is_vip else '否'}
 会员等级: {vip_level}
 年费会员: {'是' if is_year_vip else '否'}"""
@@ -97,5 +98,5 @@ QQ等级: {user_dict.get('level', '未知')}
         return (avatar, result)
 
     except Exception as e:
-        print(f"解析失败: {e}")
+        project_log(f"解析失败: {e}", level=LOG_LEVELS.ERROR)
         return ("", "无法打开该用户的账户")

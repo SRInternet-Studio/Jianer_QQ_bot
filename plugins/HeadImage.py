@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 from Hyper import Configurator
 Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
 
@@ -9,10 +10,10 @@ async def on_message(event, actions, Manager, Segments):
         uin = ""
     
         for i in event.message:
-                print(type(i))
-                print(str(i))
+                project_log(type(i))
+                project_log(str(i))
                 if isinstance(i, Segments.At):
-                    print("At in loading...")
+                    project_log("At in loading...")
                     uin = i.qq
 
         if uin == "":

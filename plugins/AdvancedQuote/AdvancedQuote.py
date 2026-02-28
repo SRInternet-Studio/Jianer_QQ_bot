@@ -1,3 +1,4 @@
+from Tools.log_helper import project_log
 import os
 from Hyper import Segments
 from Hyper.Events import *
@@ -36,7 +37,7 @@ async def handle(message, actions, images=None) -> Segments.Image:
     message = gen_message({"message": message})
     text = str(message).replace("[图片]", "")
     if images is not None:
-        print("有图")
+        project_log("有图")
         await get_image(text, images, name, uin)  # 传递 uin 参数
     else:
         await get_image(text, f"http://q2.qlogo.cn/headimg_dl?dst_uin={uin}&spec=640", name, uin)  # 传递 uin 参数

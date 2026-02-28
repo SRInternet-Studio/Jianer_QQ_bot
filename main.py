@@ -6,9 +6,10 @@
 
 # import Tools functions
 from Tools.tools import * 
+from Tools.log_helper import project_log
 from Tools.suffix_manager import SuffixManager
 from Tools.jianer_memory import JianerMemoryService
-print(title() + "\nWelcome to Jianer QQ Bot, Starting Kernal now...", end="\r") 
+project_log(title() + "\nWelcome to Jianer QQ Bot, Starting Kernal now...", end="\r") 
 
 # from Tools.GoogleAI import genai, Context, Parts, Roles, Schema
 # from Tools.SearchOnline import network_gpt as SearchOnline
@@ -115,7 +116,7 @@ preset_template_cache = {}
 memory_service.set_bot_name(bot_name)
 
 gptsovitsoff = False
-print(" " * 114, end="\r") # Staring Completed
+logger.log("Starting completed")
 
 # Plugin like
 PLUGIN_FOLDER = "plugins"
@@ -146,10 +147,10 @@ def load_plugins():
 
     for filename in os.listdir(PLUGIN_FOLDER):
         module_name = filename  # Folder name as module name
-        print(f"check file or directory: {filename}")
+        logger.log(f"check file or directory: {filename}")
 
         if filename == "__pycache__":
-            print("Directory __pycache__ not load.")
+            logger.log("Directory __pycache__ not load.")
             continue
 
         # 检查是否禁用
@@ -169,7 +170,7 @@ def load_plugins():
                     module = importlib.util.module_from_spec(spec)
                     sys.modules[unique_module_name] = module
                     spec.loader.exec_module(module)
-                    print(f"Loaded setup.py from folder plugin: {module_name}")
+                    logger.log(f"Loaded setup.py from folder plugin: {module_name}")
 
                     # Verify plugin
                     if hasattr(module, 'TRIGGHT_KEYWORD') and hasattr(module, 'on_message'):
@@ -180,7 +181,7 @@ def load_plugins():
                                 if isinstance(module.HELP_MESSAGE, str):
                                     plugins_help += f"\n       {module.HELP_MESSAGE}"
 
-                            print(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
+                            logger.log(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
                         else:
                             failed_plugins.append(f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
                     else:
@@ -188,22 +189,22 @@ def load_plugins():
 
                 except FileNotFoundError as e:
                     failed_plugins.append(f"{module_name} (文件未找到: {e})")
-                    print(f"加载插件 {unique_module_name} 失败，是因为: {e}")
+                    logger.log(f"加载插件 {unique_module_name} 失败，是因为: {e}", level=Logger.levels.ERROR)
                     if unique_module_name in sys.modules:
                         del sys.modules[unique_module_name]
                 except ImportError as e:
                     failed_plugins.append(f"{module_name} (导入错误: {e})")
-                    print(f"加载插件 {unique_module_name} 失败，是因为: \n{traceback.format_exc()}\n")
+                    logger.log(f"加载插件 {unique_module_name} 失败，是因为: \n{traceback.format_exc()}\n", level=Logger.levels.ERROR)
                     if unique_module_name in sys.modules:
                         del sys.modules[unique_module_name]
                 except Exception as e:
                     failed_plugins.append(f"{module_name} (其他错误: {str(e)})")
-                    print(f"加载插件 {unique_module_name} 失败: \n{traceback.format_exc()}\n")
+                    logger.log(f"加载插件 {unique_module_name} 失败: \n{traceback.format_exc()}\n", level=Logger.levels.ERROR)
                     if unique_module_name in sys.modules:
                         del sys.modules[unique_module_name]  # Cleanup
 
             else:
-                print(f"目录 {filename} 中缺少 setup.py 文件")
+                logger.log(f"目录 {filename} 中缺少 setup.py 文件", level=Logger.levels.WARNING)
                 failed_plugins.append(f"{filename} (入口错误: 缺少 setup.py 文件)")
 
         # 处理文件形式插件
@@ -221,7 +222,7 @@ def load_plugins():
             try:
                 # 检查模块是否已经加载
                 if unique_module_name in sys.modules:
-                    print(f"模块 {unique_module_name} 已经加载，跳过")
+                    logger.log(f"模块 {unique_module_name} 已经加载，跳过")
                     continue
 
                 # 创建模块规范
@@ -239,7 +240,7 @@ def load_plugins():
                                 if isinstance(module.HELP_MESSAGE, str):
                                     plugins_help += f"\n       {module.HELP_MESSAGE}"
 
-                        print(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
+                        logger.log(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
                     else:
                         failed_plugins.append(f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
                 else:
@@ -247,24 +248,24 @@ def load_plugins():
 
             except FileNotFoundError as e:
                 failed_plugins.append(f"{module_name} (文件未找到: {e})")
-                print(f"加载插件 {unique_module_name} 失败，原因是: {e}")
+                logger.log(f"加载插件 {unique_module_name} 失败，原因是: {e}", level=Logger.levels.ERROR)
                 if unique_module_name in sys.modules:
                     del sys.modules[unique_module_name]
             except ImportError as e:
                 failed_plugins.append(f"{module_name} (导入错误: {e})")
-                print(f"加载插件 {unique_module_name} 失败，原因是: \n{traceback.format_exc()}\n")
+                logger.log(f"加载插件 {unique_module_name} 失败，原因是: \n{traceback.format_exc()}\n", level=Logger.levels.ERROR)
                 if unique_module_name in sys.modules:
                     del sys.modules[unique_module_name]
             except Exception as e:
                 failed_plugins.append(f"{module_name} (其他错误: {str(traceback.format_exc())})")
-                print(f"加载插件 {unique_module_name} 失败: \n{traceback.format_exc()}\n")
+                logger.log(f"加载插件 {unique_module_name} 失败: \n{traceback.format_exc()}\n", level=Logger.levels.ERROR)
                 if unique_module_name in sys.modules:
                     del sys.modules[unique_module_name]  # Cleanup
 
         else:
-            print(f"跳过非插件文件或目录: {filename}")
+            logger.log(f"跳过非插件文件或目录: {filename}")
 
-    print(f"成功加载 {len(loaded_plugins)} 个插件")
+    logger.log(f"成功加载 {len(loaded_plugins)} 个插件")
     return plugins
 
 plugins = load_plugins() #在任何操作执行之前加载插件
@@ -299,7 +300,7 @@ async def execute_plugins(isAny: bool, **main_context) -> bool: # 接受 main.py
                         break
 
             except Exception as e:
-                print(f"\n插件 {plugin_module.__name__} 执行出错，是因为: \n{traceback.format_exc()}")
+                logger.log(f"\n插件 {plugin_module.__name__} 执行出错，是因为: \n{traceback.format_exc()}", level=Logger.levels.ERROR)
                 if not isAny:
                     has_plugin = True
     
@@ -335,9 +336,9 @@ def timing_message(actions: Listener.Actions):
         send_time = send_time[0].split("⊕")
 
         now = datetime.datetime.now()
-        print(f"Current: {now.hour:02}:{now.minute:02}, target: {send_time}")
+        logger.log(f"Current: {now.hour:02}:{now.minute:02}, target: {send_time}")
         if f"{now.hour:02}:{now.minute:02}" == send_time[0]:
-            print("send timing messages")
+            logger.log("send timing messages")
             asyncio.run(send_msg_all_groups(send_time[1], actions))
 
         time.sleep(60 - now.second)
@@ -346,7 +347,7 @@ async def send_msg_all_groups(text, actions: Listener.Actions):
     echo = await actions.custom.get_group_list()
     result = Manager.Ret.fetch(echo)
     blacklist = load_blacklist()  # 必须在发送消息前加载黑名单
-    print(f"sys: 群发 {result.data.raw}")
+    logger.log(f"sys: 群发 {result.data.raw}")
     # Apply global suffix for broadcast messages
     processed_text = suffix_manager.process_text(text, 0)
     for group in result.data.raw:
@@ -355,7 +356,7 @@ async def send_msg_all_groups(text, actions: Listener.Actions):
             await actions.send(group_id=group['group_id'], message=Manager.Message(Segments.Text(processed_text)))
             time.sleep(random.random()*3)
         else:
-            print(f"群聊 {group_id} 在黑名单内，取消发送")
+            logger.log(f"群聊 {group_id} 在黑名单内，取消发送", level=Logger.levels.WARNING)
 
 
 def Read_Settings():
@@ -371,7 +372,7 @@ def Read_Settings():
     
     Super_User = load_user_list("Super_User.ini")
     Manage_User = load_user_list("Manage_User.ini")
-    print(f'''————————————————
+    logger.log(f'''————————————————
 sys: User_Group loaded.
 Super_User: {Super_User}
 Manage_User: {Manage_User}
@@ -432,7 +433,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                     message=Manager.Message(Segments.Text(f"{bot_name} 已从休眠中恢复 ♡=•ㅅ＜=)"))
                 )
         else:
-            print("sys: 触发停止运行事件")
+            logger.log("sys: 触发停止运行事件")
             return
 
     if not in_timing:
@@ -450,11 +451,11 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
     
     if isinstance(event, Events.NotifyEvent): # 优先判断自定义事件
         if str(event.sub_type) == "poke" and event.group_id and int(event.target_id) == int(event.self_id): # 被戳一戳
-            print(f"({event.user_id}) POKED")
+            logger.log(f"({event.user_id}) POKED")
             try:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(random.choice(config.others["poke_rejection_phrases"]))))
             except KeyError:
-                print("不接受戳一戳")
+                logger.log("不接受戳一戳", level=Logger.levels.WARNING)
                 
     if isinstance(event, Events.HyperListenerStartNotify):
         if os.path.exists("restart.temp"):
@@ -489,7 +490,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 
         text = f'''{user_nick}离开了{bot_name}的大家庭，{bot_name}好伤心o(TヘTo)……
 大家一定要记得多来陪{bot_name}玩玩ヾ(•ω•`)o'''
-        print(f"group: {event.user_id} 已离开群聊 {event.group_id}")
+        logger.log(f"group: {event.user_id} 已离开群聊 {event.group_id}")
         await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(text)))
 
     elif isinstance(event, Events.GroupAddInviteEvent):
@@ -501,7 +502,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         if processed_keyword in cleaned_text: 
             try:
                 user = event.user_id
-                print(f"group: {await get_user_nickname(user, Manager, actions)} 的入群回答 {processed_keyword} 符合正确答案，已准许入群 {event.group_id}")
+                logger.log(f"group: {await get_user_nickname(user, Manager, actions)} 的入群回答 {processed_keyword} 符合正确答案，已准许入群 {event.group_id}")
                 await actions.set_group_add_request(flag=event.flag, sub_type=event.sub_type, approve=True, reason="")
                 Wait_for_add_in = True
                 welcome = f'''{await get_user_nickname(user, Manager, actions)} 的答案正确，欢迎加入{bot_name}的大家庭！o(*≧▽≦)ツ
@@ -514,7 +515,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 traceback.print_exc()
           
     elif isinstance(event, Events.FriendAddEvent):
-        print("sys: 同意好友")
+        logger.log("sys: 同意好友")
         await actions.set_friend_add_request(flag=event.flag,approve=True,remark="")
             
     elif isinstance(event, Events.GroupMessageEvent):
@@ -562,7 +563,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         order = ""
 
         if "ping" == user_message:
-            print(str(event.user_id))
+            logger.log(str(event.user_id))
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(suffix_manager.process_text("pong! 爆炸！v(◦'ωˉ◦)~♡ ", event.user_id))))
             
         elif f"{bot_name}真棒" in user_message and str(reminder) not in user_message:
@@ -571,7 +572,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 m = str(compliments[random.randint(0, len(compliments))])
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(suffix_manager.process_text(m, event.user_id))))
             except:
-                print("不接受夸赞")        
+                logger.log("不接受夸赞", level=Logger.levels.WARNING)        
 
         global emoji_send_count
         if has_emoji(user_message) and not emoji_plus_one_off:
@@ -579,13 +580,13 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(user_message)))
                 emoji_send_count = datetime.datetime.now()
             else:
-                print(f"emoji +1 延迟 {abs(datetime.datetime.now() - emoji_send_count)} s")
+                logger.log(f"emoji +1 延迟 {abs(datetime.datetime.now() - emoji_send_count)} s")
         
         if user_message.startswith(reminder):
             order_i = user_message.find(reminder)
             if order_i != -1:
                 order = user_message[order_i + len(reminder):].strip()
-                print(f"({event_user}) ORDER: {repr(order)}")
+                logger.log(f"({event_user}) ORDER: {repr(order)}")
 
         if f"{reminder}重启" == user_message:
             if str(event.user_id) in ADMINS:
@@ -712,19 +713,19 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 
         elif "默认4" == order:
             # EnableNetwork = "Net"
-            # print(f"sys: AI Mode change to ChatGPT-4")
+            # logger.log(f"sys: AI Mode change to ChatGPT-4")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("该指令已停用，请使用 ai管理菜单。")))
         elif "深度" == order:
             # EnableNetwork = "Ds"
-            # print(f"sys: AI Mode change to DeepSeek")
+            # logger.log(f"sys: AI Mode change to DeepSeek")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("该指令已停用，请使用 ai管理菜单。")))
         elif "默认3.5" == order:
             # EnableNetwork = "Normal"
-            # print(f"sys: AI Mode change to ChatGPT-3.5")
+            # logger.log(f"sys: AI Mode change to ChatGPT-3.5")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("该指令已停用，请使用 ai管理菜单。")))
         elif "读图" == order:
             # EnableNetwork = "Pixmap"
-            # print(f"sys: AI Mode change to Gemini")
+            # logger.log(f"sys: AI Mode change to Gemini")
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"该指令已停用，请使用 ai管理菜单。")))
 
         elif f"{reminder}ai管理菜单" == user_message:
@@ -755,7 +756,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             if target_ai in available_ais:
                 EnableNetwork = target_ai
                 friendly_name = available_ais[target_ai]
-                print(f"sys: AI Mode change to {friendly_name} ({target_ai})")
+                logger.log(f"sys: AI Mode change to {friendly_name} ({target_ai})")
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"成功切换到AI: {friendly_name}")))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"找不到AI配置: {target_ai}，请检查代码拼写。")))
@@ -948,9 +949,9 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             if str(event.user_id) in SUPERS:
                 if "管理 M " in order:
                     Toset = order[order.find("管理 M ") + len("管理 M "):].strip() if Toset == "" else Toset
-                    print(f"try to get_user {Toset}")
+                    logger.log(f"try to get_user {Toset}")
                     _, nikename = await get_user_info(Toset, Manager, actions)
-                    print(str(nikename))
+                    logger.log(str(nikename))
                     if len(nikename) == 0:
                         r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -998,9 +999,9 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                        
                 elif "管理 S " in order:
                     Toset = order[order.find("管理 S ") + len("管理 S "):].strip() if Toset == "" else Toset
-                    print(f"try to get_user {Toset}")
+                    logger.log(f"try to get_user {Toset}")
                     _, nikename = await get_user_info(Toset, Manager, actions)
-                    print(str(nikename))
+                    logger.log(str(nikename))
                     if len(nikename) == 0:
                         r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -1139,11 +1140,10 @@ if failed_plugins else "无"}'''
                     *command_lines,
                     "你的每一步操作，与用户息息相关。"
                 ])
+                await send_user_help_forward(actions, event, content, include_plugins=False)
                 
             else:
-                content = help_message()
-                
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
+                await send_user_help_forward(actions, event)
 
         elif (isinstance(event.message[0], Segments.At) and 
               int(event.message[0].qq) == event.self_id): 
@@ -1151,13 +1151,13 @@ if failed_plugins else "无"}'''
             if (all(isinstance(item, (Segments.At, Segments.Text)) for item in event.message) and 
                 [str(s) for s in event.message if isinstance(s, Segments.Text) and not str(s).strip()]):
 
-                content = help_message()
+                await send_user_help_forward(actions, event)
             else:
                 content = f'''你要询问什么呢？嘻嘻(●'◡'●)
 和我聊天不需要@我哟(＾Ｕ＾)ノ~
 直接在你想对{bot_name}想说的话前面加上 {reminder} 就行啦'''
 
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(content)))
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(content)))
 
         elif "关于" == order:
             global version_name
@@ -1333,7 +1333,7 @@ if failed_plugins else "无"}'''
                 if preset_id_to_delete:
                     # 删除预设文件
                     preset_path = os.path.join(PRESET_DIR, presets[preset_id_to_delete]["path"])
-                    print(f"Removed {preset_path}")
+                    logger.log(f"Removed {preset_path}")
                     os.remove(preset_path)
 
                 # 从配置中删除预设
@@ -1451,7 +1451,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 numbers = re.findall(r'\d+', result)
                 for i in event.message:
                     if isinstance(i, Segments.At):
-                        print("At in loading...")
+                        logger.log("At in loading...")
                         userid114 = numbers[0]  
                         time114 = 0
                         await actions.set_group_ban(group_id=event.group_id,user_id=userid114,duration=time114)
@@ -1566,14 +1566,14 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                                 await actions.custom.set_group_special_title(group_id=event.group_id, user_id=userid114, title=title114)
                                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已设置！")))
                             except Exception as set_title_error:
-                                print(f"设置头衔失败: {set_title_error}")
+                                logger.log(f"设置头衔失败: {set_title_error}", level=Logger.levels.ERROR)
                                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"设置头衔失败：{set_title_error}")))
 
                     else:   
                         await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("指令格式有误，请使用 用户ID 头衔 的格式。")))
 
                 except Exception as e: 
-                    print(f"处理分配头衔指令时出错: {e}")
+                    logger.log(f"处理分配头衔指令时出错: {e}", level=Logger.levels.ERROR)
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("格式有误或发生未知错误！")))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
@@ -1631,7 +1631,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 if await execute_plugins(False, **local_vars):
                     return  # 只传递 event 作为位置参数
             except Exception as e:
-                print(f"处理插件时发生错误: {e}")
+                logger.log(f"处理插件时发生错误: {e}", level=Logger.levels.ERROR)
                 return
             
             # 3. 全都匹配不到，进入AI回复
@@ -1675,9 +1675,9 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                     container.append(Parts.Text(item.text.replace(reminder, "", 1)))
                 elif isinstance(item, Segments.Image):
                     url = item.file if item.file.startswith("http") else item.url
-                    print(f"AI: URL位置 {replace_scheme_with_http(url)}")
+                    logger.log(f"AI: URL位置 {replace_scheme_with_http(url)}")
                     container.append(Parts.File.upload_from_url(replace_scheme_with_http(url)))
-                    print("AI: 有图")
+                    logger.log("AI: 有图")
 
             async def handle_message_stream(response_stream, is_openai=True):
                 nonlocal result, sended, enable_forward_msg_num
@@ -1767,7 +1767,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                             sys_prompt = sys_prompt.replace("{self.event_user}", event_user)
                             sys_prompt = sys_prompt.replace("{self.event_user_id}", str(event.user_id))
                             sys_prompt = sys_prompt.rstrip()
-                        print(f"[{event.time_str}] '{preset_data['name']}' 已载入用户预设")
+                        logger.log(f"[{event.time_str}] '{preset_data['name']}' 已载入用户预设")
                         break
                 
                 # 如果没有用户特定预设，使用全局默认预设 (如果有的话，presets_tool 可能已经处理了)
@@ -1788,6 +1788,44 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                     final_sys_prompt = (persona_prompt + "\n\n" if persona_prompt else "") + memory_context
                 else:
                     final_sys_prompt = persona_prompt
+
+                knowledge_evidence = ""
+                knowledge_sources = []
+                try:
+                    import plugins.KnowledgeAnswer as knowledge_answer_plugin
+
+                    retrieve_async = getattr(knowledge_answer_plugin, "retrieve_knowledge_async", None)
+                    if retrieve_async is not None:
+                        knowledge_evidence, knowledge_sources = await retrieve_async(msg)
+                    else:
+                        retrieve_sync = getattr(knowledge_answer_plugin, "retrieve_knowledge", None)
+                        if retrieve_sync is not None:
+                            knowledge_evidence, knowledge_sources = retrieve_sync(msg)
+                except Exception:
+                    knowledge_evidence = ""
+                    knowledge_sources = []
+
+                if knowledge_evidence:
+                    try:
+                        import hashlib
+
+                        logger.log(f"知识库检索 sources={knowledge_sources}", level=Logger.levels.INFO)
+                        evidence_bytes = knowledge_evidence.encode("utf-8", errors="ignore")
+                        evidence_hash = hashlib.sha1(evidence_bytes).hexdigest()
+                        logger.log(
+                            f"知识库检索 evidence_len={len(knowledge_evidence)} sha1={evidence_hash}",
+                            level=Logger.levels.INFO,
+                        )
+                    except Exception:
+                        pass
+                    final_sys_prompt = (
+                        (final_sys_prompt.rstrip() + "\n\n") if final_sys_prompt else ""
+                    ) + f"【知识库检索结果】\n{knowledge_evidence.strip()}"
+                else:
+                    try:
+                        logger.log("知识库检索 evidence=EMPTY", level=Logger.levels.INFO)
+                    except Exception:
+                        pass
 
                 # 调用 ARC_AI 获取回复流
                 response_stream = ARC_AI.get_response_stream(
@@ -1824,7 +1862,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                     if TTSettings != {}:
                         communicate_completed = await amain(result, TTSettings["voiceColor"], TTSettings["rate"], TTSettings["volume"], TTSettings["pitch"])
                     else:
-                        print("EdgeTTS 配置文件不完整，或未配置，使用默认音色。")
+                        logger.log("EdgeTTS 配置文件不完整，或未配置，使用默认音色。", level=Logger.levels.WARNING)
                         communicate_completed = await amain(result, "zh-CN-XiaoyiNeural", "+0%", "+0%", "+0Hz")
 
                     if communicate_completed and os.path.isfile(communicate_completed):
@@ -1836,19 +1874,53 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
             except TimeoutError:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(suffix_manager.process_text(f"哎呀，你问的问题太复杂了，{bot_name}想不出来了 ┭┮﹏┭┮", event.user_id))))
             except Exception as e:
-                print(traceback.format_exc())
+                logger.log(traceback.format_exc(), level=Logger.levels.ERROR)
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(suffix_manager.process_text(f"{type(e)}\n{url}\n{bot_name}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", event.user_id))))
       
 def help_message() -> str:
-    global EnableNetwork, bot_name, reminder, plugins_help
+    global EnableNetwork, bot_name, reminder
     return f'''如何与{bot_name}交流( •̀ ω •́ )✧
     注：对话前必须加上 {reminder} 噢！~
        {reminder}(任意问题，必填) —> {bot_name}回复
        {reminder}ai管理菜单 —> 切换和管理AI模型
-       {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮{plugins_help}
+       {reminder}插件视角 —> 查看插件加载状态
        {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
        {reminder}设置特定后缀 (后缀) —> 给你自己的回复加后缀
        {reminder}删除特定后缀 —> 删除你自己的后缀
 快来聊天吧(*≧︶≦)'''
+
+def plugins_help_message() -> str:
+    global reminder, bot_name, plugins_help
+    plugin_lines = [line.strip() for line in plugins_help.splitlines() if line.strip()]
+    plugin_content = "\n".join(plugin_lines) if plugin_lines else "暂无插件帮助信息。"
+    return f'''{bot_name} 插件帮助
+————————————————————
+{plugin_content}
+
+提示：发送 {reminder}插件视角 查看插件加载情况。'''
+
+async def send_user_help_forward(actions: Listener.Actions, event: Events.Event, native_help: str | None = None, include_plugins: bool = True) -> None:
+    if not native_help:
+        native_help = help_message()
+    nodes = [
+        Segments.CustomNode(
+            str(event.self_id),
+            bot_name,
+            Manager.Message(Segments.Text(native_help))
+        ),
+    ]
+    if include_plugins:
+        plugin_help = plugins_help_message()
+        nodes.append(
+            Segments.CustomNode(
+                str(event.self_id),
+                bot_name,
+                Manager.Message(Segments.Text(plugin_help))
+            )
+        )
+    await actions.send_group_forward_msg(
+        group_id=event.group_id,
+        message=Manager.Message(*nodes)
+    )
 
 Listener.run()

@@ -833,8 +833,8 @@ class JianerMemoryService:
         template = self._preset_templates.get(scope.preset_key) or self._preset_templates.get("default", "")
         persona = self._render_template(template, scope)
         sys_prompt = (persona + "\n\n" if persona else "") + (
-            "你现在负责把聊天增量提炼成长期记忆。输出必须是严格JSON，且只能输出JSON。"
-            "JSON格式：{\"memories\":[{\"content\":\"...\",\"weight\":0.0}]}。"
+            f"请以 {self.bot_name if self.bot_name else '我'} 的视角回顾这段对话。捕捉大家提到的重要信息、发生的趣事，或者是你自己的感受，把它们转化成珍贵的长期记忆。请保持你的个性，但记录必须客观清晰，方便未来回忆。输出格式必须是严格的JSON，且只能输出JSON。\n"
+            "JSON格式：{\"memories\":[{\"content\":\"...\",\"weight\":0.0}]}。\n"
             "content用简洁中文描述事实型信息，避免复述原句，避免敏感信息。weight范围0到1。"
         )
 
@@ -958,7 +958,7 @@ class JianerMemoryService:
             lines.append(line)
         if not lines:
             return ""
-        return "简儿记忆（与当前对话相关的长期信息）：\n" + "\n".join(lines)
+        return f"【{self.bot_name if self.bot_name else '我'} 的回忆角落】（想起了一些相关的事情）：\n" + "\n".join(lines)
 
     def _fetch_memory_candidates(self, mem_table: str) -> List[Tuple[str, float, int]]:
         conn = self._connect_rw()
@@ -1107,8 +1107,8 @@ class JianerMemoryService:
             return False
 
         sys_prompt = (
-            "你现在负责从多处记忆中提炼全局记忆。输出必须是严格JSON，且只能输出JSON。"
-            "JSON格式：{\"memories\":[{\"content\":\"...\",\"weight\":0.0}]}。"
+            f"这些是散落在不同地方的记忆碎片，请帮 {self.bot_name if self.bot_name else '我'} 整理一下。去除重复的，把相似的融合起来，提炼出那些跨越时间、大家共有的核心记忆。输出格式必须是严格的JSON，且只能输出JSON。\n"
+            "JSON格式：{\"memories\":[{\"content\":\"...\",\"weight\":0.0}]}。\n"
             "content要去重、抽象总结，可跨群共用。weight范围0到1。"
         )
         msg = "以下是候选记忆，请生成全局记忆：\n" + "\n".join([f"- {c}" for c in candidates])

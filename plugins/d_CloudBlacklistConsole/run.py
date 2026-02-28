@@ -2,6 +2,15 @@ from app import app
 import socket
 import sys, os
 import time
+try:
+    PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    if PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT)
+    from Tools.log_helper import project_log, LOG_LEVELS
+except Exception:
+    def project_log(*args, **kwargs):
+        print(*args, **kwargs)
+
 PORT = 2438
 
 def get_local_ips():
@@ -72,20 +81,20 @@ def main() -> str:
 if __name__ == '__main__':
     # 端口占用检测
     if check_port_in_use(PORT):
-        print(f"⚠️  端口 {PORT} 已被占用！")
-        print("可能原因：")
-        print("1. 本程序已在运行（请检查浏览器或终端）")
-        print("2. 其他软件占用端口")
+        project_log(f"⚠️  端口 {PORT} 已被占用！", level=LOG_LEVELS.WARNING)
+        project_log("可能原因：")
+        project_log("1. 本程序已在运行（请检查浏览器或终端）")
+        project_log("2. 其他软件占用端口", level=LOG_LEVELS.WARNING)
         sys.exit(0)
     
     # 打印访问地址
-    print(print_access_urls(PORT))
+    project_log(print_access_urls(PORT))
     
     # 启动服务
     try:
         app.run(host='0.0.0.0', port=PORT, debug=True)
     except OSError as e:
         if "Address already in use" in str(e):
-            print("\n💥 启动失败：端口被意外占用！")
-            print(f"请执行以下命令释放端口：sudo kill -9 $(lsof -t -i :{PORT})")
+            project_log("\n💥 启动失败：端口被意外占用！", level=LOG_LEVELS.ERROR)
+            project_log(f"请执行以下命令释放端口：sudo kill -9 $(lsof -t -i :{PORT})")
             sys.exit(1)
