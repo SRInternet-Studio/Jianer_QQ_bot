@@ -2,10 +2,7 @@ from PIL import Image
 from typing import Tuple, Optional, Any
 import platform
 import psutil
-<<<<<<< HEAD
 import pynvml
-=======
->>>>>>> dev
 import io, gc, os
 import edge_tts
 from .user_info import get_user_info_from_websocket, get_nickname_by_userid
@@ -76,8 +73,7 @@ def get_system_info():
     total_memory = virtual_memory.total
     used_memory = virtual_memory.used
     memory_usage_percentage = virtual_memory.percent
-
-<<<<<<< HEAD
+    
     # GPU信息（使用pynvml）
     gpu_count = 0
     gpu_usage = []
@@ -100,7 +96,7 @@ def get_system_info():
     except Exception as e:
         # 其他意外错误
         print(f"Unexpected error in GPU detection: {e}")
-=======
+
     # GPU信息（是否有）
     try:
         if shutil.which("nvidia-smi"):
@@ -118,7 +114,6 @@ def get_system_info():
         print(f"Error getting GPU info: {e}")
         gpu_count = 0
         gpu_usage = []
->>>>>>> dev
 
     return {
         "version_info": version_info,
