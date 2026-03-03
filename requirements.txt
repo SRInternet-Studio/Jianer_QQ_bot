@@ -6,8 +6,8 @@ psutil
 pillow
 google-generativeai==0.7.2
 httpx
-hyper-bot==0.78.2
 flask
+Flask-Cors
 websocket-client
 paramiko>=3.5.1
 PySide6
@@ -16,9 +16,11 @@ edge_tts
 pyGithub
 pydantic
 playwright
-numpy>=2.0.0
+numpy>=1.26,<2.0
 pyecharts>=2.0.0
 aiofiles>=23.2.1
 networkx
 jieba
-pandas
+pandas>=2.0,<3.0
+tqdm
+akinator-python

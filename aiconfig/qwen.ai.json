@@ -1,0 +1,9 @@
+{
+  "FriendlyName": "qwen",
+  "Model": "Qwen/Qwen3-8B",
+  "ResponseType": "openai",
+  "ApiKey": "sk-P5GmYR1M6UAo0oJuAmdWqVAwuPjAhfQgyFDDCiT31gqYHJrF",
+  "BaseUrl": "https://rinkoai.com/v1",
+  "Temperature": 0.7,
+  "MaxTokens": 8192
+}
