@@ -11,7 +11,7 @@
 <img width="820" height="349" alt="Jianer_NEXT3_Poster" src="https://github.com/user-attachments/assets/80316009-29a4-475f-ad62-6bac078fbffb" />
 
 开源 · 模块化 · 易于配置 —— 基于 OneBot v11 的新一代 QQ 群机器人<br/>
-[多模型AI对话](#-AI)、[插件市场](https://github.com/IntelliMarkets/Jianer_Plugins_Index)、入群欢迎、图片生成、禁言或踢人等娱乐和群管助手<br/>
+[多模型AI对话](#ai)、[插件市场](https://github.com/IntelliMarkets/Jianer_Plugins_Index)、入群欢迎、图片生成、禁言或踢人等娱乐和群管助手<br/>
 
 #### [加入官方QQ群](https://qm.qq.com/q/f3QGDkdp6M)｜[加入开发者社区](https://qm.qq.com/q/T1bKDlRCIW)
 
