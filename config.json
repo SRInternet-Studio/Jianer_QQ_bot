@@ -21,7 +21,7 @@
       "gemini_key": "",
       "openai_key": "",
       "deepseek_key": "",
-      "default_mode": "deepseek",
+      "default_mode": "",
       "bot_name": "简儿",
       "bot_name_en": "Jianer",
       "ROOT_User": [""],
