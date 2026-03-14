@@ -413,9 +413,22 @@ def Write_Settings(s: list, m: list) -> bool:
 async def handler(event: Events.Event, actions: Listener.Actions) -> None:
     global in_timing, bot_name, bot_name_en, reminder, config, ONE_SLOGAN, CONFUSED_WORD, stop_working, Wait_for_add_in
     global Super_User, Manage_User, ROOT_User
-    ADMINS = Super_User + ROOT_User + Manage_User
-    SUPERS = Super_User + ROOT_User
     event.time_str = f"{datetime.datetime.now().hour:02}:{datetime.datetime.now().minute:02}:{datetime.datetime.now().second:02}"
+    platform = getattr(event, "platform", config.protocol)
+    user_id = getattr(event, "user_id", None)
+    session_id = getattr(event, "session_id", f"group:{getattr(event, 'group_id', '')}" if getattr(event, "group_id", None) is not None else f"user:{user_id}" if user_id is not None else "")
+    source_platform_user_id = str((getattr(event, "data", {}) or {}).get("source_platform_user_id", "") or "")
+    platform_admins = config.others.get("platform_admins", {})
+    platform_key = "feishu" if str(platform).lower() == "feishu" else "qq"
+    platform_admin_set = platform_admins.get(platform_key, {}) if isinstance(platform_admins, dict) else {}
+    root_users = list(dict.fromkeys([*(str(i) for i in ROOT_User), *(str(i) for i in platform_admin_set.get("root", []))]))
+    super_users = list(dict.fromkeys([*(str(i) for i in Super_User), *(str(i) for i in platform_admin_set.get("super", []))]))
+    manage_users = list(dict.fromkeys([*(str(i) for i in Manage_User), *(str(i) for i in platform_admin_set.get("manage", []))]))
+    ADMINS = super_users + root_users + manage_users
+    SUPERS = super_users + root_users
+    auth_user_id = source_platform_user_id if source_platform_user_id else str(user_id)
+    is_admin_user = auth_user_id in ADMINS
+    is_super_user = auth_user_id in SUPERS
 
     try:
         if hasattr(event, "message") and hasattr(event, "user_id"):
@@ -425,7 +438,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
     
     if stop_working:
         if ((user_id := getattr(event, "user_id", None)) and (message := getattr(event, "message", None)) 
-            and str(message).startswith(reminder) and str(user_id) in ADMINS):
+            and str(message).startswith(reminder) and is_admin_user):
             stop_working = False
             if hasattr(event, "group_id"):
                 await actions.send(
@@ -582,14 +595,13 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             else:
                 logger.log(f"emoji +1 延迟 {abs(datetime.datetime.now() - emoji_send_count)} s")
         
-        if user_message.startswith(reminder):
-            order_i = user_message.find(reminder)
-            if order_i != -1:
-                order = user_message[order_i + len(reminder):].strip()
-                logger.log(f"({event_user}) ORDER: {repr(order)}")
+        order_i = user_message.find(reminder)
+        if order_i != -1:
+            order = user_message[order_i + len(reminder):].strip()
+            logger.log(f"({event_user}) ORDER: {repr(order)}")
 
-        if f"{reminder}重启" == user_message:
-            if str(event.user_id) in ADMINS:
+        if (f"{reminder}重启" == user_message) or ("重启" == order):
+            if is_admin_user:
                 r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 重启QQ机器人'''
                 await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"正在重启{bot_name}－O－……")))
@@ -606,7 +618,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
         
         elif f"{reminder}重载插件" == user_message:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 global plugins
                 plugins = load_plugins()
 
@@ -617,7 +629,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
         elif f"{reminder}禁用插件 " in user_message:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 message = user_message
                 parts = message.split("禁用插件")
                 if len(parts) > 1:
@@ -665,7 +677,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
 
         elif f"{reminder}启用插件 " in user_message:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 message = user_message
                 parts = message.split("启用插件")
                 if len(parts) > 1:
@@ -844,7 +856,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("指令不支持，发送 #简儿记忆 帮助。")))
 
         elif "列出黑名单" == order:
-          if str(event.user_id) in ADMINS:
+          if is_admin_user:
             try:
                 with open("blacklist.sr", "r", encoding="utf-8") as f:
                     blacklist1 = set(line.strip() for line in f) 
@@ -857,7 +869,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
               await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
         elif "添加黑名单 " in order:
             blacklist_file = "blacklist.sr"
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 Toset2 = order[order.find("添加黑名单 ") + len("添加黑名单 "):].strip()
                 blacklist114 = load_blacklist() # 加载现有的黑名单,防止已修改沒更新
                 if Toset2 not in blacklist114:
@@ -877,7 +889,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
         elif "删除黑名单 " in order:
             blacklist_file = "blacklist.sr"
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 Toset1 = order[order.find("删除黑名单 ") + len("删除黑名单 "):].strip()
                 blacklist117 = load_blacklist() # 加载现有的黑名单,防止已修改沒更新
                 if Toset1 in blacklist117:
@@ -904,7 +916,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 if isinstance(i, Segments.At):
                     Toset = str(i.qq)
                     
-            if str(event.user_id) in SUPERS:
+            if is_super_user:
                 Toset = order[order.find("删除管理 ") + len("删除管理 "):].strip() if Toset == "" else Toset
                 s = Super_User
                 m = Manage_User
@@ -946,7 +958,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 if isinstance(i, Segments.At):
                     Toset = str(i.qq)
                     
-            if str(event.user_id) in SUPERS:
+            if is_super_user:
                 if "管理 M " in order:
                     Toset = order[order.find("管理 M ") + len("管理 M "):].strip() if Toset == "" else Toset
                     logger.log(f"try to get_user {Toset}")
@@ -1058,7 +1070,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
             
         elif "让我访问" in order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 manage_users = await asyncio.gather(*[get_user_nickname(uid, Manager, actions) for uid in Manage_User])
                 super_users = await asyncio.gather(*[get_user_nickname(uid, Manager, actions) for uid in Super_User])
                 root_users = await asyncio.gather(*[get_user_nickname(uid, Manager, actions) for uid in ROOT_User])
@@ -1096,7 +1108,7 @@ if failed_plugins else "无"}'''
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(status)))
 
         elif "帮助" == order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 content = [
                     (f"{reminder}让我访问", "检索有权限的用户"), # Managers' help content 管理员帮助
                     (f"{reminder}注销", "删除所有用户的上下文"),
@@ -1122,7 +1134,7 @@ if failed_plugins else "无"}'''
                     (f"{reminder}删除特定后缀", "删除你的特定后缀")
                 ]
                 
-                if str(event.user_id) in SUPERS:
+                if is_super_user:
                     content += [
                         (f"{reminder}管理 M (QQ号)", "为用户添加 Manage_User 权限"),
                         (f"{reminder}管理 S (QQ号)", "为用户添加 Super_User 权限"),
@@ -1192,7 +1204,7 @@ if failed_plugins else "无"}'''
 如果想要关闭群发功能，请联系服务器管理员删除 `timing_message.ini` 文件。\n在关闭群发后，使用 -修改 功能即可重新启用。''')))
 
         elif f"设置全局后缀 " in order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 suffix = order[order.find("设置全局后缀 ") + len("设置全局后缀 "):].strip()
                 if suffix:
                     suffix_manager.set_global_suffix(suffix)
@@ -1203,7 +1215,7 @@ if failed_plugins else "无"}'''
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
 
         elif f"删除全局后缀" == order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 suffix_manager.remove_global_suffix()
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("全局后缀已删除。")))
             else:
@@ -1245,7 +1257,7 @@ if failed_plugins else "无"}'''
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(prerequisites_info)))
 
         elif f"添加预设 " in order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 match = re.match(r"添加预设\s+(.+?)\s+(.+?)\s*[:：]\s*(.+)", order, re.DOTALL)
                 if not match:
                     prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
@@ -1308,7 +1320,7 @@ if failed_plugins else "无"}'''
                 r  = CONFUSED_WORD.format(bot_name=bot_name)
             
         elif f"删除预设 " in order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 match = re.match(r"删除预设\s+(.+)", order)
                 if not match:
                     prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
@@ -1350,7 +1362,7 @@ if failed_plugins else "无"}'''
                 r  = CONFUSED_WORD.format(bot_name=bot_name)
                 
         elif "休眠" == order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 stop_working = True
                 r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 休眠QQ机器人'''
                 await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
@@ -1359,7 +1371,7 @@ if failed_plugins else "无"}'''
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
 
         elif f"{reminder}感知" in user_message:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 system_info = get_system_info()
                 feel = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -1376,7 +1388,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
             
         elif f"{reminder}注销" in user_message:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 # del cmc
                 # cmc = ContextManager()
                 user_lists.clear()
@@ -1390,7 +1402,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(os.path.abspath("./assets/sc114.png"))))
             
         elif "修改 " in order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 try:
                     tm = order[order.find("修改 ") + len("修改 "):].strip()
                     if not bool(re.match(r'^([01][0-9]|2[0-3]):([0-5][0-9])$', tm[:5])):
@@ -1413,7 +1425,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
             
         elif "群发" in order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 words = order.split(" ")
                 if len(words) < 2:
                     r = f'''群发格式错误 Σ( ° △ °|||)︴
@@ -1444,7 +1456,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}需要 GenerateFromACG 插件才能生成好看的涩图哦 (੭ु ˃̶͈̀ ω ˂̶͈́)੭ु⁾⁾")))
                 
         elif "取消冷静 " in order:
-           if str(event.user_id) in ADMINS:
+           if is_admin_user:
             start_index = order.find("取消冷静 ")
             if start_index != -1:
                 result = order[start_index + len("取消冷静 "):].strip()
@@ -1460,7 +1472,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
                 
         elif "冷静" in order:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
                 try:
                     start_index = order.find("冷静")
                     if start_index != -1:
@@ -1492,7 +1504,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
           
         elif "送飞机票" in order:
-          if str(event.user_id) in ADMINS:
+          if is_admin_user:
                 for i in event.message:
                     if isinstance(i, Segments.At):
                         await actions.set_group_kick(group_id=event.group_id,user_id=i.qq)
@@ -1502,7 +1514,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))  
         
         elif f"{reminder}退出本群" == user_message:
-            if str(event.user_id) in SUPERS:
+            if is_super_user:
                 r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 使机器人退出了群聊：{event.group_id}'''
                 await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"呜呜呜，各位再见了……")))
@@ -1511,7 +1523,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
         elif "撤回" == user_message:
-            if str(event.user_id) in ADMINS:
+            if is_admin_user:
               if isinstance(event.message[0], Segments.Reply):
                 try:
                   await actions.del_message(event.message[0].id)
@@ -1538,7 +1550,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 
         elif f"{reminder}更改分配头衔开放状态" == user_message:
             global self_service_titles
-            if str(event.user_id) in SUPERS:
+            if is_super_user:
                 if self_service_titles:
                     self_service_titles = False
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"分配头衔功能已取消开放！")))
@@ -1549,7 +1561,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
                 
         elif "给他人分配头衔" in order:
-            if str(event.user_id) in SUPERS:
+            if is_super_user:
                 try:
                     start_index = order.find("给他人分配头衔")
                     if start_index != -1:
@@ -1583,7 +1595,7 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
             if len(titletext) > 6:
                 await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("头衔不能超过6个字！")))
             else:
-                if str(event.user_id) in SUPERS:
+                if is_super_user:
                     await actions.custom.set_group_special_title(group_id=event.group_id,user_id=event.user_id,title=titletext)
                     await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("已设置！")))
                 else:
@@ -1900,8 +1912,42 @@ def plugins_help_message() -> str:
 提示：发送 {reminder}插件视角 查看插件加载情况。'''
 
 async def send_user_help_forward(actions: Listener.Actions, event: Events.Event, native_help: str | None = None, include_plugins: bool = True) -> None:
+    def _split_text(text: str, max_len: int = 900) -> list[str]:
+        if not text:
+            return []
+        parts = []
+        lines = text.split("\n")
+        current = ""
+        for line in lines:
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) <= max_len:
+                current = candidate
+                continue
+            if current:
+                parts.append(current)
+                current = ""
+            while len(line) > max_len:
+                parts.append(line[:max_len])
+                line = line[max_len:]
+            current = line
+        if current:
+            parts.append(current)
+        return parts
+
     if not native_help:
         native_help = help_message()
+    if str(getattr(event, "platform", "")).lower() == "feishu":
+        messages = [native_help]
+        if include_plugins:
+            messages.append(plugins_help_message())
+        for content in messages:
+            if content:
+                for block in _split_text(content):
+                    await actions.send(
+                        group_id=event.group_id,
+                        message=Manager.Message(Segments.Text(block))
+                    )
+        return
     nodes = [
         Segments.CustomNode(
             str(event.self_id),
@@ -1918,9 +1964,21 @@ async def send_user_help_forward(actions: Listener.Actions, event: Events.Event,
                 Manager.Message(Segments.Text(plugin_help))
             )
         )
-    await actions.send_group_forward_msg(
-        group_id=event.group_id,
-        message=Manager.Message(*nodes)
-    )
+    try:
+        await actions.send_group_forward_msg(
+            group_id=event.group_id,
+            message=Manager.Message(*nodes)
+        )
+    except Exception:
+        messages = [native_help]
+        if include_plugins:
+            messages.append(plugins_help_message())
+        for content in messages:
+            if content:
+                for block in _split_text(content):
+                    await actions.send(
+                        group_id=event.group_id,
+                        message=Manager.Message(Segments.Text(block))
+                    )
 
 Listener.run()

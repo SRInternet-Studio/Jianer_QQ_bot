@@ -1,6 +1,15 @@
 import json
 import typing
 
+SUPPORTED_PROTOCOLS = ("OneBot", "Milky", "Kritor", "Feishu")
+PROTOCOL_ALIASES = {
+    "ONEBOT": "OneBot",
+    "MILKY": "Milky",
+    "KRITOR": "Kritor",
+    "FEISHU": "Feishu",
+    "LARK": "Feishu",
+}
+
 
 class BotWSC:
     def __init__(
@@ -101,11 +110,14 @@ class Config:
             log_use_nf: bool = False,
             uin: int = 0,
             max_workers: int = 0,
+            platform_switches: dict = None,
+            feishu: dict = None,
+            connections: dict = None,
     ):
         self.inited = False
         self.file = file
         if file is None:
-            self.protocol = protocol
+            self.protocol = self._normalize_protocol(protocol)
             self.owner = owner or []
             self.black_list = black_list or []
             self.silents = silents or []
@@ -115,24 +127,53 @@ class Config:
             self.log_use_nf = bool(log_use_nf)
             self.uin = int(uin or 0)
             self.max_workers = int(max_workers or 0)
+            self.platform_switches = self._validate_platform_switches(platform_switches, self.protocol)
+            self.feishu = self._validate_feishu_config(feishu, self.platform_switches.get("Feishu", False))
+            self.connections = connections or {}
             self.inited = True
 
-    def load_from_file(self):
-        if not self.file:
-            raise ValueError("Config file path is required")
-        with open(self.file, "r", encoding="utf-8") as f:
-            config_json = json.load(f)
+    @staticmethod
+    def _validate_feishu_config(feishu: typing.Optional[dict], enabled: bool) -> dict:
+        if feishu is None:
+            feishu = {}
+        if not isinstance(feishu, dict):
+            raise ValueError("feishu must be an object")
+        result = dict(feishu)
+        result["app_id"] = str(result.get("app_id", "") or "")
+        result["app_secret"] = str(result.get("app_secret", "") or "")
+        result["encrypt_key"] = str(result.get("encrypt_key", "") or "")
+        result["verification_token"] = str(result.get("verification_token", "") or "")
+        result["event_mode"] = str(result.get("event_mode", "long_connection") or "long_connection").strip().lower()
+        result["listener_host"] = str(result.get("listener_host", "127.0.0.1") or "127.0.0.1")
+        result["listener_port"] = int(result.get("listener_port", 5003) or 5003)
+        result["event_path"] = str(result.get("event_path", "/feishu/events") or "/feishu/events")
+        result["default_receive_id_type"] = str(result.get("default_receive_id_type", "chat_id") or "chat_id")
+        if result["event_mode"] not in ("long_connection", "webhook"):
+            raise ValueError("feishu.event_mode must be 'long_connection' or 'webhook'")
+        if enabled and (not result["app_id"] or not result["app_secret"]):
+            raise ValueError("feishu.app_id and feishu.app_secret are required when Feishu is enabled")
+        return result
 
-        self.protocol = config_json.get("protocol", "OneBot")
-        self.owner = config_json.get("owner") or []
-        self.black_list = config_json.get("black_list") or []
-        self.silents = config_json.get("silents") or []
+    @staticmethod
+    def _normalize_protocol(protocol: typing.Any) -> str:
+        protocol_text = str(protocol or "").strip()
+        if not protocol_text:
+            return "OneBot"
+        if protocol_text in SUPPORTED_PROTOCOLS:
+            return protocol_text
+        alias_key = protocol_text.upper()
+        if alias_key in PROTOCOL_ALIASES:
+            return PROTOCOL_ALIASES[alias_key]
+        raise ValueError(f"Unsupported protocol: {protocol_text}")
 
-        conn = config_json.get("Connection") or config_json.get("connection") or {}
-        mode = (conn.get("mode") or "").upper()
+    @staticmethod
+    def _build_connection_object(conn: typing.Any) -> typing.Union[BotWSC, BotHTTPC, dict]:
+        if not isinstance(conn, dict):
+            return conn if conn is not None else {}
+        mode = str(conn.get("mode", "") or "").upper()
         if mode in ("FWS", "WS"):
             auth = conn.get("auth") or conn.get("token") or conn.get("satori_token") or ""
-            self.connection = BotWSC(
+            return BotWSC(
                 host=conn.get("host", "127.0.0.1"),
                 port=conn.get("port", 0),
                 retries=conn.get("retries", 5),
@@ -144,8 +185,8 @@ class Config:
                 ob_startup_path=conn.get("ob_startup_path"),
                 ob_log_output=bool(conn.get("ob_log_output", False)),
             )
-        elif mode in ("HTTP", "HTTPC"):
-            self.connection = BotHTTPC(
+        if mode in ("HTTP", "HTTPC"):
+            return BotHTTPC(
                 host=conn.get("host", "127.0.0.1"),
                 port=conn.get("port", 0),
                 listener_host=conn.get("listener_host", "127.0.0.1"),
@@ -158,8 +199,64 @@ class Config:
                 ob_startup_path=conn.get("ob_startup_path"),
                 ob_log_output=bool(conn.get("ob_log_output", False)),
             )
-        else:
-            self.connection = conn
+        return dict(conn)
+
+    @classmethod
+    def _validate_platform_switches(cls, platform_switches: typing.Optional[dict], protocol: str) -> dict:
+        if platform_switches is None:
+            platform_switches = {}
+        if not isinstance(platform_switches, dict):
+            raise ValueError("platform_switches must be an object")
+        result = {item: False for item in SUPPORTED_PROTOCOLS}
+        for raw_name, enabled in platform_switches.items():
+            normalized_name = cls._normalize_protocol(raw_name)
+            if not isinstance(enabled, bool):
+                raise ValueError(f"platform_switches.{normalized_name} must be a boolean")
+            result[normalized_name] = enabled
+        result[protocol] = True
+        if not any(result.values()):
+            raise ValueError("At least one platform must be enabled")
+        return result
+
+    def load_from_file(self):
+        if not self.file:
+            raise ValueError("Config file path is required")
+        with open(self.file, "r", encoding="utf-8") as f:
+            config_json = json.load(f)
+
+        self.protocol = self._normalize_protocol(config_json.get("protocol", "OneBot"))
+        self.owner = config_json.get("owner") or []
+        self.black_list = config_json.get("black_list") or []
+        self.silents = config_json.get("silents") or []
+        platform_switches = config_json.get("platform_switches", config_json.get("platforms"))
+        self.platform_switches = self._validate_platform_switches(platform_switches, self.protocol)
+        if not self.platform_switches.get(self.protocol, False):
+            for protocol_name in SUPPORTED_PROTOCOLS:
+                if self.platform_switches.get(protocol_name, False):
+                    self.protocol = protocol_name
+                    break
+        self.feishu = self._validate_feishu_config(
+            config_json.get("feishu", config_json.get("Feishu")),
+            self.platform_switches.get("Feishu", False),
+        )
+        raw_connections = config_json.get("connections", config_json.get("Connections")) or {}
+        normalized_connections = {}
+        if isinstance(raw_connections, dict):
+            for raw_name, raw_conn in raw_connections.items():
+                try:
+                    name = self._normalize_protocol(raw_name)
+                except ValueError:
+                    continue
+                if isinstance(raw_conn, dict):
+                    normalized_connections[name] = dict(raw_conn)
+        legacy_conn = config_json.get("Connection") or config_json.get("connection") or {}
+        if not normalized_connections and isinstance(legacy_conn, dict) and legacy_conn:
+            normalized_connections[self.protocol] = dict(legacy_conn)
+        if self.protocol not in normalized_connections and isinstance(legacy_conn, dict) and legacy_conn:
+            normalized_connections[self.protocol] = dict(legacy_conn)
+        self.connections = normalized_connections
+        selected_conn = self.connections.get(self.protocol, {})
+        self.connection = self._build_connection_object(selected_conn)
 
         self.log_level = config_json.get("log_level", config_json.get("Log_level", "INFO"))
         self.others = config_json.get("others", config_json.get("Others", {})) or {}
@@ -180,8 +277,11 @@ class Config:
             black_list=self.black_list,
             silents=self.silents,
             Connection=self.connection.to_json() if hasattr(self.connection, "to_json") else self.connection,
+            connections={k: (v.to_json() if hasattr(v, "to_json") else v) for k, v in (self.connections or {}).items()},
             Log_level=self.log_level,
             protocol=self.protocol,
+            platform_switches=self.platform_switches,
+            feishu=self.feishu,
             Others=self.others,
         )
         with open(target, "w", encoding="utf-8") as f:

@@ -8,5 +8,7 @@ elif config.protocol == "Milky":
     from ..LecAdapters.MilkyLib.Res import SegmentBase, message_types
 elif config.protocol == "Kritor":
     from ..LecAdapters.KritorLib.Res import SegmentBase, message_types
+elif config.protocol == "Feishu":
+    from ..LecAdapters.OneBotLib.Res import SegmentBase, message_types
 else:
     from ..LecAdapters.OneBotLib.Res import SegmentBase, message_types

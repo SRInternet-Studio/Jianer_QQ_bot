@@ -1,5 +1,29 @@
 # 更新日志
 
+## JianerNext4 Dev-20260314a
+
+### 新增
+- 新增飞书平台适配器（`hyperot/LecAdapters/Feishu.py`），支持接收飞书消息并进入现有插件分发链路。
+- 新增飞书事件接收双模式：
+  - `long_connection`（基于 `lark-oapi` SDK 长连接）
+  - `webhook`（保留原回调模式作为兼容回退）
+- 新增按适配器拆分的连接配置结构 `connections`，支持 `OneBot/Milky/Kritor/Feishu` 独立连接参数。
+- 新增平台级管理员配置 `Others.platform_admins`，支持分别配置 `qq/feishu` 的 `root/super/manage`。
+
+### 变更
+- 将飞书配置补充为可运行集合：`event_mode/listener_host/listener_port/event_path/default_receive_id_type`。
+- 将事件上下文标准化，新增 `platform`、`session_id` 字段，便于插件按平台差异处理。
+- 优化命令解析逻辑：支持 `@机器人 #指令` 场景，不再要求消息必须以提醒符开头。
+- 飞书帮助消息发送改为文本分块发送，并对长消息自动切块，降低消息体过长导致发送失败的概率。
+- 新增飞书合并转发实现：先发送子消息并收集 `message_id`，再调用 `merge_forward` 接口；失败自动回退普通文本发送。
+
+### 修复
+- 修复飞书环境下 `#帮助` 无回复问题（原合并转发链路在飞书侧不稳定）。
+- 修复飞书发送失败时的静默异常问题，补充明确的 `code/msg` 日志输出。
+- 修复飞书不支持消息段的处理：语音与引用段在飞书模式下跳过，不再输出占位文本。
+- 修复飞书管理员权限识别问题，支持使用飞书 `open_id` 进行权限判定，恢复 `#重启` 等管理指令可用性。
+- 修复 `config` 读取逻辑，兼容新 `connections` 与旧 `Connection` 并存场景。
+
 ## JianerNext4 Dev-20260228a
 
 - 优化了一些问题.

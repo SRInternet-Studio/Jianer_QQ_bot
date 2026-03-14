@@ -14,6 +14,8 @@ elif config.protocol == "Milky":
     from .LecAdapters.MilkyLib.Manager import *
 elif config.protocol == "Kritor":
     from .LecAdapters.KritorLib.Manager import *
+elif config.protocol == "Feishu":
+    from .LecAdapters.OneBotLib.Manager import *
 else:
     from .LecAdapters.OneBotLib.Manager import *
 

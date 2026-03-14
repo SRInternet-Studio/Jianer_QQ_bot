@@ -24,3 +24,4 @@ jieba
 pandas>=2.0,<3.0
 tqdm
 akinator-python
+lark-oapi

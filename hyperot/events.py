@@ -103,6 +103,15 @@ class Event(ABC):
         self.post_type = data.get("post_type")
         self.user_id = data.get("user_id")
         self.group_id = data.get("group_id")
+        self.platform = data.get("platform") or config.protocol
+        self.session_id = data.get("session_id")
+        if not self.session_id:
+            if self.group_id is not None:
+                self.session_id = f"group:{self.group_id}"
+            elif self.user_id is not None:
+                self.session_id = f"user:{self.user_id}"
+            else:
+                self.session_id = ""
 
         self.is_owner = Integer.convert_from(self.user_id) in config.owner
         self.blocked = True if self.user_id in config.black_list or self.group_id in config.black_list else False
