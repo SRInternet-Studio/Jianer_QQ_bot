@@ -100,7 +100,7 @@ class Config:
     def __init__(
             self,
             file: str = None,
-            protocol: str = "OneBot",
+            protocol: typing.Union[str, list[str], tuple[str, ...]] = "OneBot",
             owner: list[int] = None,
             black_list: list[int] = None,
             silents: list[int] = None,
@@ -111,13 +111,16 @@ class Config:
             uin: int = 0,
             max_workers: int = 0,
             platform_switches: dict = None,
+            protocols: typing.Optional[list[str]] = None,
             feishu: dict = None,
             connections: dict = None,
     ):
         self.inited = False
         self.file = file
         if file is None:
-            self.protocol = self._normalize_protocol(protocol)
+            requested_protocols = protocols if protocols is not None else protocol
+            self.protocols = self._normalize_protocols(requested_protocols)
+            self.protocol = self.protocols[0]
             self.owner = owner or []
             self.black_list = black_list or []
             self.silents = silents or []
@@ -127,8 +130,11 @@ class Config:
             self.log_use_nf = bool(log_use_nf)
             self.uin = int(uin or 0)
             self.max_workers = int(max_workers or 0)
-            self.platform_switches = self._validate_platform_switches(platform_switches, self.protocol)
-            self.feishu = self._validate_feishu_config(feishu, self.platform_switches.get("Feishu", False))
+            if platform_switches is not None and protocols is None and isinstance(protocol, str):
+                merged_protocols = self._protocols_from_platform_switches(platform_switches, self.protocol)
+                self.protocols = merged_protocols
+                self.protocol = self.protocols[0]
+            self.feishu = self._validate_feishu_config(feishu, "Feishu" in self.protocols)
             self.connections = connections or {}
             self.inited = True
 
@@ -167,6 +173,38 @@ class Config:
         raise ValueError(f"Unsupported protocol: {protocol_text}")
 
     @staticmethod
+    def _normalize_protocols(protocols: typing.Any) -> list[str]:
+        if protocols is None or protocols == "":
+            return ["OneBot"]
+        if isinstance(protocols, (list, tuple)):
+            source = list(protocols)
+        else:
+            source = [protocols]
+        result = []
+        for item in source:
+            normalized = Config._normalize_protocol(item)
+            if normalized not in result:
+                result.append(normalized)
+        if not result:
+            raise ValueError("protocol must contain at least one supported protocol")
+        return result
+
+    @classmethod
+    def _protocols_from_platform_switches(cls, platform_switches: typing.Optional[dict], fallback_protocol: str) -> list[str]:
+        if not isinstance(platform_switches, dict):
+            return [fallback_protocol]
+        result = []
+        for raw_name, enabled in platform_switches.items():
+            normalized_name = cls._normalize_protocol(raw_name)
+            if not isinstance(enabled, bool):
+                raise ValueError(f"platform_switches.{normalized_name} must be a boolean")
+            if enabled and normalized_name not in result:
+                result.append(normalized_name)
+        if fallback_protocol not in result:
+            result.insert(0, fallback_protocol)
+        return result
+
+    @staticmethod
     def _build_connection_object(conn: typing.Any) -> typing.Union[BotWSC, BotHTTPC, dict]:
         if not isinstance(conn, dict):
             return conn if conn is not None else {}
@@ -201,43 +239,32 @@ class Config:
             )
         return dict(conn)
 
-    @classmethod
-    def _validate_platform_switches(cls, platform_switches: typing.Optional[dict], protocol: str) -> dict:
-        if platform_switches is None:
-            platform_switches = {}
-        if not isinstance(platform_switches, dict):
-            raise ValueError("platform_switches must be an object")
-        result = {item: False for item in SUPPORTED_PROTOCOLS}
-        for raw_name, enabled in platform_switches.items():
-            normalized_name = cls._normalize_protocol(raw_name)
-            if not isinstance(enabled, bool):
-                raise ValueError(f"platform_switches.{normalized_name} must be a boolean")
-            result[normalized_name] = enabled
-        result[protocol] = True
-        if not any(result.values()):
-            raise ValueError("At least one platform must be enabled")
-        return result
-
     def load_from_file(self):
         if not self.file:
             raise ValueError("Config file path is required")
         with open(self.file, "r", encoding="utf-8") as f:
             config_json = json.load(f)
 
-        self.protocol = self._normalize_protocol(config_json.get("protocol", "OneBot"))
+        protocol_value = config_json.get("protocol", "OneBot")
+        if isinstance(protocol_value, (list, tuple)):
+            self.protocols = self._normalize_protocols(protocol_value)
+        else:
+            normalized_protocol = self._normalize_protocol(protocol_value)
+            fallback_protocols = self._protocols_from_platform_switches(
+                config_json.get("platform_switches", config_json.get("platforms")),
+                normalized_protocol,
+            )
+            if config_json.get("platform_switches") is not None or config_json.get("platforms") is not None:
+                self.protocols = self._normalize_protocols(fallback_protocols)
+            else:
+                self.protocols = [normalized_protocol]
+        self.protocol = self.protocols[0]
         self.owner = config_json.get("owner") or []
         self.black_list = config_json.get("black_list") or []
         self.silents = config_json.get("silents") or []
-        platform_switches = config_json.get("platform_switches", config_json.get("platforms"))
-        self.platform_switches = self._validate_platform_switches(platform_switches, self.protocol)
-        if not self.platform_switches.get(self.protocol, False):
-            for protocol_name in SUPPORTED_PROTOCOLS:
-                if self.platform_switches.get(protocol_name, False):
-                    self.protocol = protocol_name
-                    break
         self.feishu = self._validate_feishu_config(
             config_json.get("feishu", config_json.get("Feishu")),
-            self.platform_switches.get("Feishu", False),
+            "Feishu" in self.protocols,
         )
         raw_connections = config_json.get("connections", config_json.get("Connections")) or {}
         normalized_connections = {}
@@ -279,8 +306,7 @@ class Config:
             Connection=self.connection.to_json() if hasattr(self.connection, "to_json") else self.connection,
             connections={k: (v.to_json() if hasattr(v, "to_json") else v) for k, v in (self.connections or {}).items()},
             Log_level=self.log_level,
-            protocol=self.protocol,
-            platform_switches=self.platform_switches,
+            protocol=self.protocols,
             feishu=self.feishu,
             Others=self.others,
         )
