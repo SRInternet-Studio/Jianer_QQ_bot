@@ -277,8 +277,10 @@ def has_emoji(s: str) -> bool: # emoji +1 功能
 def timing_message(actions: Listener.Actions):
     while True:
         if not os.path.isfile("timing_message.ini"):
+            now1 = datetime.datetime.now()
+            print(f"Current: {now1.hour:02}:{now1.minute:02}")
+            time.sleep(60 - now1.second)
             continue
-        
         with open("timing_message.ini", "r", encoding="utf-8") as f:
             content = f.read().strip()
         
