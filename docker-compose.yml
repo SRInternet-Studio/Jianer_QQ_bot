@@ -1,0 +1,31 @@
+services:
+  bot:
+    image: python:3.11-slim
+    container_name: jianer-bot
+    working_dir: /app
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./:/app
+    command: >
+      sh -c "python -m pip install --no-cache-dir -r requirements.txt --disable-pip-version-check --no-warn-script-location && python main.py"
+
+  webui:
+    image: python:3.11-slim
+    container_name: jianer-webui
+    working_dir: /app
+    restart: unless-stopped
+    profiles:
+      - webui
+    environment:
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+      WEBUI_PORT: ${WEBUI_PORT:-5000}
+    volumes:
+      - ./:/app
+    ports:
+      - "${WEBUI_PORT:-5000}:${WEBUI_PORT:-5000}"
+    command: >
+      sh -c "python -m pip install --no-cache-dir -r requirements.txt --disable-pip-version-check --no-warn-script-location && python app.py"
