@@ -1,0 +1,9 @@
+{
+  "FriendlyName": "example2",
+  "Model": "example",
+  "ResponseType": "parsername",
+  "ApiKey": "example",
+  "BaseUrl": "https://api.example.com/",
+  "Temperature": 0.7,
+  "MaxTokens": 2000
+}
