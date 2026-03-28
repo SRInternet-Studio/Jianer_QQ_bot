@@ -15,7 +15,7 @@
       "retries": 5,
       "satori_token": ""
     },
-    "Log_level": "DEBUG",
+    "Log_level": "INFO",
     "protocol": "OneBot",
     "Others": {
       "gemini_key": "",

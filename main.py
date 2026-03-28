@@ -8,6 +8,9 @@
 from Tools.tools import * 
 from Tools.suffix_manager import SuffixManager
 from Tools.jianer_memory import JianerMemoryService
+from Tools.Sanitizer_Tools import sanitize_for_tts
+from AI_bot.AIKernal import AIKernal
+from AI_bot.ContextManager import ContextManager
 print(title() + "\nWelcome to Jianer QQ Bot, Starting Kernal now...", end="\r") 
 
 # from Tools.GoogleAI import genai, Context, Parts, Roles, Schema
@@ -67,7 +70,11 @@ self_service_titles = False
 
 # AI Settings
 EnableNetwork = config.others.get("default_mode", "openai_normal")
+MAX_MESSAGE_LENGTH = int(config.others.get("max_message_length", 3))
 user_lists = {}
+private_ai_modes = {}
+sys_prompt = ""
+cmc = ContextManager()
 # class Tools:
 #     pass
 
@@ -322,6 +329,9 @@ def has_emoji(s: str) -> bool: # emoji +1 功能
 def timing_message(actions: Listener.Actions):
     while True:
         if not os.path.isfile("timing_message.ini"):
+            now1 = datetime.datetime.now()
+            print(f"Current: {now1.hour:02}:{now1.minute:02}")
+            time.sleep(60 - now1.second)
             continue
         
         with open("timing_message.ini", "r", encoding="utf-8") as f:
@@ -427,7 +437,7 @@ def Write_Settings(s: list, m: list) -> bool:
 async def handler(event: Events.Event, actions: Listener.Actions) -> None:
     global in_timing, bot_name, bot_name_en, reminder, config, ONE_SLOGAN, CONFUSED_WORD, stop_working, Wait_for_add_in, version_name
     global Super_User, Manage_User, ROOT_User # 全局用户组
-    global cmc, user_lists, sys_prompt, EnableNetwork # AI对话所必须
+    global cmc, user_lists, sys_prompt, EnableNetwork, private_ai_modes # AI对话所必须
     ADMINS = Super_User + ROOT_User + Manage_User
     SUPERS = Super_User + ROOT_User
     AIbot = AIKernal(actions, config, bot_name, reminder)
@@ -550,15 +560,45 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         user_message, order = str(event.message).strip(), ""
         sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user)
         presets = presets_tool.read_presets()
+        private_ai = private_ai_modes.get(str(event.user_id), EnableNetwork)
         if user_message.startswith(reminder):
             order_i = user_message.find(reminder)
             if order_i != -1:
                 order = user_message[order_i + len(reminder):].strip()
+                order = order.strip("'\"“”‘’`")
                 print(f"({event_user}) ORDER: {repr(order)}")
 
             if "帮助" == order or "用户帮助" == order:
                 content = help_message(event)
                 await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
+                return
+            elif f"ai管理菜单" == order:
+                ais = ARC_AI.list_available_ais()
+                current_ai_friendly = ARC_AI.get_current_ai_name(private_ai)
+                ai_list_str = "\n".join([f"- {friendly} (代码: {name})" for name, friendly in ais.items()])
+                menu = f'''{bot_name} {bot_name_en} - 私聊AI管理菜单
+————————————————————
+当前使用的AI: {current_ai_friendly} (代码: {private_ai})
+
+可用AI列表:
+{ai_list_str}
+
+指令:
+{reminder}切换AI [AI代码] —> 仅切换你自己的私聊AI
+例如: {reminder}切换AI gemini
+'''
+                await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(menu)))
+                return
+            elif order.startswith("切换AI "):
+                target_ai = order.replace("切换AI ", "", 1).strip()
+                available_ais = ARC_AI.list_available_ais()
+                if target_ai in available_ais:
+                    private_ai_modes[str(event.user_id)] = target_ai
+                    private_ai = target_ai
+                    friendly_name = available_ais[target_ai]
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"已切换你的私聊AI为: {friendly_name} ({target_ai})")))
+                else:
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"找不到AI配置: {target_ai}，请检查代码拼写。")))
                 return
             elif "角色扮演" == order:
                 prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
@@ -579,7 +619,25 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(p_info)))
                     return
 
-        cmc, user_lists, result = await AIbot.generate_response(EnableNetwork, cmc, sys_prompt, user_lists, event)
+        private_input = order if order else user_message
+        response_stream = ARC_AI.get_response_stream(
+            private_ai,
+            private_input,
+            user_lists,
+            event.user_id,
+            sys_prompt,
+            []
+        )
+        private_result = ""
+        async for partial, r_type in response_stream:
+            if r_type != "message":
+                user_lists = partial
+                continue
+            private_result += str(partial)
+        private_result = private_result.rstrip()
+        if not private_result:
+            private_result = "（无可用回复）"
+        await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(private_result)))
             
     elif isinstance(event, Events.GroupMessageEvent):
         global second_start
@@ -594,7 +652,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             event_user = str(event.user_id)
                     
         # 初始化预设
-        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, event_user)
+        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user)
         base_sys_prompt = sys_prompt
         presets = presets_tool.read_presets()
         try:
@@ -1983,6 +2041,13 @@ def help_message(event) -> str:
        {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
        {reminder}设置特定后缀 (后缀) —> 给你自己的回复加后缀
        {reminder}删除特定后缀 —> 删除你自己的后缀
+快来聊天吧(*≧︶≦)'''
+    elif isinstance(event, Events.PrivateMessageEvent):
+        return f'''如何与{bot_name}私聊( •̀ ω •́ )✧
+       (任意问题，必填) —> {bot_name}回复
+       {reminder}ai管理菜单 —> 查看你可用的私聊AI配置
+       {reminder}切换AI [AI代码] —> 仅切换你自己的私聊AI
+       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
 快来聊天吧(*≧︶≦)'''
 
 Listener.run()
