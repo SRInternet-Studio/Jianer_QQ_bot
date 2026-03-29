@@ -2,7 +2,7 @@ asyncio
 datetime
 emoji
 openai>=1.35.12
-requests>2.33.0
+requests>=2.33.0
 aiohttp
 psutil
 pillow
