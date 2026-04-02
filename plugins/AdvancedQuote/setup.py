@@ -1,6 +1,6 @@
-import plugins.AdvancedQuote.AdvancedQuote as Quote
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
+﻿import plugins.AdvancedQuote.AdvancedQuote as Quote
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
 
 TRIGGHT_KEYWORD = "名人名言"
 HELP_MESSAGE = f"{Configurator.cm.get_cfg().others['reminder']}名人名言【引用一条消息】 —> {Configurator.cm.get_cfg().others['bot_name']}将消息载入史诗"
@@ -28,3 +28,4 @@ async def on_message(event, actions, Manager, Segments, os, gen_message):
         else:
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("在记录一条名言之前先引用一条消息噢 ☆ヾ(≧▽≦*)o")))
         return True
+

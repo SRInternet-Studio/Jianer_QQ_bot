@@ -1,13 +1,13 @@
-from Hyper import Configurator
+from hyperot import configurator as Configurator
 import asyncio
 import time
 import json
 import os
 import random
 from datetime import datetime
-from Hyper import Manager, Segments
+from hyperot import common as Manager, segments as Segments
 
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
+Configurator.ensure_config_manager(file="config.json")
 
 TRIGGHT_KEYWORD = "Any"  
 HELP_MESSAGE = f"超我/赞我 —> 给你的QQ名片点赞10次"

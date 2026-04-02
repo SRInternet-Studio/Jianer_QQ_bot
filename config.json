@@ -6,22 +6,56 @@
     ],
     "silents": [
     ],
-    "Connection": {
-      "mode": "FWS",
-      "host": "127.0.0.1",
-      "port": 5004,
-      "listener_host": "127.0.0.1",
-      "listener_port": 5003,
-      "retries": 5,
-      "satori_token": ""
+    "Connections": {
+        "OneBot": {
+            "mode": "FWS",
+            "host": "127.0.0.1",
+            "port": 5004,
+            "listener_host": "127.0.0.1",
+            "listener_port": 8081,
+            "retries": 5,
+            "token": null,
+            "auth": null
+        },
+        "Milky": {
+            "mode": "FWS",
+            "host": "127.0.0.1",
+            "port": 3010,
+            "listener_host": "127.0.0.1",
+            "listener_port": 5003,
+            "retries": 5, 
+            "auth": "<YOUR_AUTH>"
+        },
+        "Kritor": {
+            "host": "127.0.0.1",
+            "port": 8554,
+            "retries": 5
+        },
+        "Feishu": {
+            "mode": "HTTPC",
+            "host": "0.0.0.0",
+            "port": 8081,
+            "listener_host": "0.0.0.0",
+            "listener_port": 8081,
+            "retries": 5,
+            "event_mode": "long_connection",
+            "app_id": "cli_a93ea113ed78dbdf",
+            "app_secret": "<YOUR_APP_SECRET>",
+            "verification_token": "<YOUR_VERIFICATION_TOKEN>",
+            "encrypt_key": "<YOUR_ENCRYPT_KEY>",
+            "callback_path": "/feishu/callback",
+            "base_url": "https://open.feishu.cn",
+            "token_refresh_skew_seconds": 300,
+            "bot_open_id": ""
+        }
     },
     "Log_level": "INFO",
-    "protocol": "OneBot",
+    "protocol": "Feishu",
     "Others": {
       "gemini_key": "",
       "openai_key": "",
       "deepseek_key": "",
-      "default_mode": "deepseek",
+      "default_mode": "Ds",
       "bot_name": "简儿",
       "bot_name_en": "Jianer",
       "ROOT_User": [""],

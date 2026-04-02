@@ -1,6 +1,6 @@
 import os
-from Hyper import Segments
-from Hyper.Events import *
+from hyperot import segments as Segments
+from hyperot.events import *
 from Tools.site_catch import Catcher
 from Tools import tools as t
 

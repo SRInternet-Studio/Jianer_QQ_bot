@@ -176,4 +176,5 @@ lgr/
 .trae
 .claude/
 .claude
-AGENTS.md
+AGENTS.MD
+config2.json

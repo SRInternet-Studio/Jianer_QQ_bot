@@ -1,14 +1,14 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from Tools.GoogleAI import Context, Parts, Roles, Schema
 from Tools.SearchOnline import network_gpt as SearchOnline
 from Tools.deepseek import dsr114 as deepseek
 from Tools.Sanitizer_Tools import sanitize_for_tts
 from Tools.tools import replace_at_with_nickname, get_user_nickname, replace_scheme_with_http
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
-from Hyper import Listener, Events, Logger, Manager, Segments
-from Hyper.Utils import Logic
-from Hyper.Events import *
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
+from hyperot import listener as Listener, events as Events, hyperogger as Logger, common as Manager, segments as Segments
+from hyperot.utils import logic as Logic
+from hyperot.events import *
 from typing import Union
 
 MAX_MESSAGE_LENGTH = 3

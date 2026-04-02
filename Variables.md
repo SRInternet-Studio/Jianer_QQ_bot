@@ -144,7 +144,7 @@ cached_content=None)```
 'OpenAI': <class'openai.OpenAI'>,
 'requests': <module'requests'from'/usr/lib/python3/dist-packages/requests/__init__.py'>,
 'aiohttp': <module'aiohttp'from'/usr/local/lib/python3.12/dist-packages/aiohttp/__init__.py'>,
-'Configurator': <module'Hyper.Configurator'from'/usr/local/lib/python3.12/dist-packages/Hyper/Configurator.py'>,
+'Configurator': <module'hyperot.configurator'from'/usr/local/lib/python3.12/dist-packages/hyperot/configurator.py'>,
 'platform': <module'platform'from'/usr/lib/python3.12/platform.py'>,
 'psutil': <module'psutil'from'/usr/lib/python3/dist-packages/psutil/__init__.py'>,
 'subprocess': <module'subprocess'from'/usr/lib/python3.12/subprocess.py'>,
@@ -161,39 +161,39 @@ cached_content=None)```
 3. ```'Events'```
 > 事件类型模块，具有以下子目：
 > 
-> 'MessageEvent': <class'Hyper.Events.MessageEvent'>,
+> 'MessageEvent': <class'hyperot.events.MessageEvent'>,
 > 
-> 'PrivateMessageEvent': <class'Hyper.Events.PrivateMessageEvent'>,
+> 'PrivateMessageEvent': <class'hyperot.events.PrivateMessageEvent'>,
 > 
-> 'GroupMessageEvent': <class'Hyper.Events.GroupMessageEvent'>,
+> 'GroupMessageEvent': <class'hyperot.events.GroupMessageEvent'>,
 > 
-> 'NoticeEvent': <class'Hyper.Events.NoticeEvent'>,
+> 'NoticeEvent': <class'hyperot.events.NoticeEvent'>,
 > 
-> 'GroupFileUploadEvent': <class'Hyper.Events.GroupFileUploadEvent'>,
+> 'GroupFileUploadEvent': <class'hyperot.events.GroupFileUploadEvent'>,
 > 
-> 'GroupAdminEvent': <class'Hyper.Events.GroupAdminEvent'>,
+> 'GroupAdminEvent': <class'hyperot.events.GroupAdminEvent'>,
 > 
-> 'GroupMemberDecreaseEvent': <class'Hyper.Events.GroupMemberDecreaseEvent'>,
+> 'GroupMemberDecreaseEvent': <class'hyperot.events.GroupMemberDecreaseEvent'>,
 > 
-> 'GroupMemberIncreaseEvent': <class'Hyper.Events.GroupMemberIncreaseEvent'>,
+> 'GroupMemberIncreaseEvent': <class'hyperot.events.GroupMemberIncreaseEvent'>,
 > 
-> 'GroupMuteEvent': <class'Hyper.Events.GroupMuteEvent'>,
+> 'GroupMuteEvent': <class'hyperot.events.GroupMuteEvent'>,
 > 
-> 'FriendAddEvent': <class'Hyper.Events.FriendAddEvent'>,
+> 'FriendAddEvent': <class'hyperot.events.FriendAddEvent'>,
 > 
-> 'GroupRecallEvent': <class'Hyper.Events.GroupRecallEvent'>,
+> 'GroupRecallEvent': <class'hyperot.events.GroupRecallEvent'>,
 > 
-> 'FriendRecallEvent': <class'Hyper.Events.FriendRecallEvent'>,
+> 'FriendRecallEvent': <class'hyperot.events.FriendRecallEvent'>,
 > 
-> 'NotifyEvent': <class'Hyper.Events.NotifyEvent'>,
+> 'NotifyEvent': <class'hyperot.events.NotifyEvent'>,
 > 
-> 'GroupEssenceEvent': <class'Hyper.Events.GroupEssenceEvent'>,
+> 'GroupEssenceEvent': <class'hyperot.events.GroupEssenceEvent'>,
 > 
-> 'MessageReactionEvent': <class'Hyper.Events.MessageReactionEvent'>,
+> 'MessageReactionEvent': <class'hyperot.events.MessageReactionEvent'>,
 > 
-> 'RequestEvent': <class'Hyper.Events.RequestEvent'>,
+> 'RequestEvent': <class'hyperot.events.RequestEvent'>,
 > 
-> 'GroupAddInviteEvent': <class'Hyper.Events.GroupAddInviteEvent'>,
+> 'GroupAddInviteEvent': <class'hyperot.events.GroupAddInviteEvent'>,
 > 
 > 详见[文档](https://harcicyang.github.io/hyper-bot/more/classes.html#events-%E6%A8%A1%E5%9D%97)
 

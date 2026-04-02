@@ -2,6 +2,9 @@ import json
 import os
 import re
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 
 class SuffixManager:
     def __init__(self, config_file="suffix_config.json"):
@@ -16,9 +19,26 @@ class SuffixManager:
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, "r", encoding="utf-8") as f:
-                    self.config = json.load(f)
+                    content = f.read().strip()
+                if not content:
+                    raise ValueError("配置文件为空")
+                loaded = json.loads(content)
+                if not isinstance(loaded, dict):
+                    raise ValueError("配置文件格式错误")
+                user_suffixes = loaded.get("user_suffixes", {})
+                if not isinstance(user_suffixes, dict):
+                    user_suffixes = {}
+                self.config = {
+                    "global_suffix": loaded.get("global_suffix", ""),
+                    "user_suffixes": user_suffixes
+                }
             except Exception as e:
-                print(f"SuffixManager: 加载配置文件失败: {e}")
+                logger.error(f"SuffixManager: 加载配置文件失败: {e}")
+                self.config = {
+                    "global_suffix": "",
+                    "user_suffixes": {}
+                }
+                self.save_config()
         else:
             self.save_config()
 
@@ -27,7 +47,7 @@ class SuffixManager:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            print(f"SuffixManager: 保存配置文件失败: {e}")
+            logger.error(f"SuffixManager: 保存配置文件失败: {e}")
 
     def set_global_suffix(self, suffix):
         self.config["global_suffix"] = suffix
@@ -92,4 +112,3 @@ class SuffixManager:
                 processed_text += suffix
                 
         return processed_text
-

@@ -2,8 +2,8 @@ import subprocess, gc
 from plugins.RunCommand.execute_command import execute_command
 from plugins.RunCommand.DANGEROUS_PATTERNS import DANGEROUS_PATTERNS
 from Tools import tools as t
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
 
 TRIGGHT_KEYWORD = "runcommand"
 HELP_MESSAGE = f"{Configurator.cm.get_cfg().others['reminder']}runcommand (命令，必填) —> 通过命令实现更多功能（需要SU）"
@@ -81,3 +81,4 @@ async def get_user_nickname(uid, Manager, actions) -> str:
         return f"@{user_info['nickname']}({uid})"
     else:
         return str(uid)
+

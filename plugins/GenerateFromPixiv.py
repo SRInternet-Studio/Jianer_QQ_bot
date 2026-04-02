@@ -1,5 +1,5 @@
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
 import aiohttp, os
 from Tools.capture_screenshot import capture_screenshot
 

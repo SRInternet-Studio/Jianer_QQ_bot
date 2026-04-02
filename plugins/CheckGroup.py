@@ -1,9 +1,9 @@
-import json, aiohttp, uuid
+﻿import json, aiohttp, uuid
 from datetime import datetime
 
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
-from Hyper import Listener
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
+from hyperot import listener as Listener
 
 TRIGGHT_KEYWORD = "开群"
 HELP_MESSAGE = f"{Configurator.cm.get_cfg().others['reminder']}开群 【群号码】 —> 打开该群的账户 👁"
@@ -91,3 +91,4 @@ def parse_group_info(group_dict, ADMINS, SUPERS, ROOT_User):
     except Exception as e:
         print(f"解析失败: {e}")
         return ("", "无法打开该群的信息")
+

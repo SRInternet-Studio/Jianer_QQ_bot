@@ -1,6 +1,6 @@
-import requests
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
+﻿import requests
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
 
 reminder = Configurator.cm.get_cfg().others["reminder"]
 bot_name = Configurator.cm.get_cfg().others["bot_name"]
