@@ -8,14 +8,13 @@ psutil
 pillow
 google-generativeai==0.7.2
 httpx
-hyper-bot==0.78.2
 flask
 flask-sock
 websocket-client
 paramiko>=3.5.1
 edge_tts
 pyGithub
-pynvml
+nvidia-ml-py
 flask-cors
 flask-socketio
 playwright
@@ -23,3 +22,4 @@ pymysql
 cryptography
 aiohttp
 pycryptodome
+lark-oapi

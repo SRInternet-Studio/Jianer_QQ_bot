@@ -8,7 +8,7 @@
 <img alt="GitLab Stars" src="https://img.shields.io/github/stars/SRInternet-Studio/Jianer_QQ_bot?label=Stars">
   <img alt="GitHub Downloads (all assets, all releases)" src="https://img.shields.io/github/downloads/SRInternet-Studio/Jianer_QQ_bot/total?style=social&logo=github&label=%E4%B8%8B%E8%BD%BD%E9%87%8F">
 
-这里是简儿的 NEXT 4 分支，包含最新的前沿AI功能。
+这里是简儿的 Canary 分支
 
 </div>
  

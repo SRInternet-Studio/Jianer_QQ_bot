@@ -7,8 +7,12 @@ from aiohttp import ClientTimeout
 # WebSocket URL配置
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
-WEBSOCKET_URL = f"ws://{config['Connection']['host']}:{config['Connection']['port']}"
-print(f"WEBSOCKET: {WEBSOCKET_URL} connected")
+
+protocol = config.get("protocol", "OneBot")
+connections = config.get("Connections", {})
+conn_config = connections.get(protocol, connections.get("OneBot", {}))
+WEBSOCKET_URL = f"ws://{conn_config.get('host', '127.0.0.1')}:{conn_config.get('port', 8080)}"
+
 
 async def get_user_info_from_websocket(user_id, Manager=None, actions=None):
     """
@@ -23,6 +27,15 @@ async def get_user_info_from_websocket(user_id, Manager=None, actions=None):
         tuple: (是否成功, 用户信息字典)
     """
     try:
+        if actions is not None:
+            try:
+                result = await actions.get_stranger_info(user_id=user_id)
+                data = getattr(result, "data", None)
+                raw = getattr(data, "raw", None)
+                if isinstance(raw, dict) and raw:
+                    return True, raw
+            except Exception:
+                pass
         # 设置超时时间：连接超时10秒，总超时30秒
         timeout = ClientTimeout(total=30, connect=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:

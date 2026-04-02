@@ -1,10 +1,10 @@
-import json, aiohttp, uuid
+﻿import json, aiohttp, uuid
 import traceback
 from datetime import datetime
 
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
-from Hyper import Listener
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
+from hyperot import listener as Listener
 
 TRIGGHT_KEYWORD = "开"
 HELP_MESSAGE = f"{Configurator.cm.get_cfg().others['reminder']}开 【@一个用户/QQ号】 —> 打开该用户的账户 👁"

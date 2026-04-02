@@ -1,6 +1,6 @@
-from Tools.GoogleAI import Context
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
+﻿from Tools.GoogleAI import Context
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
 
 tools = [] #["google_search"]
 generation_config = {
@@ -54,3 +54,4 @@ class ContextManager:
             del self.groups[gid][uin]
         if str(uin) in user_lists:
             del user_lists[str(uin)]
+

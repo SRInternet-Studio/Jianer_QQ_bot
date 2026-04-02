@@ -1,10 +1,12 @@
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from typing import Tuple, Optional, Any
 import platform
 import psutil
-import pynvml
 import io, gc, os
+import shutil, subprocess
+import warnings
 import edge_tts
+import hashlib
 from .user_info import get_user_info_from_websocket, get_nickname_by_userid
 from urllib.parse import urlparse, urlunparse
 
@@ -77,25 +79,34 @@ def get_system_info():
     # GPU信息（使用pynvml）
     gpu_count = 0
     gpu_usage = []
+    pynvml_module = None
     try:
-        pynvml.nvmlInit()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=FutureWarning,
+                message=".*pynvml package is deprecated.*"
+            )
+            import pynvml as pynvml_module
+    except Exception:
+        pynvml_module = None
+
+    if pynvml_module is not None:
         try:
-            device_count = pynvml.nvmlDeviceGetCount()
-            if device_count > 0:
-                gpu_count = device_count
-                for i in range(device_count):
-                    handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                    utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                    load = utilization.gpu / 100.0
-                    gpu_usage.append(load)
-        finally:
-            pynvml.nvmlShutdown()              # 无论是否成功获取，都关闭NVML
-    except pynvml.NVMLError as e:
-        # 没有NVIDIA驱动/GPU，或初始化失败，忽略错误
-        print(f"pynvml error: {e}")
-    except Exception as e:
-        # 其他意外错误
-        print(f"Unexpected error in GPU detection: {e}")
+            pynvml_module.nvmlInit()
+            try:
+                device_count = pynvml_module.nvmlDeviceGetCount()
+                if device_count > 0:
+                    gpu_count = device_count
+                    for i in range(device_count):
+                        handle = pynvml_module.nvmlDeviceGetHandleByIndex(i)
+                        utilization = pynvml_module.nvmlDeviceGetUtilizationRates(handle)
+                        load = utilization.gpu / 100.0
+                        gpu_usage.append(load)
+            finally:
+                pynvml_module.nvmlShutdown()
+        except Exception as e:
+            print(f"pynvml error: {e}")
 
     # GPU信息（是否有）
     try:
@@ -239,3 +250,101 @@ async def replace_at_with_nickname(message, Manager, Segments, actions) -> str:
         else:
             new_message.append(str(segment))
     return "".join(new_message)
+
+
+def create_help_message_image(help_text: str, background_path: str = "assets/bg.jpeg") -> Optional[str]:
+    try:
+        if not help_text:
+            return None
+        if not os.path.isabs(background_path):
+            background_path = os.path.abspath(background_path)
+        if not os.path.isfile(background_path):
+            return None
+
+        image = Image.open(background_path).convert("RGB")
+        target_width = 1920
+        target_height = 1080
+        image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
+        overlay = Image.new("RGBA", (target_width, target_height), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        panel_left = 40
+        panel_top = 36
+        panel_right = target_width - 40
+        panel_bottom = target_height - 36
+        panel_radius = 28
+        draw.rounded_rectangle(
+            (panel_left, panel_top, panel_right, panel_bottom),
+            radius=panel_radius,
+            fill=(255, 255, 255, 220),
+            outline=(255, 255, 255, 245),
+            width=2,
+        )
+
+        font_candidates = [
+            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\msyhbd.ttc",
+            r"C:\Windows\Fonts\simhei.ttf",
+            r"C:\Windows\Fonts\simsun.ttc",
+        ]
+        font = None
+        for fp in font_candidates:
+            if os.path.isfile(fp):
+                try:
+                    font = ImageFont.truetype(fp, 28)
+                    break
+                except Exception:
+                    pass
+        if font is None:
+            font = ImageFont.load_default()
+
+        text_padding_x = 36
+        text_padding_y = 30
+        text_x = panel_left + text_padding_x
+        text_y = panel_top + text_padding_y
+        max_width = (panel_right - panel_left) - text_padding_x * 2
+        line_spacing = 12
+
+        wrapped_lines = []
+        for raw_line in str(help_text).splitlines():
+            raw_line = raw_line.rstrip()
+            if raw_line == "":
+                wrapped_lines.append("")
+                continue
+            current = ""
+            for ch in raw_line:
+                probe = current + ch
+                if draw.textlength(probe, font=font) <= max_width:
+                    current = probe
+                else:
+                    if current:
+                        wrapped_lines.append(current)
+                    current = ch
+            if current:
+                wrapped_lines.append(current)
+
+        line_height = font.getbbox("简A")[3] - font.getbbox("简A")[1]
+        max_lines = int(((panel_bottom - panel_top) - text_padding_y * 2) / (line_height + line_spacing))
+        if len(wrapped_lines) > max_lines and max_lines > 0:
+            wrapped_lines = wrapped_lines[:max_lines]
+            if wrapped_lines[-1]:
+                last = wrapped_lines[-1]
+                while last and draw.textlength(last + "...", font=font) > max_width:
+                    last = last[:-1]
+                wrapped_lines[-1] = (last or "") + "..."
+
+        cursor_y = text_y
+        for line in wrapped_lines:
+            draw.text((text_x, cursor_y), line, fill=(31, 58, 78, 255), font=font)
+            cursor_y += line_height + line_spacing
+
+        merged = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+        out_dir = os.path.abspath(os.path.join("static", "help_cards"))
+        os.makedirs(out_dir, exist_ok=True)
+        digest = hashlib.md5(help_text.encode("utf-8")).hexdigest()
+        out_path = os.path.join(out_dir, f"help_{digest}.jpg")
+        merged.save(out_path, format="JPEG", quality=92)
+        return out_path
+    except Exception:
+        return None

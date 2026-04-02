@@ -1,11 +1,11 @@
-import json
+﻿import json
 import asyncio
 import aiohttp
 import datetime
 import random
 from typing import Optional, Any
-from Hyper import Configurator
-Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
+from hyperot import configurator as Configurator
+Configurator.ensure_config_manager(file="config.json")
 url = f"ws://{Configurator.cm.get_cfg().connection.host}:{Configurator.cm.get_cfg().connection.port}"
 
 def send_log(level, message):
@@ -61,3 +61,4 @@ async def ws_custom_api(action:str,params:dict) -> dict:
                 else:
                     await asyncio.sleep(0.5)
     return {"status": "failed", "retcode": -7, "msg": "所有尝试均失败"}
+
