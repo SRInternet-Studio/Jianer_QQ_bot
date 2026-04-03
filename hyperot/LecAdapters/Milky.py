@@ -124,6 +124,8 @@ class Actions:
                 seq = data.get("message_seq")
                 if seq is not None:
                     data["message_id"] = msg_enid(scene, int(seq), peer_id)
+                else:
+                    data["message_id"] = 0
         logger.info(f"向{(('群 ' + str(group_id)) if group_id else ('用户' + str(user_id))) + ' '}发送：{str(message)}")
         return common.Ret.fetch(packet.echo, MsgSendRsp)
 

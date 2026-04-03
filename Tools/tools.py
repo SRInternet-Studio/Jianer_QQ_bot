@@ -251,8 +251,7 @@ async def replace_at_with_nickname(message, Manager, Segments, actions) -> str:
             new_message.append(str(segment))
     return "".join(new_message)
 
-
-def create_help_message_image(help_text: str, background_path: str = "assets/bg.jpeg") -> Optional[str]:
+async def create_help_message_image_async(help_text: str, background_path: str = "assets/bg.jpeg") -> Optional[str]:
     try:
         if not help_text:
             return None
@@ -261,90 +260,213 @@ def create_help_message_image(help_text: str, background_path: str = "assets/bg.
         if not os.path.isfile(background_path):
             return None
 
-        image = Image.open(background_path).convert("RGB")
-        target_width = 1920
-        target_height = 1080
-        image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
-
-        overlay = Image.new("RGBA", (target_width, target_height), (255, 255, 255, 0))
-        draw = ImageDraw.Draw(overlay)
-
-        panel_left = 40
-        panel_top = 36
-        panel_right = target_width - 40
-        panel_bottom = target_height - 36
-        panel_radius = 28
-        draw.rounded_rectangle(
-            (panel_left, panel_top, panel_right, panel_bottom),
-            radius=panel_radius,
-            fill=(255, 255, 255, 220),
-            outline=(255, 255, 255, 245),
-            width=2,
-        )
-
-        font_candidates = [
-            r"C:\Windows\Fonts\msyh.ttc",
-            r"C:\Windows\Fonts\msyhbd.ttc",
-            r"C:\Windows\Fonts\simhei.ttf",
-            r"C:\Windows\Fonts\simsun.ttc",
-        ]
-        font = None
-        for fp in font_candidates:
-            if os.path.isfile(fp):
-                try:
-                    font = ImageFont.truetype(fp, 28)
-                    break
-                except Exception:
-                    pass
-        if font is None:
-            font = ImageFont.load_default()
-
-        text_padding_x = 36
-        text_padding_y = 30
-        text_x = panel_left + text_padding_x
-        text_y = panel_top + text_padding_y
-        max_width = (panel_right - panel_left) - text_padding_x * 2
-        line_spacing = 12
-
-        wrapped_lines = []
-        for raw_line in str(help_text).splitlines():
-            raw_line = raw_line.rstrip()
-            if raw_line == "":
-                wrapped_lines.append("")
-                continue
-            current = ""
-            for ch in raw_line:
-                probe = current + ch
-                if draw.textlength(probe, font=font) <= max_width:
-                    current = probe
-                else:
-                    if current:
-                        wrapped_lines.append(current)
-                    current = ch
-            if current:
-                wrapped_lines.append(current)
-
-        line_height = font.getbbox("简A")[3] - font.getbbox("简A")[1]
-        max_lines = int(((panel_bottom - panel_top) - text_padding_y * 2) / (line_height + line_spacing))
-        if len(wrapped_lines) > max_lines and max_lines > 0:
-            wrapped_lines = wrapped_lines[:max_lines]
-            if wrapped_lines[-1]:
-                last = wrapped_lines[-1]
-                while last and draw.textlength(last + "...", font=font) > max_width:
-                    last = last[:-1]
-                wrapped_lines[-1] = (last or "") + "..."
-
-        cursor_y = text_y
-        for line in wrapped_lines:
-            draw.text((text_x, cursor_y), line, fill=(31, 58, 78, 255), font=font)
-            cursor_y += line_height + line_spacing
-
-        merged = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
         out_dir = os.path.abspath(os.path.join("static", "help_cards"))
         os.makedirs(out_dir, exist_ok=True)
         digest = hashlib.md5(help_text.encode("utf-8")).hexdigest()
         out_path = os.path.join(out_dir, f"help_{digest}.jpg")
-        merged.save(out_path, format="JPEG", quality=92)
-        return out_path
-    except Exception:
+        
+        # 缓存机制：如果已经生成过该图片，直接返回
+        if os.path.exists(out_path):
+            return out_path
+
+        import html
+        from Tools.site_catch import Catcher
+
+        safe_text = html.escape(help_text)
+        bg_url = "file:///" + background_path.replace("\\", "/")
+
+        # 文本解析逻辑：极简玻璃卡片式UI
+        lines = help_text.strip().split('\n')
+        html_lines = []
+        
+        in_commands = False
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+                
+            is_cmd = False
+            cmd, desc = None, None
+            if '—>' in line:
+                cmd, desc = line.split('—>', 1)
+                is_cmd = True
+            elif '->' in line:
+                cmd, desc = line.split('->', 1)
+                is_cmd = True
+                
+            if is_cmd:
+                if not in_commands:
+                    html_lines.append('<div class="commands-container">')
+                    in_commands = True
+                
+                cmd = html.escape(cmd.strip())
+                desc = html.escape(desc.strip())
+                html_lines.append(f'''
+                <div class="command-item">
+                    <div class="cmd-badge">{cmd}</div>
+                    <div class="cmd-desc">{desc}</div>
+                </div>
+                ''')
+            else:
+                if in_commands:
+                    html_lines.append('</div>')
+                    in_commands = False
+                    
+                if line.startswith('注：') or line.startswith('注意：'):
+                    html_lines.append(f'<div class="notice-box">{html.escape(line)}</div>')
+                elif '示例' in line or '举个' in line:
+                    html_lines.append(f'<div class="example-box">{html.escape(line)}</div>')
+                else:
+                    if i == 0:
+                        html_lines.append(f'<div class="title-line">{html.escape(line)}</div>')
+                    elif i == len(lines) - 1:
+                        html_lines.append(f'<div class="footer-line">{html.escape(line)}</div>')
+                    else:
+                        html_lines.append(f'<div class="text-line">{html.escape(line)}</div>')
+                        
+        if in_commands:
+            html_lines.append('</div>')
+
+        parsed_html_content = '\n'.join(html_lines)
+
+        html_content = f"""
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>help_{digest}</title>
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            width: 1080px;
+            min-height: 1080px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #000;
+            background-image: url('{bg_url}');
+            background-size: cover;
+            background-position: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: #fff;
+        }}
+        .container {{
+            width: 860px;
+            margin: 80px auto;
+            background: rgba(20, 20, 20, 0.5);
+            backdrop-filter: blur(40px) saturate(120%);
+            -webkit-backdrop-filter: blur(40px) saturate(120%);
+            border-radius: 32px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
+            padding: 70px 80px;
+            box-sizing: border-box;
+        }}
+        .content {{
+            display: flex;
+            flex-direction: column;
+        }}
+        .title-line {{
+            font-size: 38px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            text-align: center;
+            letter-spacing: 2px;
+            color: #fff;
+        }}
+        .notice-box {{
+            font-size: 20px;
+            color: rgba(255, 255, 255, 0.6);
+            margin-bottom: 45px;
+            text-align: center;
+            font-weight: 400;
+            letter-spacing: 1px;
+        }}
+        .commands-container {{
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            margin-bottom: 45px;
+        }}
+        .command-item {{
+            display: flex;
+            align-items: center;
+        }}
+        .cmd-badge {{
+            font-size: 22px;
+            font-weight: 500;
+            color: #fff;
+            width: 280px;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 12px 20px;
+            border-radius: 12px;
+            text-align: right;
+            margin-right: 24px;
+            box-sizing: border-box;
+            letter-spacing: 1px;
+        }}
+        .cmd-desc {{
+            font-size: 22px;
+            color: rgba(255, 255, 255, 0.85);
+            font-weight: 400;
+            line-height: 1.5;
+            flex: 1;
+        }}
+        .example-box {{
+            font-size: 20px;
+            color: rgba(255, 255, 255, 0.6);
+            text-align: center;
+            margin-bottom: 30px;
+            font-style: italic;
+        }}
+        .footer-line {{
+            text-align: center;
+            font-size: 24px;
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: 500;
+            margin-top: 10px;
+            letter-spacing: 1px;
+        }}
+        .text-line {{
+            font-size: 22px;
+            color: rgba(255, 255, 255, 0.8);
+            margin-bottom: 16px;
+            text-align: center;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="content">{parsed_html_content}</div>
+    </div>
+</body>
+</html>
+"""
+        temps_dir = os.path.abspath("temps")
+        os.makedirs(temps_dir, exist_ok=True)
+        temp_html_path = os.path.join(temps_dir, f"help_{digest}.html")
+        with open(temp_html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+
+        catcher = await Catcher.init()
+        try:
+            # 使用 (1080, 0) 让高度自适应，但由于body有min-height 1080，效果会很好看
+            res_path = await catcher.catch(f"file:///{temp_html_path.replace(chr(92), '/')}", (0, 0))
+            if os.path.exists(res_path):
+                # 转为JPEG并保存，减小体积
+                img = Image.open(res_path).convert("RGB")
+                img.save(out_path, format="JPEG", quality=92)
+                os.remove(res_path)
+        finally:
+            await catcher.quit()
+            if os.path.exists(temp_html_path):
+                os.remove(temp_html_path)
+
+        return out_path if os.path.exists(out_path) else None
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return None
