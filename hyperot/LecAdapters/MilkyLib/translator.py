@@ -205,13 +205,30 @@ class MilkyHttpConnection(WebsocketConnection):
             base_url = "http://" + base_url[len("ws://"):]
         elif base_url.startswith("wss://"):
             base_url = "https://" + base_url[len("wss://"):]
-        if self.auth:
-            response = httpx.post(f"{base_url}/api/{endpoint}", json=data,
-                                  headers={"Authorization": f"Bearer {self.auth}"})
-        else:
-            response = httpx.post(f"{base_url}/api/{endpoint}", json=data)
-        res = response.json()
-        return res
+        try:
+            if self.auth:
+                response = httpx.post(f"{base_url}/api/{endpoint}", json=data,
+                                      headers={"Authorization": f"Bearer {self.auth}"})
+            else:
+                response = httpx.post(f"{base_url}/api/{endpoint}", json=data)
+        except httpx.RequestError as e:
+            return {
+                "status": "failed",
+                "retcode": -1,
+                "msg": str(e),
+                "data": None
+            }
+        try:
+            res = response.json()
+            return res
+        except json.JSONDecodeError:
+            raw_text = response.text[:500] if isinstance(response.text, str) else ""
+            return {
+                "status": "failed",
+                "retcode": response.status_code,
+                "msg": f"Non-JSON response from /api/{endpoint}",
+                "data": {"http_status": response.status_code, "raw": raw_text}
+            }
 
     class MilkyOutGoingSegBuilder:
         def __init__(self) -> None:

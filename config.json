@@ -39,7 +39,7 @@
             "listener_port": 8081,
             "retries": 5,
             "event_mode": "long_connection",
-            "app_id": "cli_a93ea113ed78dbdf",
+            "app_id": "<YOUR_APP_ID>",
             "app_secret": "<YOUR_APP_SECRET>",
             "verification_token": "<YOUR_VERIFICATION_TOKEN>",
             "encrypt_key": "<YOUR_ENCRYPT_KEY>",
@@ -50,7 +50,7 @@
         }
     },
     "Log_level": "INFO",
-    "protocol": "Feishu",
+    "protocol": "Milky",
     "Others": {
       "gemini_key": "",
       "openai_key": "",

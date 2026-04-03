@@ -1,6 +1,5 @@
 import json
 import asyncio
-import uuid
 import aiohttp
 from aiohttp import ClientTimeout
 
@@ -11,7 +10,12 @@ with open("config.json", "r", encoding="utf-8") as f:
 protocol = config.get("protocol", "OneBot")
 connections = config.get("Connections", {})
 conn_config = connections.get(protocol, connections.get("OneBot", {}))
-WEBSOCKET_URL = f"ws://{conn_config.get('host', '127.0.0.1')}:{conn_config.get('port', 8080)}"
+is_milky = str(protocol).lower() == "milky"
+ws_path = "/event" if is_milky else ""
+WEBSOCKET_URL = f"ws://{conn_config.get('host', '127.0.0.1')}:{conn_config.get('port', 8080)}{ws_path}"
+WS_HEADERS = {}
+if conn_config.get("auth"):
+    WS_HEADERS["Authorization"] = f"Bearer {conn_config.get('auth')}"
 
 
 async def get_user_info_from_websocket(user_id, Manager=None, actions=None):
@@ -39,7 +43,8 @@ async def get_user_info_from_websocket(user_id, Manager=None, actions=None):
         # 设置超时时间：连接超时10秒，总超时30秒
         timeout = ClientTimeout(total=30, connect=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.ws_connect(WEBSOCKET_URL) as ws:
+            connect_kwargs = {"headers": WS_HEADERS} if WS_HEADERS else {}
+            async with session.ws_connect(WEBSOCKET_URL, **connect_kwargs) as ws:
                 # 构造请求数据
                 request_data = {
                     "action": "get_stranger_info",
@@ -94,5 +99,4 @@ async def get_nickname_by_userid(user_id, Manager=None, actions=None):
         return f"{nickname}"
     else:
         return '未知用户'
-
 

@@ -53,6 +53,7 @@ ROOT_User: list = config.others["ROOT_User"]
 Super_User: list = []
 Manage_User: list = []
 FEISHU_BIND_FILE = "feishu_bindings.json"
+HELP_MODE_FILE = "help_mode_settings.json"
 
 logger = Logger.Logger()
 logger.set_level(config.log_level)
@@ -486,6 +487,66 @@ def get_bound_qq(open_id: str) -> str | None:
     return bindings.get(str(open_id))
 
 
+def is_qq_protocol() -> bool:
+    return str(config.protocol).lower() in {"onebot", "milky"}
+
+
+def is_feishu_protocol() -> bool:
+    return str(config.protocol).lower() == "feishu"
+
+
+def load_help_mode_settings() -> dict:
+    if not os.path.exists(HELP_MODE_FILE):
+        return {}
+    try:
+        with open(HELP_MODE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items() if k and v}
+    except Exception:
+        pass
+    return {}
+
+
+def save_help_mode_settings(settings: dict) -> bool:
+    try:
+        with open(HELP_MODE_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def normalize_help_mode(raw_mode: str) -> str | None:
+    mode = str(raw_mode or "").strip().lower()
+    if mode in {"图片", "图", "image", "img"}:
+        return "图片"
+    if mode in {"文本", "文字", "转发", "forward", "text"}:
+        return "文本"
+    return None
+
+
+help_mode_settings = load_help_mode_settings()
+
+
+def get_help_mode(user_id: str | int) -> str:
+    default_mode = normalize_help_mode(config.others.get("help_mode_default", "图片")) or "图片"
+    mode = normalize_help_mode(help_mode_settings.get(str(user_id), default_mode))
+    return mode or default_mode
+
+
+def set_help_mode(user_id: str | int, mode: str) -> bool:
+    global help_mode_settings
+    parsed_mode = normalize_help_mode(mode)
+    if parsed_mode is None:
+        return False
+    help_mode_settings[str(user_id)] = parsed_mode
+    if save_help_mode_settings(help_mode_settings):
+        return True
+    help_mode_settings = load_help_mode_settings()
+    return False
+
+
 def normalize_group_message_text(event: Events.GroupMessageEvent, text: str) -> str:
     msg = str(text or "").strip()
     if str(config.protocol).lower() == "feishu":
@@ -645,6 +706,9 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 logger.debug(f"({event_user}) ORDER: {repr(order)}")
 
             if order.startswith("绑定QQ "):
+                if not is_feishu_protocol():
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("该功能仅支持飞书平台。")))
+                    return
                 qq_id = order.replace("绑定QQ ", "", 1).strip()
                 if not re.fullmatch(r"\d{5,20}", qq_id):
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("绑定失败：请输入正确的QQ号，例如：~绑定QQ 123456789")))
@@ -654,6 +718,9 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("绑定失败：写入绑定数据时出错")))
                 return
             elif "我的绑定" == order:
+                if not is_feishu_protocol():
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("该功能仅支持飞书平台。")))
+                    return
                 qq_id = get_bound_qq(str(event.user_id))
                 msg = f"当前绑定QQ：{qq_id}" if qq_id else "当前未绑定QQ。请发送：~绑定QQ 你的QQ号"
                 await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(msg)))
@@ -661,6 +728,20 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             elif "帮助" == order or "用户帮助" == order:
                 content = help_message(event)
                 await send_help_visual(actions=actions, event=event, content=content)
+                return
+            elif order.startswith("设置帮助模式"):
+                if not is_qq_protocol():
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("该功能仅支持QQ平台（OneBot/Milky）。")))
+                    return
+                mode_text = order.replace("设置帮助模式", "", 1).strip()
+                mode = normalize_help_mode(mode_text)
+                if mode is None:
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"参数错误。示例：{reminder}设置帮助模式 图片 或 {reminder}设置帮助模式 文本")))
+                    return
+                if set_help_mode(event.user_id, mode):
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"已切换帮助模式为【{mode}】。")))
+                else:
+                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("设置失败：无法写入帮助模式配置。")))
                 return
             elif f"ai管理菜单" == order:
                 ais = ARC_AI.list_available_ais()
@@ -1361,6 +1442,18 @@ If you are a Super_User or ROOT_User, you can manage these users. Use {reminder}
 if failed_plugins else "无"}'''
 
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(status)))
+        elif order.startswith("设置帮助模式"):
+            if not is_qq_protocol():
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("该功能仅支持QQ平台（OneBot/Milky）。")))
+            else:
+                mode_text = order.replace("设置帮助模式", "", 1).strip()
+                mode = normalize_help_mode(mode_text)
+                if mode is None:
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f"参数错误。示例：{reminder}设置帮助模式 图片 或 {reminder}设置帮助模式 文本")))
+                elif set_help_mode(event.user_id, mode):
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f"已切换你的帮助模式为【{mode}】。")))
+                else:
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("设置失败：无法写入帮助模式配置。")))
         elif "用户帮助" == order:
             content = help_message(event)
             await send_help_visual(actions=actions, event=event, content=content, reply_message_id=event.message_id)
@@ -1391,6 +1484,8 @@ if failed_plugins else "无"}'''
                     (f"{reminder}设置特定后缀 (后缀)", "设置你的特定后缀（优先于全局）"),
                     (f"{reminder}删除特定后缀", "删除你的特定后缀")
                 ]
+                if is_qq_protocol():
+                    content.append((f"{reminder}设置帮助模式 图片/文本", "切换帮助展示样式（仅QQ平台）"))
                 
                 if str(event.user_id) in SUPERS:
                     content += [
@@ -2157,28 +2252,73 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
 def help_message(event) -> str:
     global EnableNetwork, bot_name, reminder, plugins_help
     if isinstance(event, Events.GroupMessageEvent):
-        return f'''如何与{bot_name}交流( •̀ ω •́ )✧
-       注：对话前必须加上 {reminder} 噢！~
-       {reminder}(任意问题，必填) —> {bot_name}回复
-       {reminder}ai管理菜单 —> 切换和管理AI模型
-       {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮{plugins_help}
-       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
-       {reminder}设置特定后缀 (后缀) —> 给你自己的回复加后缀
-       {reminder}删除特定后缀 —> 删除你自己的后缀
-快来聊天吧(*≧︶≦)'''
+        lines = [
+            f"如何与{bot_name}交流( •̀ ω •́ )✧",
+            f"       注：对话前必须加上 {reminder} 噢！~",
+            f"       {reminder}(任意问题，必填) —> {bot_name}回复",
+            f"       {reminder}ai管理菜单 —> 切换和管理AI模型",
+            f"       {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮{plugins_help}",
+            f"       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~",
+            f"       {reminder}设置特定后缀 (后缀) —> 给你自己的回复加后缀",
+            f"       {reminder}删除特定后缀 —> 删除你自己的后缀",
+        ]
+        if is_feishu_protocol():
+            lines.append(f"       {reminder}绑定QQ [QQ号] —> 绑定当前飞书账号到QQ")
+            lines.append(f"       {reminder}我的绑定 —> 查看当前飞书账号绑定的QQ")
+        if is_qq_protocol():
+            lines.append(f"       {reminder}设置帮助模式 图片/文本 —> 切换帮助为图片或转发文本（仅QQ）")
+        lines.append("快来聊天吧(*≧︶≦)")
+        return "\n".join(lines)
     elif isinstance(event, Events.PrivateMessageEvent):
-        return f'''如何与{bot_name}私聊( •̀ ω •́ )✧
-       (任意问题，必填) —> {bot_name}回复
-       {reminder}ai管理菜单 —> 查看你可用的私聊AI配置
-       {reminder}切换AI [AI代码] —> 仅切换你自己的私聊AI
-       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~
-快来聊天吧(*≧︶≦)'''
+        lines = [
+            f"如何与{bot_name}私聊( •̀ ω •́ )✧",
+            f"       (任意问题，必填) —> {bot_name}回复",
+            f"       {reminder}ai管理菜单 —> 查看你可用的私聊AI配置",
+            f"       {reminder}切换AI [AI代码] —> 仅切换你自己的私聊AI",
+            f"       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~",
+        ]
+        if is_qq_protocol():
+            lines.append(f"       {reminder}设置帮助模式 图片/文本 —> 切换帮助为图片或文本（仅QQ）")
+        if is_feishu_protocol():
+            lines.append(f"       {reminder}绑定QQ [QQ号] —> 绑定当前飞书账号到QQ")
+            lines.append(f"       {reminder}我的绑定 —> 查看当前飞书账号绑定的QQ")
+        lines.append("快来聊天吧(*≧︶≦)")
+        return "\n".join(lines)
 
 
 async def send_help_visual(actions, event, content: str, reply_message_id: str = None):
+    mode = get_help_mode(getattr(event, "user_id", ""))
+    if isinstance(event, Events.GroupMessageEvent) and is_qq_protocol() and mode == "文本":
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        if not lines:
+            lines = [content]
+        try:
+            nodes = [
+                Segments.CustomNode(
+                    str(event.self_id),
+                    bot_name,
+                    Manager.Message(Segments.Text(line))
+                )
+                for line in lines
+            ]
+            await actions.send_group_forward_msg(
+                group_id=event.group_id,
+                message=Manager.Message(*nodes)
+            )
+            return
+        except Exception:
+            logger.warning("群聊帮助转发发送失败，已回退为文本")
+            if reply_message_id:
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), Segments.Text(content)))
+            else:
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
+            return
     bg_path = os.path.abspath(r"d:\SRInternet.SR\Jianer_Canary\Jianer_QQ_bot\assets\bg.jpeg")
-    image_path = create_help_message_image(content, bg_path)
+    image_path = await create_help_message_image_async(content, bg_path)
     if isinstance(event, Events.PrivateMessageEvent):
+        if is_qq_protocol() and mode == "文本":
+            await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
+            return
         if image_path:
             try:
                 await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Image(image_path)))
