@@ -2313,7 +2313,7 @@ async def send_help_visual(actions, event, content: str, reply_message_id: str =
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
             return
-    bg_path = os.path.abspath(r"d:\SRInternet.SR\Jianer_Canary\Jianer_QQ_bot\assets\bg.jpeg")
+    bg_path = os.path.join(os.path.dirname(__file__), "assets", "bg.jpeg")
     image_path = await create_help_message_image_async(content, bg_path)
     if isinstance(event, Events.PrivateMessageEvent):
         if is_qq_protocol() and mode == "文本":
