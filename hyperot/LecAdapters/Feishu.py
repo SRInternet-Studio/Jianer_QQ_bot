@@ -1,6 +1,7 @@
 import asyncio
-import json
 import importlib
+import json
+import os
 import queue
 import random
 import threading
@@ -165,6 +166,22 @@ class Actions:
                 except Exception as e:
                     logger.warning(f"Feishu 图片发送失败，降级为文本提示: {e}")
                     text_parts.append("[图片发送失败：请检查应用权限 im:resource:upload / im:resource]")
+            elif isinstance(seg, segments.Record):
+                try:
+                    audio_key = str(seg.file)
+                    if not audio_key.startswith("file_"):
+                        audio_key = self.client.upload_audio(audio_key)
+                    audio_data = self.client.send_message(
+                        receive_id_type=receive_id_type,
+                        receive_id=receive_id,
+                        msg_type="audio",
+                        content={"file_key": audio_key},
+                    )
+                    sent_message_ids.append(str(audio_data.get("message_id", "")))
+                except Exception as e:
+                    logger.warning(f"Feishu 语音发送失败，降级为文本提示: {e}")
+                    ext = os.path.splitext(str(seg.file))[1].lower() or "unknown"
+                    text_parts.append(f"[语音发送失败：当前文件后缀 {ext}，请使用 .opus 并检查应用权限 im:resource:upload / im:resource]")
             else:
                 text_parts.append(str(seg))
 

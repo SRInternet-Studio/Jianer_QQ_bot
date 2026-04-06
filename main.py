@@ -6,6 +6,7 @@
 
 # import Tools functions
 from Tools.tools import * 
+from Tools.capture_screenshot import capture_screenshot
 from Tools.suffix_manager import SuffixManager
 from Tools.jianer_memory import JianerMemoryService
 from Tools.Sanitizer_Tools import sanitize_for_tts
@@ -57,7 +58,7 @@ HELP_MODE_FILE = "help_mode_settings.json"
 
 logger = Logger.Logger()
 logger.set_level(config.log_level)
-version_name = "3.1 - 𝑵𝒆𝒙𝒕 𝑹𝒆𝒍𝒆𝒂𝒔𝒆"
+version_name = "JianerQQ机器人 版本 NEXT4Preview2"
 
 stop_working = False
 Wait_for_add_in = False
@@ -1512,7 +1513,7 @@ if failed_plugins else "无"}'''
                 
             await send_help_visual(actions=actions, event=event, content=content)
 
-        elif feishu_mention_like:
+        elif feishu_mode and feishu_mention_like and not order:
             has_valid_content = False
             for item in event.message[1:]:
                 if isinstance(item, Segments.Text):
@@ -1533,26 +1534,40 @@ if failed_plugins else "无"}'''
         elif "关于" == order: 
             framework = await actions.get_version_info()
             framework = framework.data.raw
-            about = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-构建信息：
-版本：{version_name}
-由 {framework.get("app_name")} {framework.get("protocol_version")}-{framework.get("app_version")} 驱动
-基于 Hype𝐑_bot 框架制作
-————————————————————
-第三方API
-1. Mirokoi API
-2. Lolicon API
-3. LoliAPI API
-4. ChatGPT 3.5
-5. ChatGPT 4o-mini
-6. Google gemini-2.0
-7. DeepSeek V3
-8. EdgeTTS
-————————————————————
-jianer.isok.dev © 2019~{datetime.datetime.now().year} SR思锐团队 保留所有权利'''
-
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(about)))
+            
+            # 读取模板
+            template_path = os.path.join("static", "about_template.html")
+            with open(template_path, "r", encoding="utf-8") as f:
+                html_content = f.read()
+                
+            # 替换变量
+            html_content = html_content.replace("{{bot_name}}", str(bot_name))
+            html_content = html_content.replace("{{bot_name_en}}", str(bot_name_en))
+            html_content = html_content.replace("{{ONE_SLOGAN}}", str(ONE_SLOGAN))
+            html_content = html_content.replace("{{version_name}}", str(version_name))
+            html_content = html_content.replace("{{app_name}}", str(framework.get("app_name", "Unknown")))
+            html_content = html_content.replace("{{protocol_version}}", str(framework.get("protocol_version", "")))
+            html_content = html_content.replace("{{app_version}}", str(framework.get("app_version", "")))
+            html_content = html_content.replace("{{year}}", str(datetime.datetime.now().year))
+            
+            # 写入临时HTML
+            temp_html_path = os.path.abspath(os.path.join("static", f"about_temp_{int(time.time())}.html"))
+            with open(temp_html_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+                
+            # 截图
+            url = f"file:///{temp_html_path.replace(chr(92), '/')}"
+            image_path = await capture_screenshot(url, "about_image", "png")
+            
+            # 发送
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(image_path)))
+            
+            # 清理
+            try:
+                os.remove(temp_html_path)
+                os.remove(image_path)
+            except:
+                pass
 
         elif "群发黑名单" == order:
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f'''{bot_name} {bot_name_en} - 群发黑名单管理控制面板
@@ -1560,8 +1575,7 @@ jianer.isok.dev © 2019~{datetime.datetime.now().year} SR思锐团队 保留所�
 {reminder}列出黑名单 —> 显示所有黑名单群组
 {reminder}删除黑名单 +群号 —> 允许群发消息到该群
 {reminder}添加黑名单 +群号 —> 禁止群发消息到该群
-
-如果想要关闭群发功能，请联系服务器管理员删除 `timing_message.ini` 文件。\n在关闭群发后，使用 -修改 功能即可重新启用。''')))
+''')))
 
         elif f"设置全局后缀 " in order:
             if str(event.user_id) in ADMINS:

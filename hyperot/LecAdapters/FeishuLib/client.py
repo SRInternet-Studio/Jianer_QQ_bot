@@ -1,6 +1,10 @@
 import base64
 import json
+import mimetypes
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 
 import httpx
@@ -141,6 +145,60 @@ class FeishuClient:
         }
         payload = self._request("POST", "/open-apis/im/v1/images", data={"image_type": "message"}, files=files)
         return payload.get("data", {}).get("image_key", "")
+
+    def upload_file(self, source: str, file_type: str, file_name: str = "", duration: int | None = None) -> str:
+        raw = self._read_source_bytes(source)
+        source_path = str(source or "")
+        if source_path.startswith("file://"):
+            source_path = source_path[7:]
+        if not file_name:
+            file_name = os.path.basename(source_path) or f"upload_{int(time.time() * 1000)}.{file_type}"
+        content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        data = {"file_type": str(file_type), "file_name": str(file_name)}
+        if duration not in (None, 0, "0", ""):
+            data["duration"] = str(int(duration))
+        files = {
+            "file": (str(file_name), raw, content_type),
+        }
+        payload = self._request("POST", "/open-apis/im/v1/files", data=data, files=files)
+        return payload.get("data", {}).get("file_key", "")
+
+    def upload_audio(self, source: str, duration: int | None = None) -> str:
+        source_path = str(source or "")
+        if source_path.startswith("file://"):
+            source_path = source_path[7:]
+        ext = os.path.splitext(source_path)[1].lower()
+        upload_source = source
+        converted_path = ""
+        if ext != ".opus":
+            ffmpeg_bin = shutil.which("ffmpeg")
+            if not ffmpeg_bin:
+                raise RuntimeError(f"Feishu audio requires .opus file, got '{ext or 'unknown'}' and ffmpeg is not available")
+            if not os.path.isfile(source_path):
+                raise RuntimeError("Feishu audio conversion supports local files only")
+            fd, converted_path = tempfile.mkstemp(suffix=".opus")
+            os.close(fd)
+            proc = subprocess.run(
+                [ffmpeg_bin, "-y", "-i", source_path, "-acodec", "libopus", "-ac", "1", "-ar", "16000", converted_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if proc.returncode != 0:
+                if os.path.exists(converted_path):
+                    os.remove(converted_path)
+                err = (proc.stderr or proc.stdout or "").strip()
+                if len(err) > 400:
+                    err = err[-400:]
+                raise RuntimeError(f"ffmpeg convert to opus failed: {err}")
+            upload_source = converted_path
+            source_path = converted_path
+        file_name = os.path.basename(source_path) or f"audio_{int(time.time() * 1000)}.opus"
+        try:
+            return self.upload_file(source=upload_source, file_type="opus", file_name=file_name, duration=duration)
+        finally:
+            if converted_path and os.path.exists(converted_path):
+                os.remove(converted_path)
 
     def _read_source_bytes(self, source: str) -> bytes:
         source = str(source or "")

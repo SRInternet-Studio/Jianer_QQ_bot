@@ -1,9 +1,9 @@
 {
   "FriendlyName": "example",
-  "Model": "example",
-  "ResponseType": "parsername",
-  "ApiKey": "example",
-  "BaseUrl": "https://api.example.com/",
+  "Model": "gemini-2.5-flash",
+  "ResponseType": "openai",
+  "ApiKey": "sk-HhNuPpMq9gDRH3M4ha6BpKWYJ9kXCOLZOuEIyCXxMyRoOwi3",
+  "BaseUrl": "https://rinkoai.com/v1",
   "Temperature": 0.7,
   "MaxTokens": 2000
 }

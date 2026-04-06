@@ -178,3 +178,5 @@ lgr/
 .claude
 AGENTS.MD
 config2.json
+prerequisites/ffmpeg.exe
+prerequisites/ffmpeg.zip

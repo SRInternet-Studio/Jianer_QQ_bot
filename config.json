@@ -50,7 +50,7 @@
         }
     },
     "Log_level": "INFO",
-    "protocol": "Milky",
+    "protocol": "Feishu",
     "Others": {
       "gemini_key": "",
       "openai_key": "",
