@@ -1,7 +1,9 @@
 """杂项群命令：AI 菜单、后缀、黑名单、群成员管理、TTS 等。"""
+import asyncio
 import os
 import random
 import re
+import time as _time
 
 import Tools.ARC_AI as ARC_AI
 from Tools.tools import get_system_info, seconds_to_hms
@@ -57,11 +59,8 @@ async def cmd_list_blacklist(actions, Manager, Segments, event, ADMINS, CONFUSED
         await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
         return
     try:
-        with open(_BLACKLIST_FILE, "r", encoding="utf-8") as f:
-            blacklist1 = set(line.strip() for line in f)
+        blacklist1 = load_blacklist()
         await _send(actions, Manager, Segments, event, f"黑名单列表加载完成: {blacklist1}")
-    except FileNotFoundError:
-        await _send(actions, Manager, Segments, event, "黑名单列表加载失败,原因:没有文件")
     except UnicodeDecodeError:
         await _send(actions, Manager, Segments, event, "黑名单列表加载失败,原因:解码失败")
 
@@ -189,6 +188,10 @@ async def cmd_calm(actions, Manager, Segments, event, order,
         time114 = None
         for i in event.message:
             if isinstance(i, Segments.At):
+                if len(numbers) < 2:
+                    await _send(actions, Manager, Segments, event,
+                                f"管理员：你的格式有误。\n格式：{reminder}冷静 @anyone/@all (seconds of duration)\n参考：{reminder}冷静 @Harcic#8042 128")
+                    return
                 userid114 = numbers[0]
                 time114 = numbers[1]
                 if str(userid114) == str(event.user_id):
@@ -247,6 +250,7 @@ async def cmd_add_preset(actions, Manager, Segments, event, order,
                          ADMINS, ROOT_User, CONFUSED_WORD, bot_name, bot_name_en, reminder,
                          presets, presets_tool, PRESET_DIR):
     if str(event.user_id) not in ADMINS:
+        await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
         return
     match = re.match(r"添加预设\s+(.+?)\s+(.+?)\s*[:：]\s*(.+)", order, re.DOTALL)
     if not match:
@@ -294,6 +298,7 @@ async def cmd_del_preset(actions, Manager, Segments, event, order,
                          ADMINS, ROOT_User, CONFUSED_WORD, bot_name, bot_name_en, reminder,
                          presets, presets_tool, PRESET_DIR, logger):
     if str(event.user_id) not in ADMINS:
+        await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
         return
     match = re.match(r"删除预设\s+(.+)", order)
     if not match:
@@ -340,7 +345,7 @@ async def cmd_sleep(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUS
 
 
 async def cmd_status(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD,
-                     bot_name, bot_name_en, ONE_SLOGAN, second_start, time_module):
+                     bot_name, bot_name_en, ONE_SLOGAN, second_start):
     if str(event.user_id) not in ADMINS:
         await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
         return
@@ -348,7 +353,7 @@ async def cmd_status(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD,
     feel = f"""{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
 系统当前运行状况
-运行时间：{seconds_to_hms(round(time_module.time() - second_start, 2))}
+运行时间：{seconds_to_hms(round(_time.time() - second_start, 2))}
 系统版本：{system_info["version_info"]}
 体系结构：{system_info["architecture"]}
 CPU占用：{system_info["cpu_usage"]}%
@@ -425,7 +430,6 @@ async def cmd_broadcast_msg(actions, Manager, Segments, event, order, user_messa
 async def cmd_leave_group(actions, Manager, Segments, event,
                           SUPERS, ROOT_User, CONFUSED_WORD, bot_name,
                           get_user_nickname):
-    import asyncio as _aio
     if str(event.user_id) not in SUPERS:
         await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
         return
@@ -433,7 +437,7 @@ async def cmd_leave_group(actions, Manager, Segments, event,
     r_admin = f"用户 {nick} 在 {event.time_str} 使机器人退出了群聊：{event.group_id}"
     await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
     await _send(actions, Manager, Segments, event, "呜呜呜，各位再见了……")
-    await _aio.sleep(3)
+    await asyncio.sleep(3)
     await actions.custom.set_group_leave(group_id=event.group_id, is_dismiss=True)
 
 
@@ -468,7 +472,7 @@ async def cmd_assign_title_other(actions, Manager, Segments, event, order,
             await _send(actions, Manager, Segments, event, "头衔不能超过6个字！")
             return
         try:
-            await actions.custom.set_group_special_title(group_id=event.group_id, user_id=userid114, title=title114)
+            await actions.custom.set_group_special_title(group_id=event.group_id, user_id=userid114, special_title=title114, duration=-1)
             await _send(actions, Manager, Segments, event, "已设置！")
         except Exception as set_title_error:
             logger.error(f"设置头衔失败: {set_title_error}")
@@ -485,7 +489,7 @@ async def cmd_assign_title_self(actions, Manager, Segments, event, order,
         await _send(actions, Manager, Segments, event, "头衔不能超过6个字！")
         return
     if str(event.user_id) in SUPERS:
-        await actions.custom.set_group_special_title(group_id=event.group_id, user_id=event.user_id, title=titletext)
+        await actions.custom.set_group_special_title(group_id=event.group_id, user_id=event.user_id, special_title=titletext, duration=-1)
         await _send(actions, Manager, Segments, event, "已设置！")
     elif self_service_titles:
         await actions.custom.set_group_special_title(group_id=event.group_id, user_id=event.user_id, special_title=titletext, duration=-1)

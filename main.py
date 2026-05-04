@@ -188,7 +188,7 @@ def timing_message(actions: Listener.Actions):
     _bot_broadcast.timing_message_loop(actions, Manager, Segments, suffix_manager, logger)
 
 async def send_msg_all_groups(text, actions: Listener.Actions, message: Manager.Message = None):
-    await _bot_broadcast.send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger)
+    await _bot_broadcast.send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger, message=message)
 
 
 def Read_Settings():
@@ -585,7 +585,7 @@ For more information, see the administrator or check the system logs.''')))
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"正在重启{bot_name}－O－……")))
 
                 try:
-                    with open("restart.temp", "w" ,encoding="utf-7") as f:
+                    with open("restart.temp", "w" ,encoding="utf-8") as f:
                         f.write(str(event.group_id))
                         f.close()
                 except:
@@ -752,7 +752,7 @@ For more information, see the administrator or check the system logs.''')))
                 stop_working = True
 
         elif f"{reminder}感知" in user_message:
-            await _bot_misc_commands.cmd_status(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, second_start, time)
+            await _bot_misc_commands.cmd_status(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, second_start)
 
         elif f"{reminder}注销" in user_message:
             await _bot_misc_commands.cmd_logout(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, user_lists, get_user_nickname)

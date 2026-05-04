@@ -33,7 +33,7 @@ async def handle_listener_start_notify(actions, Manager, Segments, event,
     """处理重启完成通知（如有 restart.temp 则向源群发送恢复消息）。"""
     if not os.path.exists("restart.temp"):
         return
-    with open("restart.temp", "r", encoding="utf-7") as f:
+    with open("restart.temp", "r", encoding="utf-8") as f:
         group_id = f.read()
     os.remove("restart.temp")
     r_admin = f'''在 {event.time_str} QQ机器人已手动重启成功'''
@@ -45,7 +45,9 @@ async def handle_listener_start_notify(actions, Manager, Segments, event,
 
 
 async def handle_member_increase(actions, Manager, Segments, event, bot_name, reminder):
-    """处理新成员加入：发送欢迎消息。"""
+    """处理新成员加入：发送欢迎消息。机器人自己被加入时跳过。"""
+    if int(getattr(event, "user_id", 0)) == int(getattr(event, "self_id", -1)):
+        return
     user = event.user_id
     welcome = f''' 加入{bot_name}的大家庭，{bot_name}是你最忠实可爱的女朋友噢o(*≧▽≦)ツ
 随时和{bot_name}交流，你只需要在问题的前面加上 {reminder} 就可以啦！( •̀ ω •́ )✧

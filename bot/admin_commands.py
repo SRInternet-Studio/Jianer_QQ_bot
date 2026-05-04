@@ -30,15 +30,22 @@ async def cmd_del_admin(actions, Manager, Segments, event, order,
             r = f"{banner}失败：指定的用户是 ROOT_User 且组 ROOT_User 为只读。"
             r_admin = f"用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试夺取您的 ROOT_User 权限，已被阻止"
         else:
-            if Toset in s:
+            removed_from_s = Toset in s
+            removed_from_m = Toset in m
+            if removed_from_s:
                 s.remove(Toset)
-            if Toset in m:
+            if removed_from_m:
                 m.remove(Toset)
             nick = await get_user_nickname(Toset, Manager, actions)
             if Write_Settings(s, m):
                 r = f"{banner}成功: {nick} 现在是一个普通用户了。\n现在发送 {reminder}帮助 了解你拥有的权限。"
                 r_admin = f"用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 删除了用户 {nick} 的管理员权限"
             else:
+                # 持久化失败：回滚内存变更，避免与磁盘不一致
+                if removed_from_s:
+                    s.append(Toset)
+                if removed_from_m:
+                    m.append(Toset)
                 r = f"{banner}失败：设置文件不可写。"
                 r_admin = f"用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试删除用户 {nick} 的管理员权限，但因为无法读写配置文件导致修改失败"
     else:
@@ -85,6 +92,8 @@ async def cmd_add_admin(actions, Manager, Segments, event, order,
                         r = f"{banner}成功: {nikename}(@{Toset}) 已加入管理组 Manage_User 。\n现在发送 {reminder}帮助 了解你拥有的权限。"
                         r_admin = f"用户 {await _op_nick()} 在 {event.time_str} 将用户 {nikename}(@{Toset}) 从 Super_User 设置为了 Manage_User "
                     else:
+                        s.append(Toset)
+                        m.remove(Toset)
                         r = f"{banner}失败: 设置文件不可写。"
                         r_admin = f"用户 {await _op_nick()} 在 {event.time_str} 尝试将用户 {nikename}(@{Toset}) 设置为 Manage_User 但因为无法读写配置文件导致修改失败"
                 elif Toset in ROOT_User:
@@ -96,6 +105,7 @@ async def cmd_add_admin(actions, Manager, Segments, event, order,
                         r = f"{banner}成功: {nikename}(@{Toset}) 已加入管理组 Manage_User 。\n现在发送 {reminder}帮助 了解你拥有的权限。"
                         r_admin = f"用户 {await _op_nick()} 在 {event.time_str} 将用户 {nikename}(@{Toset}) 设置为了 Manage_User "
                     else:
+                        m.remove(Toset)
                         r = f"{banner}失败: 设置文件不可写"
                         r_admin = f"用户 {await _op_nick()} 在 {event.time_str} 尝试将用户 {nikename}(@{Toset}) 设置为 Manage_User 但因为无法读写配置文件导致修改失败"
 
@@ -116,6 +126,8 @@ async def cmd_add_admin(actions, Manager, Segments, event, order,
                         r = f"{banner}成功: {nikename}(@{Toset}) 已加入管理组 Super_User 。\n现在发送 {reminder}帮助 了解你拥有的权限。"
                         r_admin = f"用户 {await _op_nick()} 在 {event.time_str} 将用户 {nikename}(@{Toset}) 从 Manage_User 设置为了 Super_User "
                     else:
+                        m.append(Toset)
+                        s.remove(Toset)
                         r = f"{banner}失败：设置文件不可写。"
                         r_admin = f"用户 {await _op_nick()} 在 {event.time_str} 尝试将用户 {nikename}(@{Toset}) 设置为 Super_User 但因为无法读写配置文件导致修改失败"
                 elif Toset in Super_User:
@@ -129,6 +141,7 @@ async def cmd_add_admin(actions, Manager, Segments, event, order,
                         r = f"{banner}成功: {nikename}(@{Toset}) 已加入管理组 Super_User 。\n现在发送 {reminder}帮助 了解你拥有的权限。"
                         r_admin = f"用户 {await _op_nick()} 在 {event.time_str} 将用户 {nikename}(@{Toset}) 设置为了 Super_User "
                     else:
+                        s.remove(Toset)
                         r = f"{banner}失败：设置文件不可写。"
                         r_admin = f"用户 {await _op_nick()} 在 {event.time_str} 尝试将用户 {nikename}(@{Toset}) 设置为 Super_User 但因为无法读写配置文件导致修改失败"
         else:

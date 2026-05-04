@@ -62,11 +62,14 @@ async def _toggle_plugin(actions, Manager, Segments, event, user_message,
         return None
 
     dirname, basename = os.path.split(found_path)
+    renamed = False
     try:
         if enable and basename.startswith("d_"):
             os.rename(found_path, os.path.join(dirname, basename[2:]))
+            renamed = True
         elif not enable and not basename.startswith("d_"):
             os.rename(found_path, os.path.join(dirname, "d_" + basename))
+            renamed = True
     except Exception as e:
         await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(
             f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
@@ -77,10 +80,14 @@ async def _toggle_plugin(actions, Manager, Segments, event, user_message,
 
     new_plugins = load_plugins()
     verb = "启用" if enable else "禁用"
+    if renamed:
+        msg = f"插件 {plugin_name} 已经成功{verb}"
+    else:
+        msg = f"插件 {plugin_name} 当前已处于{verb}状态，无需{verb}"
     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(
         f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
-插件 {plugin_name} 已经成功{verb}''')))
+{msg}''')))
     return new_plugins
 
 

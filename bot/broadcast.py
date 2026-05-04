@@ -8,7 +8,9 @@ import time
 from .utils import load_blacklist
 
 
-async def send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger):
+async def send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger, message=None):
+    """向所有群广播。若 message 非空，则以其为消息体发送（保留图片/At 等段），
+    否则以 suffix 处理后的 text 纯文本发送。"""
     echo = await actions.custom.get_group_list()
     result = Manager.Ret.fetch(echo)
     blacklist = load_blacklist()
@@ -17,7 +19,10 @@ async def send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, 
     for group in result.data.raw:
         group_id = str(group['group_id'])
         if group_id not in blacklist:
-            await actions.send(group_id=group['group_id'], message=Manager.Message(Segments.Text(processed_text)))
+            if message is not None:
+                await actions.send(group_id=group['group_id'], message=message)
+            else:
+                await actions.send(group_id=group['group_id'], message=Manager.Message(Segments.Text(processed_text)))
             await asyncio.sleep(random.random() * 3)
         else:
             logger.warning(f"群聊 {group_id} 在黑名单内，取消发送")
