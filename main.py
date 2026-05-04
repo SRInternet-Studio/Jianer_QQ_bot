@@ -509,6 +509,25 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         feishu_mode = str(config.protocol).lower() == "feishu"
         feishu_mentioned = bool(getattr(event, "is_mentioned", False))
         feishu_mention_like = feishu_mentioned or (feishu_mode and raw_user_message.startswith("@"))
+        # QQ 协议：检测是否 @ 了机器人本身（通过 Segments.At）
+        qq_mentioned_me = False
+        if not feishu_mode:
+            for _seg in event.message:
+                if isinstance(_seg, Segments.At) and str(getattr(_seg, "qq", "")) == str(event.self_id):
+                    qq_mentioned_me = True
+                    break
+        # 裸 @ 机器人（无其他有效文本）→ 发送帮助
+        if qq_mentioned_me:
+            _has_text = False
+            for _seg in event.message:
+                if isinstance(_seg, Segments.Text) and str(_seg).strip():
+                    _has_text = True
+                    break
+            if not _has_text:
+                content = help_message(event)
+                if content:
+                    await send_help_visual(actions=actions, event=event, content=content, reply_message_id=event.message_id)
+                return
         if str(config.protocol).lower() == "feishu" and raw_user_message != user_message:
             logger.debug(f"Feishu 消息标准化: {repr(raw_user_message)} -> {repr(user_message)}")
         order = ""
