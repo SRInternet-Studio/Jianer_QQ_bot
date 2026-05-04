@@ -799,7 +799,6 @@ For more information, see the administrator or check the system logs.''')))
                 "开启TTS成功！" if not gptsovitsoff else "关闭TTS成功！")))
 
         elif f"{reminder}表情复述" == user_message:
-            global emoji_plus_one_off
             emoji_plus_one_off = not emoji_plus_one_off
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(
                 "开启表情复述成功！" if not emoji_plus_one_off else "关闭表情复述成功！")))
