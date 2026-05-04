@@ -8,7 +8,7 @@ import time
 from .utils import load_blacklist
 
 
-async def send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger, message=None):
+async def send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger):
     echo = await actions.custom.get_group_list()
     result = Manager.Ret.fetch(echo)
     blacklist = load_blacklist()

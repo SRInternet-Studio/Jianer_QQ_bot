@@ -159,14 +159,12 @@ NORMAL_PRESET = presets_tool.NORMAL_PRESET
 # 插件加载器：委托给 bot.plugin_loader（保留原入口名 load_plugins）
 def load_plugins():
     global loaded_plugins, disabled_plugins, failed_plugins, plugins_help
-    state = {
-        "loaded_plugins": loaded_plugins,
-        "disabled_plugins": disabled_plugins,
-        "failed_plugins": failed_plugins,
-    }
-    plugins = _bot_plugin_loader.load_plugins(config, logger, state)
-    plugins_help = state.get("plugins_help", "")
-    return plugins
+    result = _bot_plugin_loader.load_plugins(config, logger)
+    loaded_plugins[:] = result.loaded
+    disabled_plugins[:] = result.disabled
+    failed_plugins[:] = result.failed
+    plugins_help = result.help_text
+    return result.plugins
 
 plugins = load_plugins() #在任何操作执行之前加载插件
 
@@ -184,7 +182,7 @@ def timing_message(actions: Listener.Actions):
     _bot_broadcast.timing_message_loop(actions, Manager, Segments, suffix_manager, logger)
 
 async def send_msg_all_groups(text, actions: Listener.Actions, message: Manager.Message = None):
-    await _bot_broadcast.send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger, message=message)
+    await _bot_broadcast.send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger)
 
 
 def Read_Settings():
@@ -255,7 +253,7 @@ def set_help_mode(user_id: str | int, mode: str) -> bool:
 
 
 def normalize_group_message_text(event: Events.GroupMessageEvent, text: str) -> str:
-    return _bot_protocol.normalize_group_message_text(config, event, text)
+    return _bot_protocol.normalize_group_message_text(config, text)
 
 
 def build_auth_groups() -> tuple[list[str], list[str]]:

@@ -5,8 +5,7 @@ import emoji
 def load_blacklist():
     try:
         with open("blacklist.sr", "r", encoding="utf-8") as f:
-            blacklist115 = set(line.strip() for line in f)
-        return blacklist115
+            return {line.strip() for line in f if line.strip()}
     except FileNotFoundError:
         return set()
 

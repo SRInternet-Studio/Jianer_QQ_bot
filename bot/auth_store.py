@@ -10,7 +10,13 @@ def _load_user_list(filename: str) -> list:
         with open(filename, "w", encoding="utf-8"):
             pass
     with open(filename, "r", encoding="utf-8") as f:
-        return list({line.strip() for line in f if line.strip()})
+        seen, out = set(), []
+        for line in f:
+            s = line.strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
 
 
 def read_user_groups() -> tuple[list, list]:
