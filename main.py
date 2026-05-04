@@ -41,6 +41,17 @@ from hyperot import listener as Listener, events as Events, hyperogger as Logger
 from hyperot.utils import logic as Logic
 from hyperot.events import *
 
+# 业务模块（bot/）：承接从 main 抽出的工具/持久化/插件加载/帮助视图等逻辑
+from bot import utils as _bot_utils
+from bot import protocol as _bot_protocol
+from bot import feishu_bindings as _bot_feishu
+from bot import help_mode as _bot_help_mode
+from bot import auth_store as _bot_auth_store
+from bot import plugin_loader as _bot_plugin_loader
+from bot import plugin_runner as _bot_plugin_runner
+from bot import broadcast as _bot_broadcast
+from bot import help_view as _bot_help_view
+
 config = Configurator.cm.get_cfg()
 reminder: str = config.others["reminder"]
 bot_name = config.others["bot_name"] #星·简
@@ -129,7 +140,7 @@ gptsovitsoff = False
 print(" " * 114, end="\r") # Staring Completed
 
 # Plugin like
-PLUGIN_FOLDER = "plugins"
+PLUGIN_FOLDER = _bot_plugin_loader.PLUGIN_FOLDER
 if not os.path.exists(PLUGIN_FOLDER):
     os.makedirs(PLUGIN_FOLDER)
 
@@ -145,275 +156,40 @@ PRESET_DIR = presets_tool.PRESET_DIR
 # 默认预设名称
 NORMAL_PRESET = presets_tool.NORMAL_PRESET
 
-# 插件加载器 NEXT 3
+# 插件加载器：委托给 bot.plugin_loader（保留原入口名 load_plugins）
 def load_plugins():
-    global loaded_plugins, disabled_plugins, failed_plugins, plugins_help, reminder, bot_name, PLUGIN_FOLDER
-    plugins = []
-    plugins_help = ""
-    protocol_now = str(config.protocol).lower()
-    incompatible_in_feishu = {
-        "CheckAccount",
-        "CheckGroup",
-        "LikePlugin",
-        "AdvancedQuote",
-        "SumUp_MySQL",
+    global loaded_plugins, disabled_plugins, failed_plugins, plugins_help
+    state = {
+        "loaded_plugins": loaded_plugins,
+        "disabled_plugins": disabled_plugins,
+        "failed_plugins": failed_plugins,
     }
-
-    loaded_plugins.clear()
-    disabled_plugins.clear()
-    failed_plugins.clear()
-
-    for filename in os.listdir(PLUGIN_FOLDER):
-        module_name = filename  # Folder name as module name
-        plugin_base_name = module_name[:-3] if module_name.endswith(".py") else module_name
-        logger.debug(f"check file or directory: {filename}")
-
-        if filename == "__pycache__":
-            logger.debug("Directory __pycache__ not load.")
-            continue
-
-        # 检查是否禁用
-        if filename.startswith("d_"):
-            disabled_plugins.append(module_name)
-            continue
-
-        if protocol_now == "feishu" and plugin_base_name in incompatible_in_feishu:
-            disabled_plugins.append(plugin_base_name)
-            logger.info(f"Feishu 模式跳过不兼容插件: {plugin_base_name}")
-            continue
-
-        # 处理目录形式插件
-        plugin_path = os.path.join(PLUGIN_FOLDER, filename)  # Full plugin path
-        if os.path.isdir(plugin_path):
-            setup_file = os.path.join(plugin_path, "setup.py")
-            if os.path.exists(setup_file):
-                try:
-                    # Load setup.py
-                    unique_module_name = f"{module_name}_{uuid.uuid4().hex}"  # Generate unique module name
-                    spec = importlib.util.spec_from_file_location(unique_module_name, setup_file)
-                    module = importlib.util.module_from_spec(spec)
-                    sys.modules[unique_module_name] = module
-                    spec.loader.exec_module(module)
-                    logger.debug(f"Loaded setup.py from folder plugin: {module_name}")
-
-                    # Verify plugin
-                    if hasattr(module, 'TRIGGHT_KEYWORD') and hasattr(module, 'on_message'):
-                        if isinstance(module.TRIGGHT_KEYWORD, str):
-                            plugins.append(module)  # Add module
-                            loaded_plugins.append(unique_module_name) 
-                            if hasattr(module, 'HELP_MESSAGE'):
-                                if isinstance(module.HELP_MESSAGE, str):
-                                    for help_message in [line.strip() for line in module.HELP_MESSAGE.splitlines() if line.strip()]:
-                                        plugins_help += f"\n       {help_message}"
-
-                            logger.info(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
-                        else:
-                            failed_plugins.append(f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
-                    else:
-                        failed_plugins.append(f"{module_name} (缺少 TRIGGHT_KEYWORD：触发标识符 或 on_message：触发函数后端)")
-
-                except FileNotFoundError as e:
-                    failed_plugins.append(f"{module_name} (文件未找到: {e})")
-                    logger.error(f"加载插件 {unique_module_name} 失败，是因为: {e}")
-                    if unique_module_name in sys.modules:
-                        del sys.modules[unique_module_name]
-                except ImportError as e:
-                    failed_plugins.append(f"{module_name} (导入错误: {e})")
-                    logger.error(f"加载插件 {unique_module_name} 失败，是因为: \n{traceback.format_exc()}\n")
-                    if unique_module_name in sys.modules:
-                        del sys.modules[unique_module_name]
-                except Exception as e:
-                    failed_plugins.append(f"{module_name} (其他错误: {str(e)})")
-                    logger.error(f"加载插件 {unique_module_name} 失败: \n{traceback.format_exc()}\n")
-                    if unique_module_name in sys.modules:
-                        del sys.modules[unique_module_name]  # Cleanup
-
-            else:
-                logger.warning(f"目录 {filename} 中缺少 setup.py 文件")
-                failed_plugins.append(f"{filename} (入口错误: 缺少 setup.py 文件)")
-
-        # 处理文件形式插件
-        elif filename.endswith(".py") or filename.endswith(".pyw"):
-            module_name = filename[:-3] if filename.endswith(".py") else filename[:-4]
-
-            # 检查是否禁用
-            if filename.startswith("d_"):
-                disabled_plugins.append(str(module_name)[3:])
-                continue
-
-            # 生成唯一的模块名
-            unique_module_name = f"{module_name}_{uuid.uuid4().hex}"
-
-            try:
-                # 检查模块是否已经加载
-                if unique_module_name in sys.modules:
-                    logger.warning(f"模块 {unique_module_name} 已经加载，跳过")
-                    continue
-
-                # 创建模块规范
-                spec = importlib.util.spec_from_file_location(unique_module_name, os.path.join(PLUGIN_FOLDER, filename))
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[unique_module_name] = module  # 添加到 sys.modules
-                spec.loader.exec_module(module)
-
-                # 验证模块是否符合插件规范
-                if hasattr(module, 'TRIGGHT_KEYWORD') and hasattr(module, 'on_message'):
-                    if isinstance(module.TRIGGHT_KEYWORD, str):
-                        plugins.append(module)  # 重要：把整个模块全tm加入到列表
-                        loaded_plugins.append(unique_module_name)
-                        if hasattr(module, 'HELP_MESSAGE'):
-                            if isinstance(module.HELP_MESSAGE, str):
-                                for help_message in [line.strip() for line in module.HELP_MESSAGE.splitlines() if line.strip()]:
-                                    plugins_help += f"\n       {help_message}"
-
-                        logger.info(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
-                    else:
-                        failed_plugins.append(f"{module_name} (TRIGGHT_KEYWORD 必须是字符串)")
-                else:
-                    failed_plugins.append(f"{module_name} (缺少 TRIGGHT_KEYWORD：触发标识符 或 on_message：触发函数后端)")
-
-            except FileNotFoundError as e:
-                failed_plugins.append(f"{module_name} (文件未找到: {e})")
-                logger.error(f"加载插件 {unique_module_name} 失败，原因是: {e}")
-                if unique_module_name in sys.modules:
-                    del sys.modules[unique_module_name]
-            except ImportError as e:
-                failed_plugins.append(f"{module_name} (导入错误: {e})")
-                logger.error(f"加载插件 {unique_module_name} 失败，原因是: \n{traceback.format_exc()}\n")
-                if unique_module_name in sys.modules:
-                    del sys.modules[unique_module_name]
-            except Exception as e:
-                failed_plugins.append(f"{module_name} (其他错误: {str(traceback.format_exc())})")
-                logger.error(f"加载插件 {unique_module_name} 失败: \n{traceback.format_exc()}\n")
-                if unique_module_name in sys.modules:
-                    del sys.modules[unique_module_name]  # Cleanup
-
-        else:
-            logger.debug(f"跳过非插件文件或目录: {filename}")
-
-    logger.info(f"成功加载 {len(loaded_plugins)} 个插件")
+    plugins = _bot_plugin_loader.load_plugins(config, logger, state)
+    plugins_help = state.get("plugins_help", "")
     return plugins
 
 plugins = load_plugins() #在任何操作执行之前加载插件
 
-# 插件运行器 NEXT 3
-async def execute_plugins(isAny: bool, **main_context) -> bool: # 接受 main.py 的上下文，也就是所有的关键字
-    has_plugin = False
-    user_message = main_context["order"] if "order" in main_context else ""
-
-    for plugin_module in plugins:
-        if (not isAny and f"{reminder}{plugin_module.TRIGGHT_KEYWORD}" in f"{reminder}{user_message}") or (isAny and plugin_module.TRIGGHT_KEYWORD == "Any"): 
-            try:
-                # 动态构建参数
-                on_message_params = inspect.signature(plugin_module.on_message).parameters
-                kwargs = {}
-                for param_name, param in on_message_params.items():
-                    if param_name in main_context:
-                        kwargs[param_name] = main_context[param_name]  # 从 main_context 获取
-                    elif param.default is not inspect.Parameter.empty:
-                        pass  # 使用默认值
-                    else:
-                        raise ValueError(f'''插件 {plugin_module.__name__} 未提供参数 {param_name} ：
-无法在所有上下文中找到具有该标识符的变量且该标识符不具有默认值，这样的变量可能在定义前被使用或本就没有定义。
-如果您是开发者，请在 main.py 中提供此值。如果您是用户，请忽略此消息并通知管理员及时地修复。
-详见 https://github.com/SRInternet-Studio/Jianer_QQ_bot/wiki''')
-
-                response = await plugin_module.on_message(**kwargs)  # 传递 event 和动态参数
-
-                if response is not None:
-                    if response == True:
-                        has_plugin = True
-                        break
-
-            except Exception as e:
-                logger.error(f"\n插件 {plugin_module.__name__} 执行出错，是因为: \n{traceback.format_exc()}")
-                if not isAny:
-                    has_plugin = True
-    
-    return has_plugin
+# 插件运行器：委托给 bot.plugin_runner
+async def execute_plugins(isAny: bool, **main_context) -> bool:
+    return await _bot_plugin_runner.execute_plugins(plugins, reminder, logger, isAny, **main_context)
 
 def load_blacklist():
-    try:
-        with open("blacklist.sr", "r", encoding="utf-8") as f:
-            blacklist115 = set(line.strip() for line in f)  # 这里是集合
-        return blacklist115
-    except FileNotFoundError:
-        return set() 
-             
-def has_emoji(s: str) -> bool: # emoji +1 功能
-    # 判断找到的 emoji 数量是否为 1 并且字符串的长度大于等于 1
-    return emoji.emoji_count(s) == 1 and len(s) == 1
+    return _bot_utils.load_blacklist()
+
+def has_emoji(s: str) -> bool:
+    return _bot_utils.has_emoji(s)
 
 def timing_message(actions: Listener.Actions):
-    while True:
-        if not os.path.isfile("timing_message.ini"):
-            now1 = datetime.datetime.now()
-            logger.debug(f"Current: {now1.hour:02}:{now1.minute:02}")
-            time.sleep(60 - now1.second)
-            continue
-        
-        with open("timing_message.ini", "r", encoding="utf-8") as f:
-            content = f.read().strip()
-        
-        if "⊕" in content:
-            # 找到第一个换行符的位置
-            first_newline_pos = content.find("\n")
-            if first_newline_pos != -1:
-                # 如果有换行，只在第一行查找⊕符号
-                first_line = content[:first_newline_pos]
-                remaining_lines = content[first_newline_pos:]
-                if "⊕" in first_line:
-                    time_part, message_part = first_line.split("⊕", 1)
-                    # 合并消息部分和剩余行
-                    full_message = message_part + remaining_lines
-                else:
-                    # 如果第一行没有⊕符号，使用整个内容作为消息
-                    full_message = content
-            else:
-                # 如果没有换行，直接分割整个内容
-                time_part, full_message = content.split("⊕", 1)
-        else:
-            # 如果没有⊕符号，使用整个内容作为消息
-            full_message = content
-            time_part = ""
-        
-        now = datetime.datetime.now()
-        logger.debug(f"Current: {now.hour:02}:{now.minute:02}, target: {time_part}")
-        if time_part and f"{now.hour:02}:{now.minute:02}" == time_part:
-            logger.info("send timing messages")
-            asyncio.run(send_msg_all_groups(full_message, actions))
-        
-        time.sleep(60 - now.second)
-        
+    _bot_broadcast.timing_message_loop(actions, Manager, Segments, suffix_manager, logger)
+
 async def send_msg_all_groups(text, actions: Listener.Actions, message: Manager.Message = None):
-    echo = await actions.custom.get_group_list()
-    result = Manager.Ret.fetch(echo)
-    blacklist = load_blacklist()  # 必须在发送消息前加载黑名单
-    logger.info(f"sys: 群发 {result.data.raw}")
-    # Apply global suffix for broadcast messages
-    processed_text = suffix_manager.process_text(text, 0)
-    for group in result.data.raw:
-        group_id = str(group['group_id'])  # 将group_id转为字符串类型,不然来个error会溶血
-        if group_id not in blacklist:  # 检查群组 ID 是否在黑名单中,在就别给lz发
-            await actions.send(group_id=group['group_id'], message=Manager.Message(Segments.Text(processed_text)))
-            time.sleep(random.random()*3)
-        else:
-            logger.warning(f"群聊 {group_id} 在黑名单内，取消发送")
+    await _bot_broadcast.send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger, message=message)
 
 
 def Read_Settings():
     global Super_User, Manage_User
-    
-    def load_user_list(filename):
-        if not os.path.exists(filename):
-            with open(filename, 'w'):
-                pass
-            
-        with open(filename, 'r') as f:
-            return list({line.strip() for line in f if line.strip()})
-    
-    Super_User = load_user_list("Super_User.ini")
-    Manage_User = load_user_list("Manage_User.ini")
+    Super_User, Manage_User = _bot_auth_store.read_user_groups()
     logger.info(f'''————————————————
 sys: User_Group loaded.
 Super_User: {Super_User}
@@ -421,139 +197,65 @@ Manage_User: {Manage_User}
 ————————————————''')
 
 def Write_Settings(s: list, m: list) -> bool:
+    global Super_User, Manage_User
     s = [item for item in s if item]
     m = [item for item in m if item]
-    global Super_User, Manage_User
-    su = ""
-    for item in range(len(s)):
-        su += s[item]
-        if item != len(s) - 1:
-            su += "\n"
-    ma = ""
-    for item in range(len(m)):
-        ma += m[item]
-        if item != len(m) - 1:
-            ma += "\n"
-
-    try:
-        with open("Super_User.ini", "w") as f:
-            f.write(su)
-            f.close()
-        with open("Manage_User.ini", "w") as f:
-            f.write(ma)
-            f.close()
-
+    if _bot_auth_store.write_user_groups(s, m):
         Super_User = s
         Manage_User = m
-
         return True
-    except:
-        return False
+    return False
 
 
 def load_feishu_bindings() -> dict:
-    if not os.path.exists(FEISHU_BIND_FILE):
-        return {}
-    try:
-        with open(FEISHU_BIND_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items() if k and v}
-    except Exception:
-        pass
-    return {}
+    return _bot_feishu.load_feishu_bindings()
 
 
 def save_feishu_bindings(bindings: dict) -> bool:
-    try:
-        with open(FEISHU_BIND_FILE, "w", encoding="utf-8") as f:
-            json.dump(bindings, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
+    return _bot_feishu.save_feishu_bindings(bindings)
 
 
 def bind_feishu_user(open_id: str, qq_id: str) -> bool:
-    open_id = str(open_id or "").strip()
-    qq_id = str(qq_id or "").strip()
-    if not open_id or not qq_id:
-        return False
-    bindings = load_feishu_bindings()
-    bindings[open_id] = qq_id
-    return save_feishu_bindings(bindings)
+    return _bot_feishu.bind_feishu_user(open_id, qq_id)
 
 
 def get_bound_qq(open_id: str) -> str | None:
-    bindings = load_feishu_bindings()
-    return bindings.get(str(open_id))
+    return _bot_feishu.get_bound_qq(open_id)
 
 
 def is_qq_protocol() -> bool:
-    return str(config.protocol).lower() in {"onebot", "milky"}
+    return _bot_protocol.is_qq_protocol(config)
 
 
 def is_feishu_protocol() -> bool:
-    return str(config.protocol).lower() == "feishu"
+    return _bot_protocol.is_feishu_protocol(config)
 
 
 def load_help_mode_settings() -> dict:
-    if not os.path.exists(HELP_MODE_FILE):
-        return {}
-    try:
-        with open(HELP_MODE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items() if k and v}
-    except Exception:
-        pass
-    return {}
+    return _bot_help_mode.load_help_mode_settings()
 
 
 def save_help_mode_settings(settings: dict) -> bool:
-    try:
-        with open(HELP_MODE_FILE, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
+    return _bot_help_mode.save_help_mode_settings(settings)
 
 
 def normalize_help_mode(raw_mode: str) -> str | None:
-    mode = str(raw_mode or "").strip().lower()
-    if mode in {"图片", "图", "image", "img"}:
-        return "图片"
-    if mode in {"文本", "文字", "转发", "forward", "text"}:
-        return "文本"
-    return None
+    return _bot_help_mode.normalize_help_mode(raw_mode)
 
 
 help_mode_settings = load_help_mode_settings()
 
 
 def get_help_mode(user_id: str | int) -> str:
-    default_mode = normalize_help_mode(config.others.get("help_mode_default", "图片")) or "图片"
-    mode = normalize_help_mode(help_mode_settings.get(str(user_id), default_mode))
-    return mode or default_mode
+    return _bot_help_view.get_help_mode(config, help_mode_settings, user_id)
 
 
 def set_help_mode(user_id: str | int, mode: str) -> bool:
-    global help_mode_settings
-    parsed_mode = normalize_help_mode(mode)
-    if parsed_mode is None:
-        return False
-    help_mode_settings[str(user_id)] = parsed_mode
-    if save_help_mode_settings(help_mode_settings):
-        return True
-    help_mode_settings = load_help_mode_settings()
-    return False
+    return _bot_help_view.set_help_mode(help_mode_settings, save_help_mode_settings, user_id, mode)
 
 
 def normalize_group_message_text(event: Events.GroupMessageEvent, text: str) -> str:
-    msg = str(text or "").strip()
-    if str(config.protocol).lower() == "feishu":
-        msg = re.sub(r"^(?:@\S+\s*)+", "", msg).strip()
-        msg = msg.replace("\u200b", "").replace("\ufeff", "").strip()
-    return msg
+    return _bot_protocol.normalize_group_message_text(config, event, text)
 
 
 def build_auth_groups() -> tuple[list[str], list[str]]:
@@ -2264,99 +1966,14 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(suffix_manager.process_text(f"{type(e)}\n{url}\n{bot_name}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", event.user_id))))
       
 def help_message(event) -> str:
-    global EnableNetwork, bot_name, reminder, plugins_help
-    if isinstance(event, Events.GroupMessageEvent):
-        lines = [
-            f"如何与{bot_name}交流( •̀ ω •́ )✧",
-            f"       注：对话前必须加上 {reminder} 噢！~",
-            f"       {reminder}(任意问题，必填) —> {bot_name}回复",
-            f"       {reminder}ai管理菜单 —> 切换和管理AI模型",
-            f"       {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮{plugins_help}",
-            f"       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~",
-            f"       {reminder}设置特定后缀 (后缀) —> 给你自己的回复加后缀",
-            f"       {reminder}删除特定后缀 —> 删除你自己的后缀",
-        ]
-        if is_feishu_protocol():
-            lines.append(f"       {reminder}绑定QQ [QQ号] —> 绑定当前飞书账号到QQ")
-            lines.append(f"       {reminder}我的绑定 —> 查看当前飞书账号绑定的QQ")
-        if is_qq_protocol():
-            lines.append(f"       {reminder}设置帮助模式 图片/文本 —> 切换帮助为图片或转发文本（仅QQ）")
-        lines.append("快来聊天吧(*≧︶≦)")
-        return "\n".join(lines)
-    elif isinstance(event, Events.PrivateMessageEvent):
-        lines = [
-            f"如何与{bot_name}私聊( •̀ ω •́ )✧",
-            f"       (任意问题，必填) —> {bot_name}回复",
-            f"       {reminder}ai管理菜单 —> 查看你可用的私聊AI配置",
-            f"       {reminder}切换AI [AI代码] —> 仅切换你自己的私聊AI",
-            f"       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~",
-        ]
-        if is_qq_protocol():
-            lines.append(f"       {reminder}设置帮助模式 图片/文本 —> 切换帮助为图片或文本（仅QQ）")
-        if is_feishu_protocol():
-            lines.append(f"       {reminder}绑定QQ [QQ号] —> 绑定当前飞书账号到QQ")
-            lines.append(f"       {reminder}我的绑定 —> 查看当前飞书账号绑定的QQ")
-        lines.append("快来聊天吧(*≧︶≦)")
-        return "\n".join(lines)
+    return _bot_help_view.build_help_message(config, Events, event, bot_name, reminder, plugins_help)
 
 
 async def send_help_visual(actions, event, content: str, reply_message_id: str = None):
-    mode = get_help_mode(getattr(event, "user_id", ""))
-    if isinstance(event, Events.GroupMessageEvent) and is_qq_protocol() and mode == "文本":
-        lines = [line.strip() for line in content.splitlines() if line.strip()]
-        if not lines:
-            lines = [content]
-        try:
-            nodes = [
-                Segments.CustomNode(
-                    str(event.self_id),
-                    bot_name,
-                    Manager.Message(Segments.Text(line))
-                )
-                for line in lines
-            ]
-            await actions.send_group_forward_msg(
-                group_id=event.group_id,
-                message=Manager.Message(*nodes)
-            )
-            return
-        except Exception:
-            logger.warning("群聊帮助转发发送失败，已回退为文本")
-            if reply_message_id:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), Segments.Text(content)))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
-            return
-    bg_path = os.path.join(os.path.dirname(__file__), "assets", "bg.jpeg")
-    image_path = await create_help_message_image_async(content, bg_path)
-    if isinstance(event, Events.PrivateMessageEvent):
-        if is_qq_protocol() and mode == "文本":
-            await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
-            return
-        if image_path:
-            try:
-                await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Image(image_path)))
-                return
-            except Exception:
-                logger.warning("帮助图片发送失败，已回退为文本")
-        await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
-        return
-    if isinstance(event, Events.GroupMessageEvent):
-        if image_path:
-            try:
-                if reply_message_id:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), Segments.Image(image_path)))
-                else:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(image_path)))
-                return
-            except Exception:
-                logger.warning("群聊帮助图片发送失败，已回退为文本")
-        if reply_message_id:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), Segments.Text(content)))
-        else:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
-        return
-    await actions.send(group_id=getattr(event, "group_id", None), user_id=getattr(event, "user_id", None), message=Manager.Message(Segments.Text(content)))
+    await _bot_help_view.send_help_visual(
+        config, Events, Manager, Segments, help_mode_settings,
+        bot_name, logger, actions, event, content, reply_message_id
+    )
 
 Listener.run()
 
