@@ -18,7 +18,7 @@ async def send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, 
         group_id = str(group['group_id'])
         if group_id not in blacklist:
             await actions.send(group_id=group['group_id'], message=Manager.Message(Segments.Text(processed_text)))
-            time.sleep(random.random() * 3)
+            await asyncio.sleep(random.random() * 3)
         else:
             logger.warning(f"群聊 {group_id} 在黑名单内，取消发送")
 
@@ -37,6 +37,7 @@ def timing_message_loop(actions, Manager, Segments, suffix_manager, logger):
 
         if "⊕" in content:
             first_newline_pos = content.find("\n")
+            time_part = ""
             if first_newline_pos != -1:
                 first_line = content[:first_newline_pos]
                 remaining_lines = content[first_newline_pos:]

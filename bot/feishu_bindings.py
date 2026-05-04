@@ -1,6 +1,9 @@
 """飞书账号 <-> QQ 号绑定的持久化。"""
 import json
+import logging
 import os
+
+_logger = logging.getLogger(__name__)
 
 FEISHU_BIND_FILE = "feishu_bindings.json"
 
@@ -14,7 +17,7 @@ def load_feishu_bindings() -> dict:
         if isinstance(data, dict):
             return {str(k): str(v) for k, v in data.items() if k and v}
     except Exception:
-        pass
+        _logger.exception("load feishu bindings failed")
     return {}
 
 
@@ -24,6 +27,7 @@ def save_feishu_bindings(bindings: dict) -> bool:
             json.dump(bindings, f, ensure_ascii=False, indent=2)
         return True
     except Exception:
+        _logger.exception("save feishu bindings failed")
         return False
 
 

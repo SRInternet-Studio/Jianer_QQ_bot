@@ -106,10 +106,6 @@ def load_plugins(config, logger, state: dict) -> list:
 
             unique_module_name = f"{module_name}_{uuid.uuid4().hex}"
             try:
-                if unique_module_name in sys.modules:
-                    logger.warning(f"模块 {unique_module_name} 已经加载，跳过")
-                    continue
-
                 spec = importlib.util.spec_from_file_location(unique_module_name, os.path.join(PLUGIN_FOLDER, filename))
                 module = importlib.util.module_from_spec(spec)
                 sys.modules[unique_module_name] = module

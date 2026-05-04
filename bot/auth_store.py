@@ -1,12 +1,15 @@
 """Super_User / Manage_User 名单的读写。"""
+import logging
 import os
+
+_logger = logging.getLogger(__name__)
 
 
 def _load_user_list(filename: str) -> list:
     if not os.path.exists(filename):
-        with open(filename, "w"):
+        with open(filename, "w", encoding="utf-8"):
             pass
-    with open(filename, "r") as f:
+    with open(filename, "r", encoding="utf-8") as f:
         return list({line.strip() for line in f if line.strip()})
 
 
@@ -21,10 +24,11 @@ def write_user_groups(s: list, m: list) -> bool:
     su = "\n".join(s)
     ma = "\n".join(m)
     try:
-        with open("Super_User.ini", "w") as f:
+        with open("Super_User.ini", "w", encoding="utf-8") as f:
             f.write(su)
-        with open("Manage_User.ini", "w") as f:
+        with open("Manage_User.ini", "w", encoding="utf-8") as f:
             f.write(ma)
         return True
     except Exception:
+        _logger.exception("write user groups failed")
         return False

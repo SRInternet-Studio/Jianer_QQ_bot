@@ -61,6 +61,7 @@ def build_help_message(config, Events, event, bot_name: str, reminder: str, plug
             lines.append(f"       {reminder}我的绑定 —> 查看当前飞书账号绑定的QQ")
         lines.append("快来聊天吧(*≧︶≦)")
         return "\n".join(lines)
+    return ""
 
 
 async def send_help_visual(
