@@ -6,12 +6,18 @@
 import importlib
 
 __all__ = [
+    "admin_commands",
     "auth_store",
     "broadcast",
+    "event_handlers",
     "feishu_bindings",
+    "group_commands",
     "help_mode",
     "help_view",
+    "memory_commands",
+    "misc_commands",
     "plugin_loader",
+    "plugin_ops",
     "plugin_runner",
     "protocol",
     "utils",

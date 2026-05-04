@@ -64,6 +64,50 @@ def build_help_message(config, Events, event, bot_name: str, reminder: str, plug
     return ""
 
 
+def build_admin_help(config, bot_name: str, reminder: str, is_super: bool) -> str:
+    """构建管理员帮助文本。"""
+    content = [
+        (f"{reminder}让我访问", "检索有权限的用户"),
+        (f"{reminder}注销", "删除所有用户的上下文"),
+        (f"{reminder}修改 (hh:mm) (内容)", "改变定时消息时间与内容"),
+        (f"{reminder}感知", "查看运行状态"),
+        (f"{reminder}休眠", f"奖励{bot_name}精致睡眠 💤"),
+        (f"{reminder}重启", f"关闭所有线程和进程，关闭{bot_name}。然后重新启动{bot_name}。"),
+        (f"{reminder}启用插件（插件名称）", "启用特定插件"),
+        (f"{reminder}禁用插件（插件名称）", "忽略特定插件"),
+        (f"{reminder}重载插件", "重新加载所有插件"),
+        (f"{reminder}群发 (内容)", "在所有群聊中（黑名单群聊除外）发送一条消息"),
+        (f"{reminder}冷静 (@QQ+时间)/(@all)", "冷静用户一段时间"),
+        (f"{reminder}取消冷静 (@QQ)/(@all)", "解除用户冷静"),
+        (f"{reminder}送飞机票 (@QQ)", "将用户移出群聊"),
+        ("撤回【引用消息】", "撤回指定消息"),
+        (f"{reminder}群发黑名单", "管理群发消息时不会发送到的群聊"),
+        (f"{reminder}角色扮演", "管理角色预设"),
+        (f"{reminder}更改TTS状态", "切换语音回复功能（默认启用）"),
+        (f"{reminder}表情复述", "切换是否开启表情复述功能（默认启用）"),
+        (f"{reminder}设置全局后缀 (后缀)", "设置默认后缀（所有人）"),
+        (f"{reminder}删除全局后缀", "删除默认后缀（所有人）"),
+        (f"{reminder}设置特定后缀 (后缀)", "设置你的特定后缀（优先于全局）"),
+        (f"{reminder}删除特定后缀", "删除你的特定后缀"),
+    ]
+    if is_qq_protocol(config):
+        content.append((f"{reminder}设置帮助模式 图片/文本", "切换帮助展示样式（仅QQ平台）"))
+    if is_super:
+        content += [
+            (f"{reminder}管理 M (QQ号)", "为用户添加 Manage_User 权限"),
+            (f"{reminder}管理 S (QQ号)", "为用户添加 Super_User 权限"),
+            (f"{reminder}删除管理 (QQ号)", "删除指定用户所有权限"),
+            (f"{reminder}退出本群", "退出当前群聊"),
+        ]
+    command_lines = [f"{idx+1}. {cmd} —> {desc}" for idx, (cmd, desc) in enumerate(content)]
+    return "\n".join([
+        f"管理我们的{bot_name}\n————————————————————",
+        f"你拥有管理{bot_name}的权限，以下是你可以使用的命令。若要查看普通帮助，请@{bot_name} 或发送【{reminder}用户帮助】",
+        *command_lines,
+        "你的每一步操作，与用户息息相关。",
+    ])
+
+
 async def send_help_visual(
     config,
     Events,

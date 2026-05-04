@@ -51,6 +51,12 @@ from bot import plugin_loader as _bot_plugin_loader
 from bot import plugin_runner as _bot_plugin_runner
 from bot import broadcast as _bot_broadcast
 from bot import help_view as _bot_help_view
+from bot import group_commands as _bot_group_commands
+from bot import event_handlers as _bot_event_handlers
+from bot import admin_commands as _bot_admin_commands
+from bot import plugin_ops as _bot_plugin_ops
+from bot import memory_commands as _bot_memory_commands
+from bot import misc_commands as _bot_misc_commands
 
 config = Configurator.cm.get_cfg()
 reminder: str = config.others["reminder"]
@@ -314,80 +320,29 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         return  # 只传递 event 作为位置参数
     
     if isinstance(event, Events.NotifyEvent): # 优先判断自定义事件
-        if str(event.sub_type) == "poke" and int(event.target_id) == int(event.self_id): # 被戳一戳
-            logger.info(f"({event.user_id}) POKED")
-            try:
-                if event.group_id:
-                    poke_result = await actions.custom.group_poke(group_id=event.group_id, user_id=event.user_id)
-                    poke_result = Manager.Ret.fetch(poke_result).data.raw
-                    if poke_result.get("status", "error") != "ok":
-                        logger.warning(f"sys: 戳一戳失败 {poke_result}")
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(random.choice(config.others["poke_rejection_phrases"]))))
-                elif event.user_id:
-                    poke_result = await actions.custom.friend_poke(user_id=event.user_id)
-                    poke_result = Manager.Ret.fetch(poke_result).data.raw
-                    if poke_result.get("status", "error") != "ok":
-                        logger.warning(f"sys: 戳一戳失败 {poke_result}")
-                    await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(random.choice(config.others["poke_rejection_phrases"]))))
-            except KeyError:
-                logger.warning("不接受戳一戳")
-                
+        await _bot_event_handlers.handle_notify_poke(actions, Manager, Segments, event, config, logger)
+
     if isinstance(event, Events.HyperListenerStartNotify):
-        if os.path.exists("restart.temp"):
-            with open("restart.temp", "r" ,encoding="utf-7") as f:
-                group_id = f.read()
-                f.close()
-            os.remove("restart.temp")
-            r_admin = f'''在 {event.time_str} QQ机器人已手动重启成功'''
-            await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-            await actions.send(group_id=group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-欢迎! {bot_name} 已经重启成功！ 现在你可以发送 {reminder}帮助 来知道更多。''')))
+        await _bot_event_handlers.handle_listener_start_notify(
+            actions, Manager, Segments, event,
+            bot_name, bot_name_en, ONE_SLOGAN, reminder, ROOT_User)
 
     elif isinstance(event, Events.GroupMemberIncreaseEvent):
         if Wait_for_add_in:
             Wait_for_add_in = False
             return
-        
-        user = event.user_id
-        welcome = f''' 加入{bot_name}的大家庭，{bot_name}是你最忠实可爱的女朋友噢o(*≧▽≦)ツ
-随时和{bot_name}交流，你只需要在问题的前面加上 {reminder} 就可以啦！( •̀ ω •́ )✧
-@{bot_name} 可以看看{bot_name}会做什么有趣的事情哦~o((>ω< ))o
-祝你在{bot_name}的大家庭里生活愉快！♪(≧∀≦)ゞ☆'''
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(f"http://q2.qlogo.cn/headimg_dl?dst_uin={user}&spec=640"), Segments.Text("欢迎"), Segments.At(user), Segments.Text(welcome)))
-        
-    elif isinstance(event, Events.GroupMemberDecreaseEvent):
-        user_nick = await get_user_nickname(event.user_id, Manager, actions)
-        if user_nick:
-            user_nick = f"@{user_nick} "
-        else:
-            user_nick = "有人又"
+        await _bot_event_handlers.handle_member_increase(actions, Manager, Segments, event, bot_name, reminder)
 
-        text = f'''{user_nick}离开了{bot_name}的大家庭，{bot_name}好伤心o(TヘTo)……
-大家一定要记得多来陪{bot_name}玩玩ヾ(•ω•`)o'''
-        logger.info(f"group: {event.user_id} 已离开群聊 {event.group_id}")
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(text)))
+    elif isinstance(event, Events.GroupMemberDecreaseEvent):
+        await _bot_event_handlers.handle_member_decrease(actions, Manager, Segments, event, bot_name, logger, get_user_nickname)
 
     elif isinstance(event, Events.GroupAddInviteEvent):
-      keywords: list = config.others["Auto_approval"]
-      cleaned_text = event.comment.strip().lower()
-
-      for keyword in keywords:
-        processed_keyword = keyword.strip().lower()
-        if processed_keyword in cleaned_text: 
-            try:
-                user = event.user_id
-                logger.info(f"group: {await get_user_nickname(user, Manager, actions)} 的入群回答 {processed_keyword} 符合正确答案，已准许入群 {event.group_id}")
-                await actions.set_group_add_request(flag=event.flag, sub_type=event.sub_type, approve=True, reason="")
-                Wait_for_add_in = True
-                welcome = f'''{await get_user_nickname(user, Manager, actions)} 的答案正确，欢迎加入{bot_name}的大家庭！o(*≧▽≦)ツ
-随时和{bot_name}交流，只需在问题的前面加上 {reminder} 就可以啦！( •̀ ω •́ )✧
-@{bot_name} 可以看看{bot_name}会做什么有趣的事情哦~o((>ω< ))o
-祝你在{bot_name}的大家庭里生活愉快！♪(≧∀≦)ゞ☆'''  
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(f"http://q2.qlogo.cn/headimg_dl?dst_uin={user}&spec=640"), Segments.Text(welcome)))
-                break
-            except:
-                logger.error(traceback.format_exc())
+        def _set_wait(v):
+            global Wait_for_add_in
+            Wait_for_add_in = v
+        await _bot_event_handlers.handle_group_add_invite(
+            actions, Manager, Segments, event, config, logger,
+            bot_name, reminder, get_user_nickname, _set_wait)
           
     # elif isinstance(event, Events.FriendAddEvent):
     #     print("sys: 同意好友")
@@ -560,7 +515,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 
         if "ping" == user_message:
             logger.debug(str(event.user_id))
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(suffix_manager.process_text("pong! 爆炸！v(◦'ωˉ◦)~♡ ", event.user_id))))
+            await _bot_group_commands.cmd_ping(actions, Manager, Segments, event, suffix_manager)
             
         elif f"{bot_name}真棒" in user_message and str(reminder) not in user_message:
             try:
@@ -641,124 +596,28 @@ For more information, see the administrator or check the system logs.''')))
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
         
         elif f"{reminder}重载插件" == user_message:
-            if str(event.user_id) in ADMINS:
-                global plugins
-                plugins = load_plugins()
-
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-外部后端已重载完成。发送 {reminder}插件视角 以查看更多信息。''')))
-                
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            global plugins
+            new_plugins = await _bot_plugin_ops.cmd_reload_plugins(
+                actions, Manager, Segments, event,
+                ADMINS, CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, reminder,
+                load_plugins)
+            if new_plugins is not None:
+                plugins = new_plugins
         elif f"{reminder}禁用插件 " in user_message:
-            if str(event.user_id) in ADMINS:
-                message = user_message
-                parts = message.split("禁用插件")
-                if len(parts) > 1:
-                    plugin_name = parts[-1].strip() # 获取命令后面的插件名
-                    disable = True
-                else: 
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}禁用插件 (plugin_name)\n参考：{reminder}禁用插件 Hello World")))
-
-                if not plugin_name:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}禁用插件 (plugin_name)\n参考：{reminder}禁用插件 Hello World")))
-                    return
-
-                possible_paths = [
-                    os.path.join(os.path.abspath(PLUGIN_FOLDER), f"{plugin_name}.py"),
-                    os.path.join(os.path.abspath(PLUGIN_FOLDER), f"{plugin_name}.pyw"),
-                    os.path.join(os.path.abspath(PLUGIN_FOLDER), plugin_name),  # 文件夹
-                ]
-
-                found_path = None
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        found_path = path
-                        break
-
-                if not found_path:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败: 找不到插件 {plugin_name}。''')))
-                    return
-
-                dirname, basename = os.path.split(found_path)
-
-                new_name = "d_" + basename
-                new_path = os.path.join(dirname, new_name)
-
-                if not basename.startswith("d_"):
-                    try:
-                        os.rename(found_path, new_path)
-                    except Exception as e:
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败: 禁用插件 {plugin_name} 时发生错误。
-错误信息：{str(e)}''')))
-                        return
-
-                plugins = load_plugins()
-
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-插件 {plugin_name} 已经成功禁用''')))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            new_plugins = await _bot_plugin_ops.cmd_disable_plugin(
+                actions, Manager, Segments, event, user_message,
+                ADMINS, CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, reminder,
+                load_plugins)
+            if new_plugins is not None:
+                plugins = new_plugins
 
         elif f"{reminder}启用插件 " in user_message:
-            if str(event.user_id) in ADMINS:
-                message = user_message
-                parts = message.split("启用插件")
-                if len(parts) > 1:
-                    plugin_name = parts[-1].strip() # 获取命令后面的插件名
-                    disable = False
-                else: 
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}启用插件 (plugin_name)\n参考：{reminder}启用插件 Hello World")))
-
-                if not plugin_name:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}启用插件 (plugin_name)\n参考：{reminder}启用插件 Hello World")))
-                    return
-
-                possible_paths = [
-                    os.path.join(os.path.abspath(PLUGIN_FOLDER), f"d_{plugin_name}.py"),
-                    os.path.join(os.path.abspath(PLUGIN_FOLDER), f"d_{plugin_name}.pyw"),
-                    os.path.join(os.path.abspath(PLUGIN_FOLDER), f"d_{plugin_name}"),  # 文件夹
-                ]
-
-                found_path = None
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        found_path = path
-                        break
-
-                if not found_path:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败: 找不到插件 {plugin_name}。''')))
-                    return
-
-                dirname, basename = os.path.split(found_path)
-
-                if basename.startswith("d_"):
-                    original_name = basename[2:]  # 去除 d_ 前缀，这意味着插件可以被执行
-                    original_path = os.path.join(dirname, original_name)
-                    try:
-                        os.rename(found_path, original_path)
-                    except Exception as e:
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败: 启用插件 {plugin_name} 时发生错误。
-错误信息：{str(e)}''')))
-                        return
-
-                plugins = load_plugins() # 自动重载插件
-
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-插件 {plugin_name} 已经成功启用''')))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            new_plugins = await _bot_plugin_ops.cmd_enable_plugin(
+                actions, Manager, Segments, event, user_message,
+                ADMINS, CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, reminder,
+                load_plugins)
+            if new_plugins is not None:
+                plugins = new_plugins
 
         elif "默认4" == order:
             # EnableNetwork = "Net"
@@ -778,371 +637,48 @@ For more information, see the administrator or check the system logs.''')))
             await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"该指令已停用，请使用 ai管理菜单。")))
 
         elif f"{reminder}ai管理菜单" == user_message:
-            # if str(event.user_id) in ADMINS: # 所有人可用
-            ais = ARC_AI.list_available_ais()
-            current_ai_friendly = ARC_AI.get_current_ai_name(EnableNetwork)
-            
-            ai_list_str = "\n".join([f"- {friendly} (代码: {name})" for name, friendly in ais.items()])
-            
-            menu = f'''{bot_name} {bot_name_en} - AI管理菜单
-————————————————————
-当前使用的AI: {current_ai_friendly} (代码: {EnableNetwork})
-
-可用AI列表:
-{ai_list_str}
-
-指令:
-{reminder}切换AI [AI代码] —> 切换到指定的AI
-例如: {reminder}切换AI gemini
-'''
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(menu)))
+            await _bot_misc_commands.cmd_ai_menu(actions, Manager, Segments, event, bot_name, bot_name_en, reminder, EnableNetwork)
 
         elif f"{reminder}切换AI " in user_message:
-            # if str(event.user_id) in ADMINS: # 所有人可用
-            target_ai = user_message.replace(f"{reminder}切换AI ", "").strip()
-            available_ais = ARC_AI.list_available_ais()
-            
-            if target_ai in available_ais:
-                EnableNetwork = target_ai
-                friendly_name = available_ais[target_ai]
-                logger.info(f"sys: AI Mode change to {friendly_name} ({target_ai})")
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"成功切换到AI: {friendly_name}")))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"找不到AI配置: {target_ai}，请检查代码拼写。")))
+            new_ai = await _bot_misc_commands.cmd_switch_ai(actions, Manager, Segments, event, user_message, reminder, logger)
+            if new_ai is not None:
+                EnableNetwork = new_ai
 
         elif user_message.startswith(f"{reminder}简儿记忆"):
-            cmd = user_message[len(reminder) :].strip()
-            parts = [p for p in cmd.split() if p]
-            action = parts[1] if len(parts) >= 2 else "帮助"
-
-            def parse_interval_seconds(s: str) -> int:
-                s = (s or "").strip().lower()
-                m = re.match(r"^(\d+)\s*([smhd]?)$", s)
-                if not m:
-                    return 0
-                n = int(m.group(1))
-                unit = m.group(2)
-                if unit == "s" or unit == "":
-                    return n
-                if unit == "m":
-                    return n * 60
-                if unit == "h":
-                    return n * 3600
-                if unit == "d":
-                    return n * 86400
-                return 0
-
-            if action in ("帮助", "help"):
-                info = f"""简儿记忆
-————————————————————
-记忆AI配置: {memory_mode}
-数据库: {memory_db_path}
-
-指令:
-{reminder}简儿记忆 状态
-{reminder}简儿记忆 开启 / 关闭
-{reminder}简儿记忆 间隔 6h/30m/3600
-{reminder}简儿记忆 立即生成
-"""
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(info)))
-
-            elif action == "状态":
-                st = await memory_service.get_status(event.group_id, event.user_id, False)
-                if not st:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("未找到记忆状态。")))
-                    return
-                last_at = st.get("last_generated_at", 0) or 0
-                last_at_str = "从未" if int(last_at) <= 0 else datetime.datetime.fromtimestamp(int(last_at)).strftime("%Y-%m-%d %H:%M:%S")
-                msg = f"""简儿记忆状态
-————————————————————
-开启: {bool(st.get("enabled", 0))}
-间隔(秒): {st.get("interval_seconds", 0)}
-上次生成: {last_at_str}
-原始记录: {st.get("raw_count", 0)} (+{st.get("new_raw_count", 0)})
-个人/本群记忆: {st.get("mem_count", 0)}
-全局记忆: {st.get("global_count", 0)}
-"""
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(msg)))
-
-            elif action == "开启":
-                await memory_service.set_enabled(event.group_id, event.user_id, False, True)
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已开启简儿记忆。")))
-
-            elif action == "关闭":
-                await memory_service.set_enabled(event.group_id, event.user_id, False, False)
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已关闭简儿记忆。")))
-
-            elif action == "间隔":
-                if len(parts) < 3:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("用法：#简儿记忆 间隔 6h/30m/3600")))
-                    return
-                seconds = parse_interval_seconds(parts[2])
-                if seconds <= 0:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("间隔格式无效。")))
-                    return
-                await memory_service.set_interval_seconds(event.group_id, event.user_id, False, seconds)
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"已设置简儿记忆间隔为 {seconds} 秒。")))
-
-            elif action == "立即生成":
-                ok = await memory_service.generate_now(event.group_id, event.user_id, False)
-                await actions.send(
-                    group_id=event.group_id,
-                    message=Manager.Message(Segments.Text("已生成一轮简儿记忆。" if ok else "暂无足够新增聊天记录生成记忆。")),
-                )
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("指令不支持，发送 #简儿记忆 帮助。")))
+            await _bot_memory_commands.cmd_memory(
+                actions, Manager, Segments, event, user_message,
+                reminder, memory_service, memory_mode, memory_db_path)
 
         elif "列出黑名单" == order:
-          if str(event.user_id) in ADMINS:
-            try:
-                with open("blacklist.sr", "r", encoding="utf-8") as f:
-                    blacklist1 = set(line.strip() for line in f) 
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单列表加载完成: {blacklist1}")))
-            except FileNotFoundError:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("黑名单列表加载失败,原因:没有文件")))
-            except UnicodeDecodeError:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("黑名单列表加载失败,原因:解码失败")))
-          else:
-              await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            await _bot_misc_commands.cmd_list_blacklist(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name)
         elif "添加黑名单 " in order:
-            blacklist_file = "blacklist.sr"
-            if str(event.user_id) in ADMINS:
-                Toset2 = order[order.find("添加黑名单 ") + len("添加黑名单 "):].strip()
-                blacklist114 = load_blacklist() # 加载现有的黑名单,防止已修改沒更新
-                if Toset2 not in blacklist114:
-                    blacklist114.add(Toset2) 
-                    try:
-                        with open(blacklist_file, "w", encoding="utf-8") as f:
-                         for item in blacklist114:
-                            f.write(item + "\n")  # 防止之前的丟失555，并添加换行符
-                        r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 将群 {Toset2} 添加到禁止群发黑名单'''
-                        await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加成功\n现在的群发黑名单: {blacklist114}")))
-                    except Exception as e:
-                       await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加失败, 是因为\n{e}")))
-                else:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单添加失败,是因为{Toset2}已在黑名单")))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            await _bot_misc_commands.cmd_add_blacklist(actions, Manager, Segments, event, order, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, get_user_nickname)
         elif "删除黑名单 " in order:
-            blacklist_file = "blacklist.sr"
-            if str(event.user_id) in ADMINS:
-                Toset1 = order[order.find("删除黑名单 ") + len("删除黑名单 "):].strip()
-                blacklist117 = load_blacklist() # 加载现有的黑名单,防止已修改沒更新
-                if Toset1 in blacklist117:
-                    blacklist117.remove(Toset1) 
-                    try:
-                        with open(blacklist_file, "w", encoding="utf-8") as f:
-                         for item in blacklist117:
-                            f.write(item + "\n")  # 防止之前的丟失555，并添加换行符
-                        r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 将群 {Toset1} 从禁止群发黑名单中删除'''
-                        await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除成功\n现在黑名单: {blacklist117}")))
-                    except Exception as e:
-                       await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除失败, 是因为\n{e}")))
-                else:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"黑名单删除失败, 是因为群{Toset1}不在黑名单")))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            await _bot_misc_commands.cmd_remove_blacklist(actions, Manager, Segments, event, order, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, get_user_nickname)
             
         elif "删除管理 " in order:
-            r = ""
-            r_admin = ""
-            Toset = ""
-            for i in event.message:
-                if isinstance(i, Segments.At):
-                    Toset = str(i.qq)
-                    
-            if str(event.user_id) in SUPERS:
-                Toset = order[order.find("删除管理 ") + len("删除管理 "):].strip() if Toset == "" else Toset
-                s = Super_User
-                m = Manage_User
-                if Toset in ROOT_User:
-                    r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败：指定的用户是 ROOT_User 且组 ROOT_User 为只读。'''
-                    r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试夺取您的 ROOT_User 权限，已被阻止'''
-                else:
-                    if Toset in s:
-                        s.remove(Toset)
-                    if Toset in m:
-                        m.remove(Toset)
-                        
-                    nick = await get_user_nickname(Toset, Manager, actions)
-                    if Write_Settings(s, m):
-                        r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-成功: {nick} 现在是一个普通用户了。
-现在发送 {reminder}帮助 了解你拥有的权限。'''
-                        r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 删除了用户 {nick} 的管理员权限'''
-                    else:
-                        r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败：设置文件不可写。'''
-                        r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试删除用户 {nick} 的管理员权限，但因为无法读写配置文件导致修改失败'''
-            else:
-                r  = CONFUSED_WORD.format(bot_name=bot_name)
+            await _bot_admin_commands.cmd_del_admin(
+                actions, Manager, Segments, event, order,
+                SUPERS, ROOT_User, Super_User, Manage_User,
+                CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, reminder,
+                Write_Settings, get_user_nickname)
 
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
-            if r_admin:
-                await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-            
         elif "管理 " in order:
-            r = ""
-            r_admin = ""
-            Toset = ""
-            for i in event.message:
-                if isinstance(i, Segments.At):
-                    Toset = str(i.qq)
-                    
-            if str(event.user_id) in SUPERS:
-                if "管理 M " in order:
-                    Toset = order[order.find("管理 M ") + len("管理 M "):].strip() if Toset == "" else Toset
-                    logger.debug(f"try to get_user {Toset}")
-                    nikename = await get_user_nickname(Toset, Manager, actions)
-                    logger.debug(str(nikename))
-                    if len(nikename) == 0:
-                        r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败: {Toset} 不是一个有效的用户。'''
-                    else:
-                        nikename = nikename
-                        m = Manage_User
-                        s = Super_User
-                        if Toset in Manage_User:
-                            r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-成功: {nikename}(@{Toset}) 已加入管理组 Manage_User 。'''
-                        elif Toset in Super_User:
-                            s.remove(Toset)
-                            m.append(Toset)
-                            if Write_Settings(s, m):
-                                r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-成功: {nikename}(@{Toset}) 已加入管理组 Manage_User 。
-现在发送 {reminder}帮助 了解你拥有的权限。'''
-                                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 将用户 {nikename}(@{Toset}) 从 Super_User 设置为了 Manage_User '''
-                            else:
-                                r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败: 设置文件不可写。'''
-                                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试将用户 {nikename}(@{Toset}) 设置为 Manage_User 但因为无法读写配置文件导致修改失败'''
-                        elif Toset in ROOT_User:
-                            r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败：指定的用户是 ROOT_User 且组 ROOT_User 为只读。'''
-                            r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试改变您的 ROOT_User 权限，已被阻止'''
-                        else:
-                            m.append(Toset)
-                            if Write_Settings(s, m):
-                                r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-成功: {nikename}(@{Toset}) 已加入管理组 Manage_User 。
-现在发送 {reminder}帮助 了解你拥有的权限。'''
-                                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 将用户 {nikename}(@{Toset}) 设置为了 Manage_User '''
-                            else:
-                                r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败: 设置文件不可写'''
-                                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试将用户 {nikename}(@{Toset}) 设置为 Manage_User 但因为无法读写配置文件导致修改失败'''
-                       
-                elif "管理 S " in order:
-                    Toset = order[order.find("管理 S ") + len("管理 S "):].strip() if Toset == "" else Toset
-                    logger.debug(f"try to get_user {Toset}")
-                    nikename = await get_user_nickname(Toset, Manager, actions)
-                    logger.debug(str(nikename))
-                    if len(nikename) == 0:
-                        r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败: {Toset} 不是一个有效的用户'''
-                    else:
-                        nikename = nikename
-                        m = Manage_User
-                        s = Super_User
-                        if Toset in Manage_User:
-                            m.remove(Toset)
-                            s.append(Toset)
-                            if Write_Settings(s, m):
-                                r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-成功: {nikename}(@{Toset}) 已加入管理组 Super_User 。
-现在发送 {reminder}帮助 了解你拥有的权限。'''
-                                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 将用户 {nikename}(@{Toset}) 从 Manage_User 设置为了 Super_User '''
-                            else:
-                                r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败：设置文件不可写。'''
-                                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试将用户 {nikename}(@{Toset}) 设置为 Super_User 但因为无法读写配置文件导致修改失败'''
-                        elif Toset in Super_User:
-                            r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-成功: {nikename}(@{Toset}) 已加入管理组 Super_User 。'''
-                        elif Toset in ROOT_User:
-                            r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败：指定的用户是 ROOT_User 且组 ROOT_User 为只读。'''
-                            r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试改变您的 ROOT_User 权限，已被阻止'''
-                        else:
-                            s.append(Toset)
-                            if Write_Settings(s, m):
-                                r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-成功: {nikename}(@{Toset}) 已加入管理组 Super_User 。
-现在发送 {reminder}帮助 了解你拥有的权限。'''
-                                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 将用户 {nikename}(@{Toset}) 设置为了 Super_User '''
-                            else:
-                                r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败：设置文件不可写。'''
-                                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 尝试将用户 {nikename}(@{Toset}) 设置为 Super_User 但因为无法读写配置文件导致修改失败'''
-                else:
-                    r = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-失败：只能设置 Manage_User 或 Super_User 。'''
-            else:
-                r  = CONFUSED_WORD.format(bot_name=bot_name)
+            await _bot_admin_commands.cmd_add_admin(
+                actions, Manager, Segments, event, order,
+                SUPERS, ROOT_User, Super_User, Manage_User,
+                CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, reminder,
+                Write_Settings, get_user_nickname, logger)
 
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
-            if r_admin:
-                await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-            
         elif "让我访问" in order:
-            if str(event.user_id) in ADMINS:
-                manage_users = await asyncio.gather(*[get_user_nickname_with_userid(uid, Manager, actions) for uid in Manage_User])
-                super_users = await asyncio.gather(*[get_user_nickname_with_userid(uid, Manager, actions) for uid in Super_User])
-                root_users = await asyncio.gather(*[get_user_nickname_with_userid(uid, Manager, actions) for uid in ROOT_User])
-                r = f"""{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-Manage_User: {", ".join(manage_users)}
-————————————————————
-Super_User: {", ".join(super_users)}
-————————————————————
-ROOT_User: {", ".join(root_users)}
-————————————————————
-If you are a Super_User or ROOT_User, you can manage these users. Use {reminder}帮助 to know more.
-""".strip()
-            
-            else:
-                r  = CONFUSED_WORD.format(bot_name=bot_name)
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(r)))
+            await _bot_admin_commands.cmd_list_admins(
+                actions, Manager, Segments, event,
+                ADMINS, ROOT_User, Super_User, Manage_User,
+                CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, reminder,
+                get_user_nickname_with_userid)
 
         elif "插件视角" in order:
-            status = f'''{bot_name} {bot_name_en} - 插件视角
-————————————————————
-✅ 已加载插件 ({len(loaded_plugins)}):
-{chr(10).join(f"{i+1}. {str(plugin).rsplit('_', 1)[0]}" for i, plugin in enumerate(loaded_plugins)) if loaded_plugins else "无"}
-
-❌ 已禁用插件 ({len(disabled_plugins)}):
-{chr(10).join(
-    f"{i+1}. {str(plugin).replace('d_', '').split('.')[0]}" 
-    for i, plugin in enumerate(disabled_plugins)) if disabled_plugins else "无"}
-
-⚠️ 加载失败 ({len(failed_plugins)}):
-{chr(10).join(f"{i+1}. {str(plugin)}" 
-    for i, plugin in enumerate(failed_plugins)) 
-if failed_plugins else "无"}'''
-
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(status)))
+            await _bot_group_commands.cmd_plugin_view(actions, Manager, Segments, event, bot_name, bot_name_en, loaded_plugins, disabled_plugins, failed_plugins)
         elif order.startswith("设置帮助模式"):
             if not is_qq_protocol():
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("该功能仅支持QQ平台（OneBot/Milky）。")))
@@ -1161,56 +697,9 @@ if failed_plugins else "无"}'''
             
         elif "帮助" == order:
             if str(event.user_id) in ADMINS:
-                content = [
-                    (f"{reminder}让我访问", "检索有权限的用户"), # Managers' help content 管理员帮助
-                    (f"{reminder}注销", "删除所有用户的上下文"),
-                    (f"{reminder}修改 (hh:mm) (内容)", "改变定时消息时间与内容"),
-                    (f"{reminder}感知", "查看运行状态"),
-                    (f"{reminder}休眠", f"奖励{bot_name}精致睡眠 💤"),
-                    (f"{reminder}重启", f"关闭所有线程和进程，关闭{bot_name}。然后重新启动{bot_name}。"),
-                    (f"{reminder}启用插件（插件名称）", "启用特定插件"),
-                    (f"{reminder}禁用插件（插件名称）", "忽略特定插件"),
-                    (f"{reminder}重载插件", "重新加载所有插件"),
-                    (f"{reminder}群发 (内容)", "在所有群聊中（黑名单群聊除外）发送一条消息"),
-                    (f"{reminder}冷静 (@QQ+时间)/(@all)", "冷静用户一段时间"),
-                    (f"{reminder}取消冷静 (@QQ)/(@all)", "解除用户冷静"),
-                    (f"{reminder}送飞机票 (@QQ)", "将用户移出群聊"),
-                    ("撤回【引用消息】", "撤回指定消息"),
-                    (f"{reminder}群发黑名单", "管理群发消息时不会发送到的群聊"),
-                    (f"{reminder}角色扮演", "管理角色预设"),
-                    (f"{reminder}更改TTS状态", "切换语音回复功能（默认启用）"),
-                    (f"{reminder}表情复述", "切换是否开启表情复述功能（默认启用）"),
-                    (f"{reminder}设置全局后缀 (后缀)", "设置默认后缀（所有人）"),
-                    (f"{reminder}删除全局后缀", "删除默认后缀（所有人）"),
-                    (f"{reminder}设置特定后缀 (后缀)", "设置你的特定后缀（优先于全局）"),
-                    (f"{reminder}删除特定后缀", "删除你的特定后缀")
-                ]
-                if is_qq_protocol():
-                    content.append((f"{reminder}设置帮助模式 图片/文本", "切换帮助展示样式（仅QQ平台）"))
-                
-                if str(event.user_id) in SUPERS:
-                    content += [
-                        (f"{reminder}管理 M (QQ号)", "为用户添加 Manage_User 权限"),
-                        (f"{reminder}管理 S (QQ号)", "为用户添加 Super_User 权限"),
-                        (f"{reminder}删除管理 (QQ号)", "删除指定用户所有权限"),
-                        (f"{reminder}退出本群", "退出当前群聊")
-                    ]
-                    
-                command_lines = [
-                    f"{idx+1}. {cmd} —> {desc}"
-                    for idx, (cmd, desc) in enumerate(content)
-                ]
-                
-                content = "\n".join([
-                    f"管理我们的{bot_name}\n————————————————————",
-                    f"你拥有管理{bot_name}的权限，以下是你可以使用的命令。若要查看普通帮助，请@{bot_name} 或发送【{reminder}用户帮助】",
-                    *command_lines,
-                    "你的每一步操作，与用户息息相关。"
-                ])
-                
+                content = _bot_help_view.build_admin_help(config, bot_name, reminder, str(event.user_id) in SUPERS)
             else:
                 content = help_message(event)
-                
             await send_help_visual(actions=actions, event=event, content=content)
 
         elif feishu_mode and feishu_mention_like and not order:
@@ -1231,302 +720,54 @@ if failed_plugins else "无"}'''
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(content)))
 
-        elif "关于" == order: 
-            framework = await actions.get_version_info()
-            framework = framework.data.raw
-            
-            # 读取模板
-            template_path = os.path.join("static", "about_template.html")
-            with open(template_path, "r", encoding="utf-8") as f:
-                html_content = f.read()
-                
-            # 替换变量
-            html_content = html_content.replace("{{bot_name}}", str(bot_name))
-            html_content = html_content.replace("{{bot_name_en}}", str(bot_name_en))
-            html_content = html_content.replace("{{ONE_SLOGAN}}", str(ONE_SLOGAN))
-            html_content = html_content.replace("{{version_name}}", str(version_name))
-            html_content = html_content.replace("{{app_name}}", str(framework.get("app_name", "Unknown")))
-            html_content = html_content.replace("{{protocol_version}}", str(framework.get("protocol_version", "")))
-            html_content = html_content.replace("{{app_version}}", str(framework.get("app_version", "")))
-            html_content = html_content.replace("{{year}}", str(datetime.datetime.now().year))
-            
-            # 写入临时HTML
-            temp_html_path = os.path.abspath(os.path.join("static", f"about_temp_{int(time.time())}.html"))
-            with open(temp_html_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
-                
-            # 截图
-            url = f"file:///{temp_html_path.replace(chr(92), '/')}"
-            image_path = await capture_screenshot(url, "about_image", "png")
-            
-            # 发送
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(image_path)))
-            
-            # 清理
-            try:
-                os.remove(temp_html_path)
-                os.remove(image_path)
-            except:
-                pass
+        elif "关于" == order:
+            await _bot_group_commands.cmd_about(actions, Manager, Segments, event, bot_name, bot_name_en, ONE_SLOGAN, version_name)
 
         elif "群发黑名单" == order:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f'''{bot_name} {bot_name_en} - 群发黑名单管理控制面板
-————————————————————
-{reminder}列出黑名单 —> 显示所有黑名单群组
-{reminder}删除黑名单 +群号 —> 允许群发消息到该群
-{reminder}添加黑名单 +群号 —> 禁止群发消息到该群
-''')))
+            await _bot_group_commands.cmd_broadcast_blacklist_menu(actions, Manager, Segments, event, bot_name, bot_name_en, reminder)
 
         elif f"设置全局后缀 " in order:
-            if str(event.user_id) in ADMINS:
-                suffix = order[order.find("设置全局后缀 ") + len("设置全局后缀 "):].strip()
-                if suffix:
-                    suffix_manager.set_global_suffix(suffix)
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"全局后缀已设置为：{suffix}")))
-                else:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("后缀不能为空！")))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            await _bot_misc_commands.cmd_set_global_suffix(actions, Manager, Segments, event, order, ADMINS, CONFUSED_WORD, bot_name, suffix_manager)
 
         elif f"删除全局后缀" == order:
-            if str(event.user_id) in ADMINS:
-                suffix_manager.remove_global_suffix()
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("全局后缀已删除。")))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            await _bot_misc_commands.cmd_remove_global_suffix(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name, suffix_manager)
 
         elif f"设置特定后缀 " in order:
-            suffix = order[order.find("设置特定后缀 ") + len("设置特定后缀 "):].strip()
-            if suffix:
-                suffix_manager.set_user_suffix(event.user_id, suffix)
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"已为你配置特定后缀：{suffix}")))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("后缀不能为空！")))
+            await _bot_misc_commands.cmd_set_user_suffix(actions, Manager, Segments, event, order, suffix_manager)
 
         elif f"删除特定后缀" == order:
-            suffix_manager.remove_user_suffix(event.user_id)
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("你的特定后缀已删除。")))
+            await _bot_misc_commands.cmd_remove_user_suffix(actions, Manager, Segments, event, suffix_manager)
             
         elif f"{reminder}角色扮演" == user_message:
-            preset_list = "\n".join(
-                [
-                    f"    {reminder}{data['name']}（当前） - {data['info']}"
-                    if data['name'] == presets_tool.current_preset
-                    else f"    {reminder}{data['name']} - {data['info']}"
-                    for data in presets.values()
-                ]
-            )
-
-            prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-{presets_tool.list_presets(presets, presets_tool.current_preset, reminder)}
-
-发送相应的关键词，{bot_name}会尽力扮演不同角色和你交流哒！⌯>ᴗoᴗ⌯ .ᐟ.ᐟ
-————————————————————
-若您是 Manage_User, Super_User 或 ROOT_User，你可以管理这些角色，尝试：
-    {reminder}添加预设 [name] [info] : [content]
-    {reminder}删除预设 [name]
-其中，name 为角色名称， info 为预设简介， content 为预设内容。"""
-
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(prerequisites_info)))
+            await _bot_misc_commands.cmd_role_play(actions, Manager, Segments, event, presets, presets_tool, bot_name, bot_name_en, reminder)
 
         elif f"添加预设 " in order:
-            if str(event.user_id) in ADMINS:
-                match = re.match(r"添加预设\s+(.+?)\s+(.+?)\s*[:：]\s*(.+)", order, re.DOTALL)
-                if not match:
-                    prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-添加预设 格式错误。
-用法：{reminder}添加预设 [name] [info] : [content]
-其中，name 为角色名称， info 为预设简介， content 为预设内容。
+            await _bot_misc_commands.cmd_add_preset(actions, Manager, Segments, event, order, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, bot_name_en, reminder, presets, presets_tool, PRESET_DIR)
 
-示例：{reminder}添加预设 助手 让{bot_name}成为你有帮助的助手！ : 你是一个有帮助的助手。"""
-
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(prerequisites_info)))
-                    return 
-
-                name, info, content = match.groups()
-                
-                # 唯一标识符看起来太乱了，这里使用随机数生成预设id
-                while True:
-                    preset_id = "p" + str(random.randint(1000000, 9999999))
-                    if not os.path.exists(os.path.join(PRESET_DIR, f"{preset_id}.txt")):
-                        break
-
-                # 检查是否已经存在具有相同 name 的预设
-                existing_preset_id = None
-                for pid, pdata in presets.items():
-                    if pdata["name"] == name:
-                        existing_preset_id = pid
-                        break
-
-                if existing_preset_id:
-                    # 如果存在，则更新已存在的预设文件
-                    preset_id = existing_preset_id
-                    preset_path = os.path.join(PRESET_DIR, presets[preset_id]["path"])
-                    with open(preset_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    presets[preset_id]["info"] = info
-                else:
-                    # 如果不存在，则创建新的预设
-                    preset_filename = f"{preset_id}.txt"
-                    preset_path = os.path.join(PRESET_DIR, preset_filename)
-
-                    with open(preset_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-
-                    presets[preset_id] = {
-                        "name": name,
-                        "uid": [],
-                        "info": info,
-                        "path": preset_filename,
-                    }
-                    
-                presets_tool.write_presets(presets)
-                rootmsg = f"{'更新现有' if existing_preset_id else '添加'}预设: {name}"
-                await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(f"用户 {event.user_id} 在群 {event.group_id} 中{rootmsg} "))) #管理员操作通知ROOT用户
-                prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-已{'更新现有' if existing_preset_id else '添加'}预设: {name}"""
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(prerequisites_info)))
-        
-            else:
-                r  = CONFUSED_WORD.format(bot_name=bot_name)
-            
         elif f"删除预设 " in order:
-            if str(event.user_id) in ADMINS:
-                match = re.match(r"删除预设\s+(.+)", order)
-                if not match:
-                    prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-删除预设 格式错误。
-用法：{reminder}删除预设 [name] 
-其中，name 为角色名称。
+            await _bot_misc_commands.cmd_del_preset(actions, Manager, Segments, event, order, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, bot_name_en, reminder, presets, presets_tool, PRESET_DIR, logger)
 
-示例：{reminder}删除预设 助手"""
-
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(prerequisites_info)))
-                    return 
-
-                name = match.group(1).strip()
-
-                preset_id_to_delete = None
-                for preset_id, preset_data in presets.items():
-                    if preset_data["name"] == name:
-                        preset_id_to_delete = preset_id
-                        break
-
-                if preset_id_to_delete:
-                    # 删除预设文件
-                    preset_path = os.path.join(PRESET_DIR, presets[preset_id_to_delete]["path"])
-                    logger.info(f"Removed {preset_path}")
-                    os.remove(preset_path)
-
-                # 从配置中删除预设
-                del presets[preset_id_to_delete]
-                
-                presets_tool.write_presets(presets)
-                await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(f"用户 {event.user_id} 在群 {event.group_id} 中删除 {name} 预设"))) #管理员操作通知ROOT用户
-                prerequisites_info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-已删除预设: {name}"""
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(prerequisites_info)))
-
-            else:
-                r  = CONFUSED_WORD.format(bot_name=bot_name)
-                
         elif "休眠" == order:
-            if str(event.user_id) in ADMINS:
+            if await _bot_misc_commands.cmd_sleep(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, suffix_manager, get_user_nickname):
                 stop_working = True
-                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 休眠QQ机器人'''
-                await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(suffix_manager.process_text(f"谢谢喵，{bot_name}睡觉去了 ヾ(＠ ˘ω˘ ＠)ノ💤", event.user_id))))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
 
         elif f"{reminder}感知" in user_message:
-            if str(event.user_id) in ADMINS:
-                system_info = get_system_info()
-                feel = f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
-————————————————————
-系统当前运行状况
-运行时间：{seconds_to_hms(round(time.time() - second_start, 2))}
-系统版本：{system_info["version_info"]}
-体系结构：{system_info["architecture"]}
-CPU占用：{str(system_info["cpu_usage"]) + "%"}
-内存占用：{str(system_info["memory_usage_percentage"]) + "%"}'''
-                for i, usage in enumerate(system_info["gpu_usage"]):
-                    feel = feel + f"\nGPU {i} Usage：{usage * 100:.2f}%"
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(feel)))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
-            
+            await _bot_misc_commands.cmd_status(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name, bot_name_en, ONE_SLOGAN, second_start, time)
+
         elif f"{reminder}注销" in user_message:
-            if str(event.user_id) in ADMINS:
-                # del cmc
-                # cmc = ContextManager()
-                user_lists.clear()
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"卸下包袱，{bot_name}更轻松了~ (/≧▽≦)/")))
-                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 手动清空了所有用户的 AI 对话上下文'''
-                await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            await _bot_misc_commands.cmd_logout(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, user_lists, get_user_nickname)
       
         elif f"{reminder}生成" == user_message:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(os.path.abspath("./assets/sc114.png"))))
+            await _bot_group_commands.cmd_generate_placeholder(actions, Manager, Segments, event)
             
         elif "修改 " in order:
-            if str(event.user_id) in ADMINS:
-                try:
-                    tm = order[order.find("修改 ") + len("修改 "):].strip()
-                    if not bool(re.match(r'^([01][0-9]|2[0-3]):([0-5][0-9])$', tm[:5])):
-                        r = f'''{bot_name}不能识别给定的时间是什么 Σ( ° △ °|||)︴
-举个🌰子：{reminder}修改 00:00 早安 —> 即可让{bot_name}在0点0分准时问候早安噢⌯oᴗo⌯'''
-                    else:
-                        timing_settings = f"{tm[:5]}⊕{tm[6::].strip()}"
-                        with open("timing_message.ini", "w", encoding="utf-8") as f:
-                            f.write(timing_settings)
-                            f.close()
-                        r = f"{bot_name}设置成功！(*≧▽≦) "
-                        r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 将机器人的定时群发消息修改为时间：{tm[:5]} 
-内容：{tm[6::]}'''
-                        await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-                except Exception as e:
-                    r = f'''{str(type(e))}
-{bot_name}设置失败了…… (╥﹏╥)'''
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
-            
-        elif f"{reminder}群发" in user_message:
-            if str(event.user_id) in ADMINS:
-                words = order.split(" ")
-                if len(words) < 2 and len(event.message) == 1:
-                    r = f'''群发格式错误 Σ( ° △ °|||)︴
-举个🌰子：{reminder}群发 {bot_name}有更新新功能啦！ —> 在所有群聊中发送消息 “{bot_name}有更新新功能啦！”'''
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(r)))
-                else:
-                    logger.debug(f"消息长度: {len(event.message)}")
-                    if len(event.message) > 0 and isinstance(event.message[0], Segments.Text):
-                        new_text = str(event.message[0]).replace(f"{reminder}群发 ", "", 1) if f"{reminder}群发 " in str(event.message[0]) else str(event.message[0]).replace(f"{reminder}群发", "", 1)
-                        if len(event.message) > 1:
-                            m = Manager.Message(Segments.Text(new_text), *event.message[1:])
-                        else:
-                            m = Manager.Message(Segments.Text(new_text))
-                    else:
-                        m = event.message
+            await _bot_misc_commands.cmd_modify_timing(actions, Manager, Segments, event, order, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, reminder, get_user_nickname)
 
-                    words.pop(0)
-                    word = " ".join(words)
-                    r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 启动群发消息：\n'''
-                    await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin), *m)) #管理员操作通知ROOT用户
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f'''已启动群发消息：\n'''), *m))
-                    await send_msg_all_groups(word, actions, m)
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+        elif f"{reminder}群发" in user_message:
+            await _bot_misc_commands.cmd_broadcast_msg(actions, Manager, Segments, event, order, user_message, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, reminder, logger, send_msg_all_groups, get_user_nickname)
                 
         elif f"{reminder}生草" == user_message:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("🌿")))
+            await _bot_group_commands.cmd_grass(actions, Manager, Segments, event)
 
         elif "zzzz...涩图...嘿嘿..." in user_message:
             try:
@@ -1539,169 +780,44 @@ CPU占用：{str(system_info["cpu_usage"]) + "%"}
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}需要 GenerateFromACG 插件才能生成好看的涩图哦 (੭ु ˃̶͈̀ ω ˂̶͈́)੭ु⁾⁾")))
                 
         elif "取消冷静 " in order:
-           if str(event.user_id) in ADMINS:
-            start_index = order.find("取消冷静 ")
-            if start_index != -1:
-                result = order[start_index + len("取消冷静 "):].strip()
-                numbers = re.findall(r'\d+', result)
-                complete = False
-                for i in event.message:
-                    if isinstance(i, Segments.At):
-                        logger.debug("At in loading...")
-                        userid114 = numbers[0]  
-                        time114 = 0
-                        await actions.set_group_ban(group_id=event.group_id,user_id=userid114,duration=time114)
-                        complete = True
-                        break
+            await _bot_misc_commands.cmd_uncalm(actions, Manager, Segments, event, order, ADMINS, CONFUSED_WORD, bot_name, reminder)
 
-                if not complete:
-                    if "@all" in order:
-                        await actions.custom.set_group_whole_ban(group_id=event.group_id, enable=False)
-                        complete = True
-                    else:
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}取消冷静 @anyone/@all\n参考：{reminder}取消冷静 @Harcic#8042")))
-     
-           else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
-                
         elif "冷静" in order:
-            if str(event.user_id) in ADMINS:
-                try:
-                    start_index = order.find("冷静")
-                    if start_index != -1:
-                        result = order[start_index + len("冷静"):].strip()
-                        numbers = re.findall(r'\d+', result)
-                        complete = False
-                        for i in event.message:
-                            if isinstance(i, Segments.At):
-                                userid114 = numbers[0]  
-                                time114 = numbers[1]
-                                
-                                if str(userid114) == str(event.user_id):
-                                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"你抖M是吧！{bot_name}生气了！自己找个没人的地方自己处理自己去，懒得理你 ┗(•̀へ •́ ╮)")))
-                                    complete = None
-                                else:
-                                    await actions.set_group_ban(group_id=event.group_id, user_id=userid114, duration=time114)
-                                    complete = True
-                                    break 
-                        
-                        if complete is not None:
-                            if not complete:
-                                if "@all" in order:
-                                    await actions.custom.set_group_whole_ban(group_id=event.group_id, enable=True)
-                                    complete = True
-                                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：已冷静。")))
-                                else:
-                                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}冷静 @anyone/@all (seconds of duration)\n参考：{reminder}冷静 @Harcic#8042 128")))
-                            else:
-                                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：已冷静，时长 {time114} 秒。")))
-                    
-                except Exception as e:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"管理员：你的格式有误。\n格式：{reminder}冷静 @anyone/@all (seconds of duration)\n参考：{reminder}冷静 @Harcic#8042 128")))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
-          
+            await _bot_misc_commands.cmd_calm(actions, Manager, Segments, event, order, ADMINS, CONFUSED_WORD, bot_name, reminder)
+
         elif "送飞机票" in order:
-          if str(event.user_id) in ADMINS:
-                for i in event.message:
-                    if isinstance(i, Segments.At):
-                        await actions.set_group_kick(group_id=event.group_id,user_id=i.qq)
-                        r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 使 {await get_user_nickname(i.qq, Manager, actions)} 退出了群聊：{event.group_id}'''
-                        await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-          else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))  
+            await _bot_misc_commands.cmd_kick(actions, Manager, Segments, event, order, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, get_user_nickname)
         
         elif f"{reminder}退出本群" == user_message:
-            if str(event.user_id) in SUPERS:
-                r_admin = f'''用户 {await get_user_nickname(event.user_id, Manager, actions)} 在 {event.time_str} 使机器人退出了群聊：{event.group_id}'''
-                await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin))) #管理员操作通知ROOT用户
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"呜呜呜，各位再见了……")))
-                await asyncio.sleep(3)
-                await actions.custom.set_group_leave(group_id=event.group_id, is_dismiss=True)
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            await _bot_misc_commands.cmd_leave_group(actions, Manager, Segments, event, SUPERS, ROOT_User, CONFUSED_WORD, bot_name, get_user_nickname)
         elif "撤回" == user_message:
-            if str(event.user_id) in ADMINS:
-              if isinstance(event.message[0], Segments.Reply):
-                try:
-                  await actions.del_message(event.message[0].id)
-                except:
-                    pass
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
+            await _bot_misc_commands.cmd_recall(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name)
         elif f"{reminder}更改TTS状态" == user_message:
             global gptsovitsoff
-            if gptsovitsoff: 
-                gptsovitsoff = False
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"开启TTS成功！")))
-            else:
-                gptsovitsoff = True
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"关闭TTS成功！")))
-                
+            gptsovitsoff = not gptsovitsoff
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(
+                "开启TTS成功！" if not gptsovitsoff else "关闭TTS成功！")))
+
         elif f"{reminder}表情复述" == user_message:
-            if emoji_plus_one_off: 
-                emoji_plus_one_off = False
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"开启表情复述成功！")))
-            else:
-                emoji_plus_one_off = True
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"关闭表情复述成功！")))
-                
+            global emoji_plus_one_off
+            emoji_plus_one_off = not emoji_plus_one_off
+            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(
+                "开启表情复述成功！" if not emoji_plus_one_off else "关闭表情复述成功！")))
+
         elif f"{reminder}更改分配头衔开放状态" == user_message:
             global self_service_titles
             if str(event.user_id) in SUPERS:
-                if self_service_titles:
-                    self_service_titles = False
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"分配头衔功能已取消开放！")))
-                else:
-                    self_service_titles = True
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"分配头衔功能已开放！")))
+                self_service_titles = not self_service_titles
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(
+                    "分配头衔功能已开放！" if self_service_titles else "分配头衔功能已取消开放！")))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
-                
+
         elif "给他人分配头衔" in order:
-            if str(event.user_id) in SUPERS:
-                try:
-                    start_index = order.find("给他人分配头衔")
-                    if start_index != -1:
-                        result = order[start_index + len("给他人分配头衔"):].strip() 
-                    match = re.search(r'(\d+)\s+(.+)', result)
-                    if match:  
-                        userid114 = match.group(1)  
-                        title114 = match.group(2).strip() 
+            await _bot_misc_commands.cmd_assign_title_other(actions, Manager, Segments, event, order, SUPERS, CONFUSED_WORD, bot_name, logger)
 
-                        if len(title114) > 6:  
-                            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("头衔不能超过6个字！")))
-                        else:
-                            try:  
-                                await actions.custom.set_group_special_title(group_id=event.group_id, user_id=userid114, title=title114)
-                                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("已设置！")))
-                            except Exception as set_title_error:
-                                logger.error(f"设置头衔失败: {set_title_error}")
-                                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"设置头衔失败：{set_title_error}")))
-
-                    else:   
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("指令格式有误，请使用 用户ID 头衔 的格式。")))
-
-                except Exception as e: 
-                    logger.error(f"处理分配头衔指令时出错: {e}")
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("格式有误或发生未知错误！")))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
-                
         elif f"分配头衔 " in order:
-            titletext = order[order.find("分配头衔 ") + len("分配头衔 "):].strip()
-            if len(titletext) > 6:
-                await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("头衔不能超过6个字！")))
-            else:
-                if str(event.user_id) in SUPERS:
-                    await actions.custom.set_group_special_title(group_id=event.group_id,user_id=event.user_id,title=titletext)
-                    await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("已设置！")))
-                else:
-                    if self_service_titles:
-                        await actions.custom.set_group_special_title(group_id=event.group_id,user_id=event.user_id,special_title=titletext,duration=-1)
-                        await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("已设置！")))
-                    else:
-                        await actions.send(group_id=event.group_id,message=Manager.Message(Segments.Text("当前功能未开放,请联系管理员(高级用户 或者 根用户)开放权限！")))
+            await _bot_misc_commands.cmd_assign_title_self(actions, Manager, Segments, event, order, SUPERS, self_service_titles)
         else:
             # 没有匹配到用户发送的任何关键字，进入二级响应
             # 1. 检查用户是否是想要切换预设
