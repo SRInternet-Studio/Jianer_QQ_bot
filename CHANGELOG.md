@@ -1,5 +1,20 @@
 # 更新日志
 
+## 未发布
+
+### 变更
+- 重构：将 `main.py` 中的辅助逻辑（持久化、插件加载/派发、定时广播、帮助视图、协议判定等）拆分到 `bot/` 包；`main.py` 从 2362 行降至约 1700 行。`handler()` 主体未改动，模块级 globals 与对外函数签名全部保留以最大兼容现有插件。
+- 插件加载器返回结构化 `LoadResult`（包含 `plugins / loaded / loaded_display / disabled / failed / help_text`），替代之前的可变 state dict 回填。
+
+### 行为变更（插件开发者请关注）
+- `execute_plugins` 中**参数绑定阶段**的错误（如插件 `on_message` 声明了未在上下文中提供的必填参数）不再被视为"消息已被处理"。原行为会静默吞掉用户消息；新行为会记录错误并 `continue`，消息继续走后续插件或 AI 回复路径。
+- 插件 `on_message` **执行阶段**抛出的异常仍保持原语义：精确匹配（非 `Any`）时视为已处理，避免落到 AI。
+
+### 修复
+- `broadcast.send_msg_all_groups` 在 async 上下文里改用 `await asyncio.sleep`，不再阻塞事件循环。
+- `broadcast.timing_message_loop` 修复在外层含 `⊕` 但首行不含的分支下 `time_part` 未定义可能引发的 NameError。
+- 插件加载失败时统一清理 `sys.modules`；持久化层（`auth_store / feishu_bindings / help_mode`）写入失败改为 `logger.exception` 而非静默 `pass`。
+
 ## JianerNext4 Dev-20260116a
 
 ### 新增

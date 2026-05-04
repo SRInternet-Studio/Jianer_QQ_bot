@@ -20,14 +20,15 @@ _INCOMPATIBLE_IN_FEISHU = {
 @dataclass
 class LoadResult:
     plugins: list = field(default_factory=list)
-    loaded: list = field(default_factory=list)
+    loaded: list = field(default_factory=list)              # 内部唯一模块名（含 uuid 后缀）
+    loaded_display: list = field(default_factory=list)      # 展示用名称（与 disabled 对齐）
     disabled: list = field(default_factory=list)
     failed: list = field(default_factory=list)
-    help_lines: list = field(default_factory=list)
+    _help_lines: list = field(default_factory=list)
 
     @property
     def help_text(self) -> str:
-        return "".join(f"\n       {line}" for line in self.help_lines)
+        return "".join(f"\n       {line}" for line in self._help_lines)
 
 
 def _register_module(module, unique_module_name: str, module_name: str, result: LoadResult, logger) -> None:
@@ -41,10 +42,11 @@ def _register_module(module, unique_module_name: str, module_name: str, result: 
 
     result.plugins.append(module)
     result.loaded.append(unique_module_name)
+    result.loaded_display.append(module_name)
     if hasattr(module, "HELP_MESSAGE") and isinstance(module.HELP_MESSAGE, str):
         for line in (ln.strip() for ln in module.HELP_MESSAGE.splitlines()):
             if line:
-                result.help_lines.append(line)
+                result._help_lines.append(line)
     logger.info(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
 
 
