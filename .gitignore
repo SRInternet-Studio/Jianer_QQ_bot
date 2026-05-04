@@ -180,3 +180,9 @@ AGENTS.MD
 config2.json
 prerequisites/ffmpeg.exe
 prerequisites/ffmpeg.zip
+config.json
+config12.json
+aiconfig/gemini.ai.json
+jianer_memory.db
+jianer_memory.db-shm
+jianer_memory.db-wal
