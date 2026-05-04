@@ -23,7 +23,11 @@ class LoadResult:
     loaded: list = field(default_factory=list)
     disabled: list = field(default_factory=list)
     failed: list = field(default_factory=list)
-    help_text: str = ""
+    help_lines: list = field(default_factory=list)
+
+    @property
+    def help_text(self) -> str:
+        return "".join(f"\n       {line}" for line in self.help_lines)
 
 
 def _register_module(module, unique_module_name: str, module_name: str, result: LoadResult, logger) -> None:
@@ -40,7 +44,7 @@ def _register_module(module, unique_module_name: str, module_name: str, result: 
     if hasattr(module, "HELP_MESSAGE") and isinstance(module.HELP_MESSAGE, str):
         for line in (ln.strip() for ln in module.HELP_MESSAGE.splitlines()):
             if line:
-                result.help_text += f"\n       {line}"
+                result.help_lines.append(line)
     logger.info(f"已加载插件: {unique_module_name} (关键词: {module.TRIGGHT_KEYWORD})")
 
 
@@ -53,10 +57,6 @@ def _load_single(entry_path: str, module_name: str, result: LoadResult, logger) 
         sys.modules[unique_module_name] = module
         spec.loader.exec_module(module)
         _register_module(module, unique_module_name, module_name, result, logger)
-    except FileNotFoundError as e:
-        result.failed.append(f"{module_name} (文件未找到: {e})")
-        logger.error(f"加载插件 {unique_module_name} 失败，原因是: {e}")
-        sys.modules.pop(unique_module_name, None)
     except ImportError as e:
         result.failed.append(f"{module_name} (导入错误: {e})")
         logger.error(f"加载插件 {unique_module_name} 失败，原因是: \n{traceback.format_exc()}\n")
@@ -82,11 +82,13 @@ def load_plugins(config, logger) -> LoadResult:
             logger.debug("Directory __pycache__ not load.")
             continue
 
+        # 已禁用插件：剥离 d_ 前缀后入列，便于展示
         if filename.startswith("d_"):
-            result.disabled.append(filename)
+            display = os.path.splitext(filename[2:])[0]
+            result.disabled.append(display)
             continue
 
-        plugin_base_name = filename[:-3] if filename.endswith(".py") else filename
+        plugin_base_name = os.path.splitext(filename)[0]
         if protocol_now == "feishu" and plugin_base_name in _INCOMPATIBLE_IN_FEISHU:
             result.disabled.append(plugin_base_name)
             logger.info(f"Feishu 模式跳过不兼容插件: {plugin_base_name}")
@@ -103,7 +105,7 @@ def load_plugins(config, logger) -> LoadResult:
                 result.failed.append(f"{filename} (入口错误: 缺少 setup.py 文件)")
 
         elif filename.endswith(".py") or filename.endswith(".pyw"):
-            module_name = filename[:-3] if filename.endswith(".py") else filename[:-4]
+            module_name = os.path.splitext(filename)[0]
             _load_single(os.path.join(PLUGIN_FOLDER, filename), module_name, result, logger)
 
         else:
