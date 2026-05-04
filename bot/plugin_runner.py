@@ -3,14 +3,19 @@ import inspect
 import traceback
 
 
-async def execute_plugins(plugins, reminder, logger, isAny: bool, **main_context) -> bool:
+async def execute_plugins(_plugins, _reminder, _logger, _isAny, **main_context) -> bool:
+    """按关键字匹配并调用插件。
+
+    私有参数前缀避免与 main_context（来自调用方 globals()+locals()）中的
+    同名变量（如 logger / reminder / plugins）发生冲突。
+    """
     has_plugin = False
     user_message = main_context["order"] if "order" in main_context else ""
 
-    for plugin_module in plugins:
+    for plugin_module in _plugins:
         if not (
-            (not isAny and f"{reminder}{plugin_module.TRIGGHT_KEYWORD}" in f"{reminder}{user_message}")
-            or (isAny and plugin_module.TRIGGHT_KEYWORD == "Any")
+            (not _isAny and f"{_reminder}{plugin_module.TRIGGHT_KEYWORD}" in f"{_reminder}{user_message}")
+            or (_isAny and plugin_module.TRIGGHT_KEYWORD == "Any")
         ):
             continue
 
@@ -29,14 +34,14 @@ async def execute_plugins(plugins, reminder, logger, isAny: bool, **main_context
                     missing = param_name
                     break
             if missing is not None:
-                logger.error(
+                _logger.error(
                     f"插件 {plugin_module.__name__} 未提供参数 {missing}："
                     "无法在所有上下文中找到该标识符且无默认值。详见 "
                     "https://github.com/SRInternet-Studio/Jianer_QQ_bot/wiki"
                 )
                 kwargs = None
         except Exception:
-            logger.error(f"插件 {plugin_module.__name__} 参数解析失败:\n{traceback.format_exc()}")
+            _logger.error(f"插件 {plugin_module.__name__} 参数解析失败:\n{traceback.format_exc()}")
             kwargs = None
 
         if kwargs is None:
@@ -49,8 +54,9 @@ async def execute_plugins(plugins, reminder, logger, isAny: bool, **main_context
                 has_plugin = True
                 break
         except Exception:
-            logger.error(f"\n插件 {plugin_module.__name__} 执行出错，是因为: \n{traceback.format_exc()}")
-            if not isAny:
+            _logger.error(f"\n插件 {plugin_module.__name__} 执行出错，是因为: \n{traceback.format_exc()}")
+            if not _isAny:
                 has_plugin = True
 
     return has_plugin
+
