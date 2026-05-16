@@ -202,9 +202,11 @@ Manage_User: {Manage_User}
 
 def Write_Settings(s: list, m: list) -> bool:
     global Super_User, Manage_User
-    s = [item for item in s if item]
-    m = [item for item in m if item]
-    if _bot_auth_store.write_user_groups(s, m):
+    # 写入前剥离 ROOT_User，防止其被降级或重复入组
+    root_set = {str(r) for r in ROOT_User}
+    s = [item for item in s if item and str(item) not in root_set]
+    m = [item for item in m if item and str(item) not in root_set]
+    if _bot_auth_store.write_user_groups(s, m, root_users=ROOT_User):
         Super_User = s
         Manage_User = m
         return True
