@@ -18,13 +18,13 @@
             "auth": null
         },
         "Milky": {
-            "mode": "WS",
+            "mode": "FWS",
             "host": "127.0.0.1",
             "port": 3010,
             "listener_host": "127.0.0.1",
             "listener_port": 5003,
             "retries": 5, 
-            "auth": "62sa111"
+            "auth": "<YOUR_AUTH>"
         },
         "Kritor": {
             "host": "127.0.0.1",
@@ -50,7 +50,7 @@
         }
     },
     "Log_level": "INFO",
-    "protocol": "Milky",
+    "protocol": "Feishu",
     "Others": {
       "gemini_key": "",
       "openai_key": "",

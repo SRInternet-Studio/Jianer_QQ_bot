@@ -249,3 +249,9 @@ aiconfig/gemini.ai.json
 jianer_memory.db
 jianer_memory.db-shm
 jianer_memory.db-wal
+feishu_bindings.json
+help_mode_settings.json
+like_data.json
+restart.temp
+suffix_config.json
+prerequisites/current.json
