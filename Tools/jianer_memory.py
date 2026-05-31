@@ -403,7 +403,7 @@ class JianerMemoryService:
     def update_persona(self, user_id: Any, sys_prompt: str) -> None:
         self._preset_templates["default"] = (sys_prompt or "").strip()
 
-    def capture_message_event(self, event: Any, Segments: Any) -> None:
+    def capture_message_event(self, event: Any, Segments: Any, user_id_override: Any = None) -> None:
         try:
             user_id = getattr(event, "user_id", None)
             self_id = getattr(event, "self_id", None)
@@ -426,12 +426,14 @@ class JianerMemoryService:
             if not content:
                 return
 
+            state_user_id = user_id_override if user_id_override is not None else user_id
+
             msg_type = "private" if group_id is None else "group"
             self.store.enqueue_raw_message(
                 group_id=group_id,
-                user_id=user_id,
+                user_id=state_user_id,
                 message_id=message_id,
-                sender=user_id,
+                sender=state_user_id,
                 content=content,
                 timestamp=int(ts) if str(ts).isdigit() else _now_ts(),
                 message_type=msg_type,

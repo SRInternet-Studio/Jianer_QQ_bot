@@ -33,7 +33,7 @@ class AIKernal:
         self.event = None
 
     async def generate_response(self, EnableNetwork: str, cmc: ContextManager, sys_prompt: str, user_lists: dict,
-                                event: Union[Events.GroupMessageEvent, Events.PrivateMessageEvent]):
+                                event: Union[Events.GroupMessageEvent, Events.PrivateMessageEvent], state_user_id=None):
         self.url = ""
         self.sended = False
         self.sendedID = []
@@ -43,6 +43,7 @@ class AIKernal:
         self.reply_private_msg = False
         self.event = event
         self.user_lists = user_lists
+        state_user_id = event.user_id if state_user_id is None else state_user_id
 
         if isinstance(event, Events.PrivateMessageEvent):
             self.reply_private_msg = True
@@ -50,7 +51,7 @@ class AIKernal:
         match EnableNetwork:
             case "GoogleGemini":
                 new = await self.build_message_content()
-                response_stream = cmc.get_context(event.user_id, event.group_id, sys_prompt, sys_prompt, self.config).gen_content(
+                response_stream = cmc.get_context(state_user_id, event.group_id, sys_prompt, sys_prompt, self.config).gen_content(
                     Roles.User(*new),
                     model_override=self.config.others.get("gemini_model", "gemini-2.0-flash-exp")
                 )
@@ -61,7 +62,7 @@ class AIKernal:
                 msg = await self.process_reply_message("")
                 msg += str(await self.replace_at_with_nickname(event.message, Manager, Segments, self.actions))
                 search = SearchOnline(
-                    sys_prompt, msg, self.user_lists, event.user_id, 
+                    sys_prompt, msg, self.user_lists, state_user_id,
                     model_name, self.bot_name, 
                     self.config.others["openai_key"]
                 )
@@ -71,7 +72,7 @@ class AIKernal:
                 msg = await self.process_reply_message("")
                 msg += str(await self.replace_at_with_nickname(event.message, Manager, Segments, self.actions))
                 search = deepseek(
-                    sys_prompt, msg, self.user_lists, event.user_id,
+                    sys_prompt, msg, self.user_lists, state_user_id,
                     "deepseek-chat", self.bot_name,
                     config.others["deepseek_key"]
                 )

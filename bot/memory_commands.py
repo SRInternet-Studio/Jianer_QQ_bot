@@ -22,10 +22,12 @@ def _parse_interval_seconds(s: str) -> int:
 
 
 async def cmd_memory(actions, Manager, Segments, event, user_message,
-                     reminder, memory_service, memory_mode, memory_db_path):
+                     reminder, memory_service, memory_mode, memory_db_path,
+                     resolve_bound_user_id):
     cmd = user_message[len(reminder):].strip()
     parts = [p for p in cmd.split() if p]
     action = parts[1] if len(parts) >= 2 else "帮助"
+    state_user_id = resolve_bound_user_id(getattr(event, "user_id", None))
 
     async def _send(text):
         await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(text)))
@@ -43,7 +45,7 @@ async def cmd_memory(actions, Manager, Segments, event, user_message,
 {reminder}简儿记忆 立即生成
 """)
     elif action == "状态":
-        st = await memory_service.get_status(event.group_id, event.user_id, False)
+        st = await memory_service.get_status(event.group_id, state_user_id, False)
         if not st:
             await _send("未找到记忆状态。")
             return
@@ -59,10 +61,10 @@ async def cmd_memory(actions, Manager, Segments, event, user_message,
 全局记忆: {st.get("global_count", 0)}
 """)
     elif action == "开启":
-        await memory_service.set_enabled(event.group_id, event.user_id, False, True)
+        await memory_service.set_enabled(event.group_id, state_user_id, False, True)
         await _send("已开启简儿记忆。")
     elif action == "关闭":
-        await memory_service.set_enabled(event.group_id, event.user_id, False, False)
+        await memory_service.set_enabled(event.group_id, state_user_id, False, False)
         await _send("已关闭简儿记忆。")
     elif action == "间隔":
         if len(parts) < 3:
@@ -72,10 +74,10 @@ async def cmd_memory(actions, Manager, Segments, event, user_message,
         if seconds <= 0:
             await _send("间隔格式无效。")
             return
-        await memory_service.set_interval_seconds(event.group_id, event.user_id, False, seconds)
+        await memory_service.set_interval_seconds(event.group_id, state_user_id, False, seconds)
         await _send(f"已设置简儿记忆间隔为 {seconds} 秒。")
     elif action == "立即生成":
-        ok = await memory_service.generate_now(event.group_id, event.user_id, False)
+        ok = await memory_service.generate_now(event.group_id, state_user_id, False)
         await _send("已生成一轮简儿记忆。" if ok else "暂无足够新增聊天记录生成记忆。")
     else:
         await _send("指令不支持，发送 #简儿记忆 帮助。")

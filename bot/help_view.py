@@ -120,8 +120,9 @@ async def send_help_visual(
     event,
     content: str,
     reply_message_id: str = None,
+    user_id_override=None,
 ):
-    mode = get_help_mode(config, help_mode_settings, getattr(event, "user_id", ""))
+    mode = get_help_mode(config, help_mode_settings, user_id_override if user_id_override is not None else getattr(event, "user_id", ""))
     if isinstance(event, Events.GroupMessageEvent) and is_qq_protocol(config) and mode == "文本":
         lines = [line.strip() for line in content.splitlines() if line.strip()]
         if not lines:

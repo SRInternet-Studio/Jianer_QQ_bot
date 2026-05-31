@@ -44,3 +44,12 @@ def bind_feishu_user(open_id: str, qq_id: str) -> bool:
 def get_bound_qq(open_id: str) -> str | None:
     bindings = load_feishu_bindings()
     return bindings.get(str(open_id))
+
+
+def resolve_bound_user_id(protocol: str, user_id: str | int | None) -> str:
+    resolved = str(user_id or "").strip()
+    if not resolved:
+        return ""
+    if str(protocol).lower() != "feishu":
+        return resolved
+    return get_bound_qq(resolved) or resolved

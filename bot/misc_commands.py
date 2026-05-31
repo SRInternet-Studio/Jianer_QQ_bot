@@ -135,17 +135,17 @@ async def cmd_remove_global_suffix(actions, Manager, Segments, event,
     await _send(actions, Manager, Segments, event, "全局后缀已删除。")
 
 
-async def cmd_set_user_suffix(actions, Manager, Segments, event, order, suffix_manager):
+async def cmd_set_user_suffix(actions, Manager, Segments, event, order, suffix_manager, state_user_id):
     suffix = order[order.find("设置特定后缀 ") + len("设置特定后缀 "):].strip()
     if suffix:
-        suffix_manager.set_user_suffix(event.user_id, suffix)
+        suffix_manager.set_user_suffix(state_user_id, suffix)
         await _send(actions, Manager, Segments, event, f"已为你配置特定后缀：{suffix}")
     else:
         await _send(actions, Manager, Segments, event, "后缀不能为空！")
 
 
-async def cmd_remove_user_suffix(actions, Manager, Segments, event, suffix_manager):
-    suffix_manager.remove_user_suffix(event.user_id)
+async def cmd_remove_user_suffix(actions, Manager, Segments, event, suffix_manager, state_user_id):
+    suffix_manager.remove_user_suffix(state_user_id)
     await _send(actions, Manager, Segments, event, "你的特定后缀已删除。")
 
 
@@ -331,7 +331,7 @@ async def cmd_del_preset(actions, Manager, Segments, event, order,
 
 
 async def cmd_sleep(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUSED_WORD,
-                    bot_name, suffix_manager, get_user_nickname):
+                    bot_name, suffix_manager, get_user_nickname, state_user_id):
     """返回 True 表示要把 stop_working 置 True。"""
     if str(event.user_id) not in ADMINS:
         await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
@@ -340,7 +340,7 @@ async def cmd_sleep(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUS
     r_admin = f"用户 {nick} 在 {event.time_str} 休眠QQ机器人"
     await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
     await _send(actions, Manager, Segments, event,
-                suffix_manager.process_text(f"谢谢喵，{bot_name}睡觉去了 ヾ(＠ ˘ω˘ ＠)ノ💤", event.user_id))
+                suffix_manager.process_text(f"谢谢喵，{bot_name}睡觉去了 ヾ(＠ ˘ω˘ ＠)ノ💤", state_user_id))
     return True
 
 

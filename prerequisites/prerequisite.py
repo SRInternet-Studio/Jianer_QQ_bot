@@ -36,7 +36,7 @@ def write_presets(data):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
-def gen_presets(uid, bot_name, bot_name_en, event_user):
+def gen_presets(uid, bot_name, bot_name_en, event_user, lookup_uid=None):
     # 初始化统一预设读写变量 prerequisite_editor 和 prerequisite_readerq
     global current_preset
     if not os.path.exists(CONFIG_FILE) or os.stat(CONFIG_FILE).st_size == 0:
@@ -56,9 +56,11 @@ def gen_presets(uid, bot_name, bot_name_en, event_user):
 
     # 读取属于当前用户的预设
     sys_prompt = None
+    lookup_uid = uid if lookup_uid is None else lookup_uid
+    lookup_uid_str = str(lookup_uid)
     for preset_id, preset_data in presets.items():
         presets_uid_list = preset_data.get("uid", [])
-        if uid in presets_uid_list:
+        if lookup_uid_str in [str(x) for x in presets_uid_list]:
             preset_path = os.path.join(PRESET_DIR, preset_data["path"])
             with open(preset_path, "r", encoding="utf-8") as f:
                 sys_prompt = f.read()
@@ -76,13 +78,16 @@ def gen_presets(uid, bot_name, bot_name_en, event_user):
     sys_prompt = sys_prompt.replace("{self.bot_name}",bot_name)
     sys_prompt = sys_prompt.replace("{self.bot_name_en}",bot_name_en)
     sys_prompt = sys_prompt.replace("{self.event_user}",event_user)
-    sys_prompt = sys_prompt.replace("{self.event_user_id}",str(uid))
+    sys_prompt = sys_prompt.replace("{self.event_user_id}",str(lookup_uid))
 
     return sys_prompt
 
 def change_presets(presets: dict, order: str,
-                   event: Union[Events.GroupMessageEvent, Events.PrivateMessageEvent]):
+                   event: Union[Events.GroupMessageEvent, Events.PrivateMessageEvent],
+                   target_user_id=None):
     selected_preset_id = None
+    target_user_id = event.user_id if target_user_id is None else target_user_id
+    target_user_id_str = str(target_user_id)
     for preset_id, preset_data in presets.items():
         # print(f"检查预设: {order} - {preset_data['name']}")
         if preset_data["name"] == order:
@@ -93,14 +98,14 @@ def change_presets(presets: dict, order: str,
         # 将用户 ID 添加到所选预设的 uid 列表中
         if "uid" not in presets[selected_preset_id]:
             presets[selected_preset_id]["uid"] = []
-        if event.user_id not in presets[selected_preset_id]["uid"]:
-            presets[selected_preset_id]["uid"].append(event.user_id)
+        current_ids = [str(x) for x in presets[selected_preset_id]["uid"]]
+        if target_user_id_str not in current_ids:
+            presets[selected_preset_id]["uid"].append(target_user_id_str)
 
         # 从其他预设中移除用户 ID
         for preset_id, preset_data in presets.items():
             if preset_id != selected_preset_id and "uid" in preset_data:
-                if event.user_id in preset_data["uid"]:
-                    presets[preset_id]["uid"].remove(event.user_id)
+                preset_data["uid"] = [x for x in preset_data["uid"] if str(x) != target_user_id_str]
 
         write_presets(presets)
         return presets, presets[selected_preset_id]["info"] if selected_preset_id else "", True

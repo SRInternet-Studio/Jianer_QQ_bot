@@ -229,6 +229,35 @@ def get_bound_qq(open_id: str) -> str | None:
     return _bot_feishu.get_bound_qq(open_id)
 
 
+def resolve_bound_user_id(user_id: str | int | None) -> str:
+    return _bot_feishu.resolve_bound_user_id(getattr(config, "protocol", ""), user_id)
+
+
+def migrate_bound_runtime_state(open_id: str | int | None, qq_id: str | int | None) -> None:
+    open_id = str(open_id or "").strip()
+    qq_id = str(qq_id or "").strip()
+    if not open_id or not qq_id or open_id == qq_id:
+        return
+
+    if open_id in private_ai_modes and qq_id not in private_ai_modes:
+        private_ai_modes[qq_id] = private_ai_modes[open_id]
+    private_ai_modes.pop(open_id, None)
+
+    if open_id in user_lists and qq_id not in user_lists:
+        user_lists[qq_id] = user_lists[open_id]
+    user_lists.pop(open_id, None)
+
+    try:
+        for _gid, group_contexts in cmc.groups.items():
+            if not isinstance(group_contexts, dict) or open_id not in group_contexts:
+                continue
+            if qq_id not in group_contexts:
+                group_contexts[qq_id] = group_contexts[open_id]
+            del group_contexts[open_id]
+    except Exception:
+        logger.exception("migrate bound runtime state failed")
+
+
 def is_qq_protocol() -> bool:
     return _bot_protocol.is_qq_protocol(config)
 
@@ -291,7 +320,11 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 
     try:
         if hasattr(event, "message") and hasattr(event, "user_id"):
-            memory_service.capture_message_event(event, Segments)
+            memory_service.capture_message_event(
+                event,
+                Segments,
+                user_id_override=resolve_bound_user_id(getattr(event, "user_id", None)),
+            )
     except Exception:
         pass
     
@@ -352,10 +385,11 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 
     elif isinstance(event, Events.PrivateMessageEvent):
         event_user = await get_user_nickname(event.user_id, Manager, actions)
+        state_user_id = resolve_bound_user_id(event.user_id)
         user_message, order = str(event.message).strip(), ""
-        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user)
+        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user, lookup_uid=state_user_id)
         presets = presets_tool.read_presets()
-        private_ai = private_ai_modes.get(str(event.user_id), EnableNetwork)
+        private_ai = private_ai_modes.get(str(state_user_id), EnableNetwork)
         if user_message.startswith(reminder):
             order_i = user_message.find(reminder)
             if order_i != -1:
@@ -371,6 +405,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 if not re.fullmatch(r"\d{5,20}", qq_id):
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("绑定失败：请输入正确的QQ号，例如：~绑定QQ 123456789")))
                 elif bind_feishu_user(str(event.user_id), qq_id):
+                    migrate_bound_runtime_state(event.user_id, qq_id)
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"绑定成功：当前飞书账号已绑定 QQ {qq_id}")))
                 else:
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("绑定失败：写入绑定数据时出错")))
@@ -396,7 +431,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 if mode is None:
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"参数错误。示例：{reminder}设置帮助模式 图片 或 {reminder}设置帮助模式 文本")))
                     return
-                if set_help_mode(event.user_id, mode):
+                if set_help_mode(state_user_id, mode):
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"已切换帮助模式为【{mode}】。")))
                 else:
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text("设置失败：无法写入帮助模式配置。")))
@@ -422,7 +457,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 target_ai = order.replace("切换AI ", "", 1).strip()
                 available_ais = ARC_AI.list_available_ais()
                 if target_ai in available_ais:
-                    private_ai_modes[str(event.user_id)] = target_ai
+                    private_ai_modes[str(state_user_id)] = target_ai
                     private_ai = target_ai
                     friendly_name = available_ais[target_ai]
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(f"已切换你的私聊AI为: {friendly_name} ({target_ai})")))
@@ -441,10 +476,10 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
                 await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(prerequisites_info)))
                 return
             else:
-                presets, p_info, is_changed = presets_tool.change_presets(presets, order, event)
+                presets, p_info, is_changed = presets_tool.change_presets(presets, order, event, target_user_id=state_user_id)
                 if is_changed:
                     # 清除ContextManager和user_lists中的单个用户上下文
-                    cmc.del_context(event.user_id, event.group_id)
+                    cmc.del_context(state_user_id, event.group_id)
                     await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(p_info)))
                     return
 
@@ -453,7 +488,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
             private_ai,
             private_input,
             user_lists,
-            event.user_id,
+            state_user_id,
             sys_prompt,
             []
         )
@@ -475,13 +510,14 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         global emoji_plus_one_off
 
         event_user = await get_user_nickname(event.user_id, Manager, actions)
+        state_user_id = resolve_bound_user_id(event.user_id)
         if event_user :
             event_user = event_user
         else:
             event_user = str(event.user_id)
                     
         # 初始化预设
-        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user)
+        sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user, lookup_uid=state_user_id)
         base_sys_prompt = sys_prompt
         presets = presets_tool.read_presets()
         try:
@@ -536,13 +572,13 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
 
         if "ping" == user_message:
             logger.debug(str(event.user_id))
-            await _bot_group_commands.cmd_ping(actions, Manager, Segments, event, suffix_manager)
+            await _bot_group_commands.cmd_ping(actions, Manager, Segments, event, suffix_manager, state_user_id)
             
         elif f"{bot_name}真棒" in user_message and str(reminder) not in user_message:
             try:
                 compliments: list = config.others.get("compliment", ["谢谢夸奖 (◍•ᴗ•◍)❤"])
                 m = str(compliments[random.randint(0, len(compliments))])
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(suffix_manager.process_text(m, event.user_id))))
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(suffix_manager.process_text(m, state_user_id))))
             except:
                 logger.warning("不接受夸赞")
 
@@ -589,6 +625,7 @@ For more information, see the administrator or check the system logs.''')))
             if not re.fullmatch(r"\d{5,20}", qq_id):
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("绑定失败：请输入正确的QQ号，例如：~绑定QQ 123456789")))
             elif bind_feishu_user(str(event.user_id), qq_id):
+                migrate_bound_runtime_state(event.user_id, qq_id)
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f"绑定成功：当前飞书账号已绑定 QQ {qq_id}")))
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("绑定失败：写入绑定数据时出错")))
@@ -668,7 +705,8 @@ For more information, see the administrator or check the system logs.''')))
         elif user_message.startswith(f"{reminder}简儿记忆"):
             await _bot_memory_commands.cmd_memory(
                 actions, Manager, Segments, event, user_message,
-                reminder, memory_service, memory_mode, memory_db_path)
+                reminder, memory_service, memory_mode, memory_db_path,
+                resolve_bound_user_id)
 
         elif "列出黑名单" == order:
             await _bot_misc_commands.cmd_list_blacklist(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name)
@@ -708,7 +746,7 @@ For more information, see the administrator or check the system logs.''')))
                 mode = normalize_help_mode(mode_text)
                 if mode is None:
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f"参数错误。示例：{reminder}设置帮助模式 图片 或 {reminder}设置帮助模式 文本")))
-                elif set_help_mode(event.user_id, mode):
+                elif set_help_mode(state_user_id, mode):
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(f"已切换你的帮助模式为【{mode}】。")))
                 else:
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("设置失败：无法写入帮助模式配置。")))
@@ -754,10 +792,10 @@ For more information, see the administrator or check the system logs.''')))
             await _bot_misc_commands.cmd_remove_global_suffix(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name, suffix_manager)
 
         elif f"设置特定后缀 " in order:
-            await _bot_misc_commands.cmd_set_user_suffix(actions, Manager, Segments, event, order, suffix_manager)
+            await _bot_misc_commands.cmd_set_user_suffix(actions, Manager, Segments, event, order, suffix_manager, state_user_id)
 
         elif f"删除特定后缀" == order:
-            await _bot_misc_commands.cmd_remove_user_suffix(actions, Manager, Segments, event, suffix_manager)
+            await _bot_misc_commands.cmd_remove_user_suffix(actions, Manager, Segments, event, suffix_manager, state_user_id)
             
         elif f"{reminder}角色扮演" == user_message:
             await _bot_misc_commands.cmd_role_play(actions, Manager, Segments, event, presets, presets_tool, bot_name, bot_name_en, reminder)
@@ -769,7 +807,7 @@ For more information, see the administrator or check the system logs.''')))
             await _bot_misc_commands.cmd_del_preset(actions, Manager, Segments, event, order, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, bot_name_en, reminder, presets, presets_tool, PRESET_DIR, logger)
 
         elif "休眠" == order:
-            if await _bot_misc_commands.cmd_sleep(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, suffix_manager, get_user_nickname):
+            if await _bot_misc_commands.cmd_sleep(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUSED_WORD, bot_name, suffix_manager, get_user_nickname, state_user_id):
                 stop_working = True
 
         elif f"{reminder}感知" in user_message:
@@ -851,14 +889,15 @@ For more information, see the administrator or check the system logs.''')))
                 # 将用户 ID 添加到所选预设的 uid 列表中
                 if "uid" not in presets[selected_preset_id]:
                     presets[selected_preset_id]["uid"] = []
-                if event.user_id not in presets[selected_preset_id]["uid"]:
-                    presets[selected_preset_id]["uid"].append(event.user_id)
+                state_user_id = resolve_bound_user_id(event.user_id)
+                current_ids = [str(x) for x in presets[selected_preset_id]["uid"]]
+                if str(state_user_id) not in current_ids:
+                    presets[selected_preset_id]["uid"].append(str(state_user_id))
 
                 # 从其他预设中移除用户 ID
                 for preset_id, preset_data in presets.items():
                     if preset_id != selected_preset_id and "uid" in preset_data:
-                        if event.user_id in preset_data["uid"]:
-                            presets[preset_id]["uid"].remove(event.user_id)
+                        preset_data["uid"] = [x for x in preset_data["uid"] if str(x) != str(state_user_id)]
 
                 # 保存更新后的预设
                 presets_tool.write_presets(presets)
@@ -932,7 +971,7 @@ For more information, see the administrator or check the system logs.''')))
                             user_lists = partial
                             continue
 
-                    processed_text = suffix_manager.process_text(str(partial), event.user_id)
+                    processed_text = suffix_manager.process_text(str(partial), state_user_id)
                     message = Segments.Text(processed_text)
                     if enable_forward_msg_num:
                         messages_for_node.append(message)
@@ -1001,7 +1040,7 @@ For more information, see the administrator or check the system logs.''')))
                 # 检查用户是否有特定预设
                 active_preset_id = presets_tool.NORMAL_PRESET
                 for preset_id, preset_data in presets.items():
-                    if "uid" in preset_data and event.user_id in preset_data["uid"]:
+                    if "uid" in preset_data and str(state_user_id) in [str(x) for x in preset_data["uid"]]:
                         active_preset_id = preset_id
                         # 读取预设内容
                         preset_path = os.path.join(PRESET_DIR, preset_data["path"])
@@ -1010,7 +1049,7 @@ For more information, see the administrator or check the system logs.''')))
                                 sys_prompt = f.read()
                             sys_prompt = sys_prompt.replace("{self.bot_name}", bot_name)
                             sys_prompt = sys_prompt.replace("{self.event_user}", event_user)
-                            sys_prompt = sys_prompt.replace("{self.event_user_id}", str(event.user_id))
+                            sys_prompt = sys_prompt.replace("{self.event_user_id}", str(state_user_id))
                             sys_prompt = sys_prompt.rstrip()
                         logger.info(f"[{event.time_str}] '{preset_data['name']}' 已载入用户预设")
                         break
@@ -1023,7 +1062,7 @@ For more information, see the administrator or check the system logs.''')))
                 persona_prompt = sys_prompt or base_sys_prompt
                 memory_context = await memory_service.build_memory_context(
                     group_id=event.group_id,
-                    user_id=event.user_id,
+                    user_id=state_user_id,
                     is_private=False,
                     query_text=msg,
                     preset_key=active_preset_id,
@@ -1039,7 +1078,7 @@ For more information, see the administrator or check the system logs.''')))
                     EnableNetwork,
                     msg,
                     user_lists,
-                    event.user_id,
+                    state_user_id,
                     final_sys_prompt,
                     images
                 )
@@ -1094,10 +1133,10 @@ For more information, see the administrator or check the system logs.''')))
             except UnboundLocalError:
                 raise
             except TimeoutError:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(suffix_manager.process_text(f"哎呀，你问的问题太复杂了，{bot_name}想不出来了 ┭┮﹏┭┮", event.user_id))))
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(suffix_manager.process_text(f"哎呀，你问的问题太复杂了，{bot_name}想不出来了 ┭┮﹏┭┮", state_user_id))))
             except Exception as e:
                 logger.error(traceback.format_exc())
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(suffix_manager.process_text(f"{type(e)}\n{url}\n{bot_name}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", event.user_id))))
+                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id),Segments.Text(suffix_manager.process_text(f"{type(e)}\n{url}\n{bot_name}发生错误，不能回复你的消息了，请稍候再试吧 ε(┬┬﹏┬┬)3", state_user_id))))
       
 def help_message(event) -> str:
     return _bot_help_view.build_help_message(config, Events, event, bot_name, reminder, plugins_help)
@@ -1106,7 +1145,8 @@ def help_message(event) -> str:
 async def send_help_visual(actions, event, content: str, reply_message_id: str = None):
     await _bot_help_view.send_help_visual(
         config, Events, Manager, Segments, help_mode_settings,
-        bot_name, logger, actions, event, content, reply_message_id
+        bot_name, logger, actions, event, content, reply_message_id,
+        user_id_override=resolve_bound_user_id(getattr(event, "user_id", None))
     )
 
 Listener.run()
