@@ -171,3 +171,5 @@ config.json.save
 plugins/CloudBlacklistConsole/blacklist_personal.json
 lgr/
 prerequisites/current.json
+.DS_Store
+
