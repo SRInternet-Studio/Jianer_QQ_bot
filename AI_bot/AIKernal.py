@@ -1,22 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from Tools.GoogleAI import Context, Parts, Roles, Schema
 from Tools.SearchOnline import network_gpt as SearchOnline
 from Tools.deepseek import dsr114 as deepseek
 from Tools.Sanitizer_Tools import sanitize_for_tts
 from Tools.tools import replace_at_with_nickname, get_user_nickname, replace_scheme_with_http
-from hyperot import configurator as Configurator
-Configurator.ensure_config_manager(file="config.json")
-from hyperot import listener as Listener, events as Events, hyperogger as Logger, common as Manager, segments as Segments
-from hyperot.utils import logic as Logic
-from hyperot.events import *
-from typing import Union
+from jianer import configurator as Configurator
+from jianer import events as Events, common as Manager, segments as Segments
+from jianer.events import *
+from typing import Any, Union
 
 MAX_MESSAGE_LENGTH = 3
 if __name__ == "__main__":
     from main import ContextManager
 
 class AIKernal:
-    def __init__(self, actions: Listener.Actions, config: Configurator.Config,
+    def __init__(self, actions: Any, config: Configurator.BotConfig,
                  bot_name: str, reminder: str = "") -> None:
         self.bot_name = bot_name
         self.actions = actions
@@ -74,7 +72,7 @@ class AIKernal:
                 search = deepseek(
                     sys_prompt, msg, self.user_lists, state_user_id,
                     "deepseek-chat", self.bot_name,
-                    config.others["deepseek_key"]
+                    self.config.others["deepseek_key"]
                 )
                 await self.handle_message_stream(search.Response())
 

@@ -3,17 +3,21 @@
 ## 未发布
 
 ### 变更
-- 重构：将 `main.py` 中的辅助逻辑（持久化、插件加载/派发、定时广播、帮助视图、协议判定等）拆分到 `bot/` 包；`main.py` 从 2362 行降至约 1700 行。`handler()` 主体未改动，模块级 globals 与对外函数签名全部保留以最大兼容现有插件。
-- 插件加载器返回结构化 `LoadResult`（包含 `plugins / loaded / loaded_display / disabled / failed / help_text`），替代之前的可变 state dict 回填。
+- Bot 框架从项目内置旧框架切换为 PyPI 包 `jianer-bot`（导入包名 `jianer`），主程序、AI 核心、工具模块和前置逻辑统一改用 JianerCore API。
+- 移除项目自托管插件加载器/派发器，插件加载与派发改由 JianerCore `PluginManager` 负责。
+- 当前仓库插件全部改写为 `PluginMetadata + dispatch(event, actions)` 新式插件，并按 `jianerbot-plugin-{name}` 规则声明插件 ID。
+- `requirements.txt` 新增 `jianer-bot>=0.91.0`。
 
 ### 行为变更（插件开发者请关注）
-- `execute_plugins` 中**参数绑定阶段**的错误（如插件 `on_message` 声明了未在上下文中提供的必填参数）不再被视为"消息已被处理"。原行为会静默吞掉用户消息；新行为会记录错误并 `continue`，消息继续走后续插件或 AI 回复路径。
-- 插件 `on_message` **执行阶段**抛出的异常仍保持原语义：精确匹配（非 `Any`）时视为已处理，避免落到 AI。
+- 旧式关键词函数插件契约不再作为项目插件接口；新增插件必须声明 `__plugin_meta__ = PluginMetadata(...)` 并暴露 `async def dispatch(event, actions)`。
+- 插件如需读取项目运行时上下文，改为使用 `bot.plugin_state`，例如 `current_stage()`、`current_order()`、`get_runtime()`。
+- `插件视角` 现在展示 JianerCore 插件 ID、禁用项、加载失败和加载警告。
 
 ### 修复
+- Pixiv 生图插件的 `generating` 状态改为由 `plugin_state` 维护，避免派发参数副本导致并发状态丢失。
 - `broadcast.send_msg_all_groups` 在 async 上下文里改用 `await asyncio.sleep`，不再阻塞事件循环。
 - `broadcast.timing_message_loop` 修复在外层含 `⊕` 但首行不含的分支下 `time_part` 未定义可能引发的 NameError。
-- 插件加载失败时统一清理 `sys.modules`；持久化层（`auth_store / feishu_bindings / help_mode`）写入失败改为 `logger.exception` 而非静默 `pass`。
+- 持久化层（`auth_store / feishu_bindings / help_mode`）写入失败改为 `logger.exception` 而非静默 `pass`。
 
 ## JianerNext4 Dev-20260116a
 

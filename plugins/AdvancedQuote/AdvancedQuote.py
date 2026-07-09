@@ -1,6 +1,6 @@
 import os
-from hyperot import segments as Segments
-from hyperot.events import *
+from jianer import segments as Segments
+from jianer.events import gen_message
 from Tools.site_catch import Catcher
 from Tools import tools as t
 
@@ -23,7 +23,7 @@ async def get_image(quote, ava_url, name, uin):
     return res
 
 # 处理消息的函数
-async def handle(message, actions, images=None, Manager=None, Segments=None) -> Segments.Image:
+async def handle(message, actions, images=None, Manager=None, Segments=Segments) -> Segments.Image:
     if isinstance(message[0], Segments.Reply):
         msg_id = message[0].id
     else:
@@ -35,6 +35,7 @@ async def handle(message, actions, images=None, Manager=None, Segments=None) -> 
     uin = content.data["sender"]["user_id"]
     message = content.data["message"]
     message = gen_message({"message": message})
+    text = str(message)
     if hasattr(t, "replace_at_with_nickname"):
         text = await t.replace_at_with_nickname(message, Manager, Segments, actions)
     text = str(text).replace("[图片]", "")

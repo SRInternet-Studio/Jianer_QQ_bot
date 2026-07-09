@@ -1,8 +1,5 @@
 import os, json, datetime
-from hyperot import configurator as Configurator
-if not hasattr(Configurator, "cm") or not Configurator.cm:
-    Configurator.cm = Configurator.ConfigManager(Configurator.Config(file="config.json").load_from_file())
-from hyperot import events as Events
+from jianer import events as Events
 from typing import Union, Optional, Tuple
 # 初始化预设常量 
 

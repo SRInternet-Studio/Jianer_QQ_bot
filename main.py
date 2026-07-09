@@ -35,11 +35,14 @@ import time, datetime
 
 # import framework
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
-from hyperot import configurator as Configurator
-Configurator.ensure_config_manager(file="config.json")
-from hyperot import listener as Listener, events as Events, hyperogger as Logger, common as Manager, segments as Segments
-from hyperot.utils import logic as Logic
-from hyperot.events import *
+from cfgr.manager import Serializers
+from jianer import configurator as Configurator
+Configurator.BotConfig.load_from("config.json", Serializers.JSON, "jianer-bot")
+from jianer.adapters import builtins as adapters
+adapters.load_configured()
+from jianer import listener as Listener, events as Events, hyperogger as Logger, common as Manager, segments as Segments
+from jianer.utils import logic as Logic
+from jianer.events import *
 
 # 业务模块（bot/）：承接从 main 抽出的工具/持久化/插件加载/帮助视图等逻辑
 from bot import utils as _bot_utils
@@ -47,8 +50,7 @@ from bot import protocol as _bot_protocol
 from bot import feishu_bindings as _bot_feishu
 from bot import help_mode as _bot_help_mode
 from bot import auth_store as _bot_auth_store
-from bot import plugin_loader as _bot_plugin_loader
-from bot import plugin_runner as _bot_plugin_runner
+from bot import plugin_state as _bot_plugin_state
 from bot import broadcast as _bot_broadcast
 from bot import help_view as _bot_help_view
 from bot import group_commands as _bot_group_commands
@@ -58,7 +60,7 @@ from bot import plugin_ops as _bot_plugin_ops
 from bot import memory_commands as _bot_memory_commands
 from bot import misc_commands as _bot_misc_commands
 
-config = Configurator.cm.get_cfg()
+config = Configurator.BotConfig.get("jianer-bot")
 reminder: str = config.others["reminder"]
 bot_name = config.others["bot_name"] #星·简
 bot_name_en = config.others["bot_name_en"] #Shining girl
@@ -146,13 +148,14 @@ gptsovitsoff = False
 print(" " * 114, end="\r") # Staring Completed
 
 # Plugin like
-PLUGIN_FOLDER = _bot_plugin_loader.PLUGIN_FOLDER
+PLUGIN_FOLDER = _bot_plugin_state.PLUGIN_FOLDER
 if not os.path.exists(PLUGIN_FOLDER):
     os.makedirs(PLUGIN_FOLDER)
 
 loaded_plugins = []
 disabled_plugins = []
 failed_plugins = []
+plugin_warnings = []
 plugins_help = ""
 
 # 配置文件名
@@ -162,21 +165,36 @@ PRESET_DIR = presets_tool.PRESET_DIR
 # 默认预设名称
 NORMAL_PRESET = presets_tool.NORMAL_PRESET
 
-# 插件加载器：委托给 bot.plugin_loader（保留原入口名 load_plugins）
+_bot_plugin_state.configure(
+    config=config,
+    logger=logger,
+    reminder=reminder,
+    bot_name=bot_name,
+    bot_name_en=bot_name_en,
+    one_slogan=ONE_SLOGAN,
+    confused_word=CONFUSED_WORD,
+    root_users=ROOT_User,
+    cooldowns=cooldowns,
+    cooldowns1=cooldowns1,
+)
+
+
+# 新式插件加载器：委托给 JianerCore PluginManager
 def load_plugins():
-    global loaded_plugins, disabled_plugins, failed_plugins, plugins_help
-    result = _bot_plugin_loader.load_plugins(config, logger)
+    global loaded_plugins, disabled_plugins, failed_plugins, plugin_warnings, plugins_help
+    result = _bot_plugin_state.reload_plugins(logger)
     loaded_plugins[:] = result.loaded
-    disabled_plugins[:] = result.disabled
+    disabled_plugins[:] = _bot_plugin_state.disabled_plugins()
     failed_plugins[:] = result.failed
-    plugins_help = result.help_text
+    plugin_warnings[:] = getattr(result, "warnings", [])
+    plugins_help = _bot_plugin_state.plugin_help_text()
     return result.plugins
 
 plugins = load_plugins() #在任何操作执行之前加载插件
 
-# 插件运行器：委托给 bot.plugin_runner
-async def execute_plugins(isAny: bool, **main_context) -> bool:
-    return await _bot_plugin_runner.execute_plugins(plugins, reminder, logger, isAny, **main_context)
+# 插件运行器：委托给 JianerCore PluginManager.dispatch
+async def execute_plugins(stage: str, event, actions, order: str = "") -> bool:
+    return await _bot_plugin_state.dispatch_plugins(event, actions, stage=stage, order=order)
 
 def load_blacklist():
     return _bot_utils.load_blacklist()
@@ -189,6 +207,10 @@ def timing_message(actions: Listener.Actions):
 
 async def send_msg_all_groups(text, actions: Listener.Actions, message: Manager.Message = None):
     await _bot_broadcast.send_msg_all_groups(text, actions, Manager, Segments, suffix_manager, logger, message=message)
+
+
+def restart_bot() -> None:
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def Read_Settings():
@@ -315,6 +337,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
     global Super_User, Manage_User, ROOT_User # 全局用户组
     global cmc, user_lists, sys_prompt, EnableNetwork, private_ai_modes # AI对话所必须
     ADMINS, SUPERS = build_auth_groups()
+    _bot_plugin_state.set_auth_snapshot(ADMINS, SUPERS, ROOT_User, Super_User, Manage_User)
     AIbot = AIKernal(actions, config, bot_name, reminder)
     event.time_str = f"{datetime.datetime.now().hour:02}:{datetime.datetime.now().minute:02}:{datetime.datetime.now().second:02}"
 
@@ -348,10 +371,8 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         thread.start()
         memory_service.start()
         
-    # 执行永久加载插件
-    local_vars = globals().copy()
-    local_vars.update(locals().copy())
-    if await execute_plugins(True, **local_vars):
+    # 执行早期全局监听插件
+    if await execute_plugins("always", event, actions):
         return  # 只传递 event 作为位置参数
     
     if isinstance(event, Events.NotifyEvent): # 优先判断自定义事件
@@ -649,7 +670,7 @@ For more information, see the administrator or check the system logs.''')))
                 except:
                     pass
 
-                Listener.restart()
+                restart_bot()
             else:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
         
@@ -737,7 +758,7 @@ For more information, see the administrator or check the system logs.''')))
                 get_user_nickname_with_userid)
 
         elif "插件视角" in order:
-            await _bot_group_commands.cmd_plugin_view(actions, Manager, Segments, event, bot_name, bot_name_en, loaded_plugins, disabled_plugins, failed_plugins)
+            await _bot_group_commands.cmd_plugin_view(actions, Manager, Segments, event, bot_name, bot_name_en, loaded_plugins, disabled_plugins, failed_plugins, plugin_warnings)
         elif order.startswith("设置帮助模式"):
             if not is_qq_protocol():
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("该功能仅支持QQ平台（OneBot/Milky）。")))
@@ -830,10 +851,7 @@ For more information, see the administrator or check the system logs.''')))
 
         elif "zzzz...涩图...嘿嘿..." in user_message:
             try:
-                order = "生图 ACG 随机"
-                local_vars = globals().copy()
-                local_vars.update(locals().copy())
-                if not await execute_plugins(False, **local_vars):
+                if not await execute_plugins("command", event, actions, order="生图 ACG 随机"):
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}需要 GenerateFromACG 插件才能生成好看的涩图哦 (੭ु ˃̶͈̀ ω ˂̶͈́)੭ु⁾⁾")))
             except:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}需要 GenerateFromACG 插件才能生成好看的涩图哦 (੭ु ˃̶͈̀ ω ˂̶͈́)੭ु⁾⁾")))
@@ -910,10 +928,8 @@ For more information, see the administrator or check the system logs.''')))
 
 
             # 2. 检查用户是否要执行插件中的功能
-            local_vars = globals().copy()
-            local_vars.update(locals().copy())
             try:
-                if await execute_plugins(False, **local_vars):
+                if await execute_plugins("command", event, actions, order=order):
                     return  # 只传递 event 作为位置参数
             except Exception as e:
                 logger.error(f"处理插件时发生错误: {e}")

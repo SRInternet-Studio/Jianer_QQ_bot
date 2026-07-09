@@ -1,6 +1,5 @@
-﻿from Tools.GoogleAI import Context
-from hyperot import configurator as Configurator
-Configurator.ensure_config_manager(file="config.json")
+from Tools.GoogleAI import Context
+from jianer import configurator as Configurator
 
 tools = [] #["google_search"]
 generation_config = {
@@ -14,9 +13,11 @@ class ContextManager:
     def __init__(self):
         self.groups: dict[int, dict[int, Context]] = {}
 
-    def get_context(self, uin: int, gid: int, system_instruction: str = "", sys_prompt: str = "", 
-                    config: Configurator.Config = Configurator.cm.get_cfg()):
+    def get_context(self, uin: int, gid: int, system_instruction: str = "", sys_prompt: str = "",
+                    config: Configurator.BotConfig = None):
         global tools, generation_config
+        if config is None:
+            config = Configurator.BotConfig.get("jianer-bot")
         try:
             key = config.others["gemini_key"]
             model = config.others.get("gemini_model", "gpt-4o-mini")

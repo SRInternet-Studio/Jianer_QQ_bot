@@ -1,12 +1,16 @@
-﻿import json
+import json
 import asyncio
 import aiohttp
 import datetime
 import random
 from typing import Optional, Any
-from hyperot import configurator as Configurator
-Configurator.ensure_config_manager(file="config.json")
-url = f"ws://{Configurator.cm.get_cfg().connection.host}:{Configurator.cm.get_cfg().connection.port}"
+from jianer import configurator as Configurator
+
+
+def _websocket_url() -> str:
+    config = Configurator.BotConfig.get("jianer-bot")
+    connection = config.get_connection() if hasattr(config, "get_connection") else config.connection
+    return f"ws://{connection.host}:{connection.port}"
 
 def send_log(level, message):
     current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-4]
@@ -21,7 +25,7 @@ async def ws_custom_api(action:str,params:dict) -> dict:
         for attempt in range(max_retries):
             try:
                 send_log("INFO", f"尝试连接 WebSocket (第 {attempt + 1} 次)")
-                async with session.ws_connect(url, timeout=timeout_seconds) as ws:
+                async with session.ws_connect(_websocket_url(), timeout=timeout_seconds) as ws:
                     send_log("INFO", "WebSocket 连接已建立。")
                     request_payload = {
                         "action": action,

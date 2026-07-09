@@ -1,103 +1,164 @@
-from hyperot import configurator as Configurator
-Configurator.ensure_config_manager(file="config.json")
-import aiohttp, os
+import datetime
+import os
+import time
+import traceback
+from pathlib import Path
+from urllib.parse import urlencode
+
+import aiohttp
+from jianer import common as Manager, segments as Segments
+from jianer.plugins import PluginMetadata
+
 from Tools.capture_screenshot import capture_screenshot
+from bot import plugin_state
 
-reminder = Configurator.cm.get_cfg().others["reminder"]
-bot_name = Configurator.cm.get_cfg().others["bot_name"]
-TRIGGHT_KEYWORD = "生图 Pixiv "
-HELP_MESSAGE = f"{reminder}生图 Pixiv (标签，必填，用&分割) —> {bot_name}浏览P站"
 
-async def on_message(event, actions, Manager, Segments, order, time, cooldowns1, 
-                     traceback, datetime, bot_name, generating):
-    
-    global reminder
-    start_index = order.find("生图 Pixiv ")
-    selfID = await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}正在从 Pixiv 生成 ヾ(≧▽≦*)o")))
-        
-    if start_index != -1:
-        if not generating:
-            user_id = event.user_id
-            current_time = time.time()
+__plugin_meta__ = PluginMetadata(
+    name="jianerbot-plugin-generate-pixiv",
+    description="Fetch a Pixiv image through the lolicon API.",
+    usage="{reminder}生图 Pixiv (标签，必填，用&分割) —> 浏览P站",
+    requires={"jianerbot-plugin-alconna"},
+)
 
-            if user_id in cooldowns1 and current_time - cooldowns1[user_id] < 18:
-                time_remaining1 = 18 - (current_time - cooldowns1[user_id])
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"18秒个人cd，请等待 {time_remaining1:.1f} 秒后重试")))
-                return
-            else:
+TRIGGER = "生图 Pixiv "
+COOLDOWN_SECONDS = 18
+CENSORED_WORDS = {
+    "r-18",
+    "r-18g",
+    "r18",
+    "r18g",
+    "r_18",
+    "r_18g",
+    "nsfw",
+    "成人向",
+    "即将脱落的胸罩",
+}
 
-                generating = True
-                result = order[start_index + len("生图 Pixiv "):].strip()
-                url_setted = "https://api.lolicon.app/setu/v2?num=1&r18=0&excludeAI=false"
 
-                tags = result.split("&")
-                for TagIndex in range(len(tags)):
-                    url_setted = url_setted + "&tag=" + tags[TagIndex]
+async def dispatch(event, actions):
+    if plugin_state.current_stage() != "command":
+        return False
 
-                print(url_setted)
+    order = plugin_state.current_order()
+    if not order.startswith(TRIGGER):
+        return False
 
-                try:
-                    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), timeout=aiohttp.ClientTimeout(10)) as session:
-                        async with session.get(url=url_setted) as response:  # 设置超时时间为7秒
-                            request = await response.json()
-                except Exception as e:
-                    request = "Failed\n" + traceback.format_exc()
+    runtime = plugin_state.get_runtime()
+    if plugin_state.is_generating():
+        await actions.send(
+            group_id=event.group_id,
+            message=Manager.Message(Segments.Text("前面还有一张图在生成哦，请稍候再试吧 (*/ω＼*)")),
+        )
+        return True
 
-                print("请求成功")
+    tags_text = order[len(TRIGGER) :].strip()
+    if not tags_text:
+        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("没有参数。")))
+        return True
 
-                if "Failed" in request:
-                    print(request)
-                    emessage = f'''{bot_name}无法访问接口了，请稍后重试 ε(┬┬﹏┬┬)3'''
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(emessage)))
-                    
-                else:
-                    data_normal = request['data']
-                    if len(data_normal) < 1:
-                        emessage = f'''你给{bot_name}的标签太严格啦！（生气），换几个标签试试吧 ＞﹏＜'''
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(emessage)))
-                    else:
-                        data = data_normal[0]
-                        info = f'''标题：{data['title']}
+    cooldowns = runtime.get("cooldowns1", {})
+    user_id = event.user_id
+    current_time = time.time()
+    if user_id in cooldowns and current_time - cooldowns[user_id] < COOLDOWN_SECONDS:
+        time_remaining = COOLDOWN_SECONDS - (current_time - cooldowns[user_id])
+        await actions.send(
+            group_id=event.group_id,
+            message=Manager.Message(Segments.Text(f"18秒个人cd，请等待 {time_remaining:.1f} 秒后重试")),
+        )
+        return True
+
+    bot_name = runtime.get("bot_name", "")
+    loading = await actions.send(
+        group_id=event.group_id,
+        message=Manager.Message(Segments.Text(f"{bot_name}正在从 Pixiv 生成 ヾ(≧▽≦*)o")),
+    )
+    plugin_state.set_generating(True)
+    screenshot_path = None
+    try:
+        data = await _fetch_pixiv(tags_text)
+        if not data:
+            await actions.send(
+                group_id=event.group_id,
+                message=Manager.Message(Segments.Text(f"你给{bot_name}的标签太严格啦，换几个标签试试吧。")),
+            )
+            return True
+
+        if _is_censored(data.get("tags", [])):
+            await actions.send(
+                group_id=event.group_id,
+                message=Manager.Message(Segments.Text(f"你要的图片实在太涩啦，{bot_name}都不敢看了。")),
+            )
+            return True
+
+        url = str(data["urls"]["original"])
+        screenshot_path = await capture_screenshot(url, "pixiv_image", "png")
+        await actions.send(
+            group_id=event.group_id,
+            message=Manager.Message(Segments.Image(_file_uri(screenshot_path))),
+        )
+        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(_format_info(data))))
+        cooldowns[user_id] = current_time
+    except Exception:
+        print(traceback.format_exc())
+        await actions.send(
+            group_id=event.group_id,
+            message=Manager.Message(Segments.Text(f"{bot_name}生成图片失败了，再试一次吧。")),
+        )
+    finally:
+        await _delete_message(actions, loading)
+        plugin_state.set_generating(False)
+        if screenshot_path and os.path.exists(screenshot_path):
+            os.remove(screenshot_path)
+
+    return True
+
+
+async def _fetch_pixiv(tags_text: str) -> dict | None:
+    params = [("num", "1"), ("r18", "0"), ("excludeAI", "false")]
+    params.extend(("tag", tag.strip()) for tag in tags_text.split("&") if tag.strip())
+    url = "https://api.lolicon.app/setu/v2?" + urlencode(params)
+    print(url)
+
+    async with aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(ssl=False),
+        timeout=aiohttp.ClientTimeout(10),
+    ) as session:
+        async with session.get(url=url) as response:
+            payload = await response.json()
+    data = payload.get("data") or []
+    return data[0] if data else None
+
+
+def _is_censored(tags) -> bool:
+    normalized = {str(tag).lower() for tag in tags}
+    return bool(normalized & CENSORED_WORDS)
+
+
+def _format_info(data: dict) -> str:
+    source_url = data["urls"]["original"].replace("pixiv.t.sr-studio.top", "i.pximg.net")
+    created = datetime.datetime.fromtimestamp(data["uploadDate"] / 1000).strftime("%Y-%m-%d")
+    ai_type = "是" if data.get("aiType") == 1 else "否"
+    return f"""\
+标题：{data['title']}
 Pixiv ID：{data['pid']}
 作者：{data['author']}
 作者ID：{data['uid']}
-AI参与：{'是' if data['aiType'] == 1 else '否'}
-创作时间：{datetime.datetime.fromtimestamp(data['uploadDate'] / 1000).strftime('%Y-%m-%d')}
+AI参与：{ai_type}
+创作时间：{created}
 标签：{data['tags']}
-源图：{data['urls']['original'].replace("pixiv.t.sr-studio.top", "i.pximg.net")}'''
-                        url = str(data['urls']['original'])
-                        CanSend = True
+源图：{source_url}"""
 
-                    if CanSend:
-                        censored_words = [
-                            "R-18", "r-18", "R-18G", "r-18g", "R18", "r18", "R18G", "r18g", "R_18", "r_18", "R_18G", "r_18g", 
-                            "即将脱落的胸罩", "NSFW", "nsfw", "成人向"
-                        ]
-                        
-                        if not any(word in data['tags'] for word in censored_words):
-                        #image_id = await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(url)))
-                            url = await capture_screenshot(url, "pixiv_image", "png")
-                            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(url)))
-                            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(info))) #Segments.Reply(image_id.data.message_id)
-                            await actions.del_message(selfID.data.message_id)
-                            cooldowns1[user_id] = current_time
 
-                            os.remove(url)
-                        # get_returned = await actions.get_msg(image_id.data.message_id)
-                        # print(get_returned.data)
-                        else:
-                            await actions.del_message(selfID.data.message_id)
-                            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"你要的图片实在太涩啦！{bot_name}都不敢看了 (⓿_⓿)")))
-                    else:
-                        await actions.del_message(selfID.data.message_id)
-                        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}生图失败了，再试一次吧（哭）(○´･д･)ﾉ")))
-                
-                generating = False
+def _file_uri(path: str) -> str:
+    if path.startswith(("http://", "https://", "file://", "base64://")):
+        return path
+    return Path(path).resolve().as_uri()
 
-        else:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("前面还有一张图在生成呢，请稍候再试吧 (*/ω＼*)")))                       
 
-    else:
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"没有参数。")))
-
-    return True
+async def _delete_message(actions, receipt):
+    message_id = getattr(getattr(receipt, "data", None), "message_id", None)
+    if message_id is not None:
+        try:
+            await actions.del_message(message_id)
+        except Exception:
+            pass

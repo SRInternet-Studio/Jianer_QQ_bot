@@ -1,11 +1,10 @@
 """插件管理命令：重载/禁用/启用插件。
 
-这些命令可能写 `main.plugins` global；函数通过返回新 plugins list 的方式，
-让 main.py handler 中直接 `plugins = ...` 完成赋值（避免跨模块改写）。
+这些命令返回最新加载结果中的插件模块列表，调用方据此刷新展示状态。
 """
 import os
 
-from . import plugin_loader
+from . import plugin_state
 
 
 async def cmd_reload_plugins(actions, Manager, Segments, event,
@@ -39,21 +38,8 @@ async def _toggle_plugin(actions, Manager, Segments, event, user_message,
             f"管理员：你的格式有误。\n格式：{reminder}{action_word} (plugin_name)\n参考：{reminder}{action_word} Hello World")))
         return None
 
-    folder = plugin_loader.PLUGIN_FOLDER
-    if enable:
-        candidates = [
-            os.path.join(os.path.abspath(folder), f"d_{plugin_name}.py"),
-            os.path.join(os.path.abspath(folder), f"d_{plugin_name}.pyw"),
-            os.path.join(os.path.abspath(folder), f"d_{plugin_name}"),
-        ]
-    else:
-        candidates = [
-            os.path.join(os.path.abspath(folder), f"{plugin_name}.py"),
-            os.path.join(os.path.abspath(folder), f"{plugin_name}.pyw"),
-            os.path.join(os.path.abspath(folder), plugin_name),
-        ]
-
-    found_path = next((p for p in candidates if os.path.exists(p)), None)
+    found = plugin_state.find_plugin_path(plugin_name, enable=enable)
+    found_path = str(found) if found is not None else None
     if not found_path:
         await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(
             f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}

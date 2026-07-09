@@ -73,12 +73,14 @@ async def cmd_generate_placeholder(actions, Manager, Segments, event):
 
 
 async def cmd_plugin_view(actions, Manager, Segments, event, bot_name, bot_name_en,
-                          loaded_plugins, disabled_plugins, failed_plugins):
+                          loaded_plugins, disabled_plugins, failed_plugins,
+                          warnings=None):
     """处理 ~插件视角：列出已加载/已禁用/加载失败的插件。"""
+    warnings = warnings or []
     status = f'''{bot_name} {bot_name_en} - 插件视角
 ————————————————————
 ✅ 已加载插件 ({len(loaded_plugins)}):
-{chr(10).join(f"{i+1}. {str(plugin).rsplit('_', 1)[0]}" for i, plugin in enumerate(loaded_plugins)) if loaded_plugins else "无"}
+{chr(10).join(f"{i+1}. {str(plugin)}" for i, plugin in enumerate(loaded_plugins)) if loaded_plugins else "无"}
 
 ❌ 已禁用插件 ({len(disabled_plugins)}):
 {chr(10).join(
@@ -88,5 +90,10 @@ async def cmd_plugin_view(actions, Manager, Segments, event, bot_name, bot_name_
 ⚠️ 加载失败 ({len(failed_plugins)}):
 {chr(10).join(f"{i+1}. {str(plugin)}"
     for i, plugin in enumerate(failed_plugins))
-if failed_plugins else "无"}'''
+if failed_plugins else "无"}
+
+⚠️ 加载警告 ({len(warnings)}):
+{chr(10).join(f"{i+1}. {str(warning)}"
+    for i, warning in enumerate(warnings))
+if warnings else "无"}'''
     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(status)))

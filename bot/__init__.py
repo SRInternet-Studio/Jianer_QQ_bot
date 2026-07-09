@@ -16,9 +16,8 @@ __all__ = [
     "help_view",
     "memory_commands",
     "misc_commands",
-    "plugin_loader",
     "plugin_ops",
-    "plugin_runner",
+    "plugin_state",
     "protocol",
     "utils",
 ]
