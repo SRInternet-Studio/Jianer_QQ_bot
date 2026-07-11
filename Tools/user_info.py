@@ -8,7 +8,7 @@ with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
 protocol = config.get("protocol", "OneBot")
-connections = config.get("Connections", {})
+connections = config.get("connections", config.get("Connections", {}))
 conn_config = connections.get(protocol, connections.get("OneBot", {}))
 is_milky = str(protocol).lower() == "milky"
 ws_path = "/event" if is_milky else ""
