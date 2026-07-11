@@ -6,8 +6,9 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import aiohttp
-from jianer import common as Manager, segments as Segments
+from arclet.alconna import Alconna, Args, MultiVar
 from jianer.plugins import PluginMetadata
+from jianer.plugins.builtin.alconna import Command, Receipt, Target, UniMessage
 
 from Tools.capture_screenshot import capture_screenshot
 from bot import plugin_state
@@ -20,7 +21,6 @@ __plugin_meta__ = PluginMetadata(
     requires={"jianerbot-plugin-alconna"},
 )
 
-TRIGGER = "生图 Pixiv "
 COOLDOWN_SECONDS = 18
 CENSORED_WORDS = {
     "r-18",
@@ -35,25 +35,26 @@ CENSORED_WORDS = {
 }
 
 
-async def dispatch(event, actions):
-    if plugin_state.current_stage() != "command":
-        return False
-
-    order = plugin_state.current_order()
-    if not order.startswith(TRIGGER):
-        return False
-
+async def generate_pixiv(tags_text: str, event, actions) -> bool:
+    tags_text = tags_text.strip()
     runtime = plugin_state.get_runtime()
+    target = Target.from_event(event)
     if plugin_state.is_generating():
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Text("前面还有一张图在生成哦，请稍候再试吧 (*/ω＼*)")),
+        await UniMessage.text(
+            "前面还有一张图在生成哦，请稍候再试吧 (*/ω＼*)"
+        ).send(
+            target=target,
+            actions=actions,
+            event=event,
         )
         return True
 
-    tags_text = order[len(TRIGGER) :].strip()
     if not tags_text:
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("没有参数。")))
+        await UniMessage.text("没有参数。").send(
+            target=target,
+            actions=actions,
+            event=event,
+        )
         return True
 
     cooldowns = runtime.get("cooldowns1", {})
@@ -61,56 +62,88 @@ async def dispatch(event, actions):
     current_time = time.time()
     if user_id in cooldowns and current_time - cooldowns[user_id] < COOLDOWN_SECONDS:
         time_remaining = COOLDOWN_SECONDS - (current_time - cooldowns[user_id])
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Text(f"18秒个人cd，请等待 {time_remaining:.1f} 秒后重试")),
+        await UniMessage.text(
+            f"18秒个人cd，请等待 {time_remaining:.1f} 秒后重试"
+        ).send(
+            target=target,
+            actions=actions,
+            event=event,
         )
         return True
 
     bot_name = runtime.get("bot_name", "")
-    loading = await actions.send(
-        group_id=event.group_id,
-        message=Manager.Message(Segments.Text(f"{bot_name}正在从 Pixiv 生成 ヾ(≧▽≦*)o")),
+    loading = await UniMessage.text(
+        f"{bot_name}正在从 Pixiv 生成 ヾ(≧▽≦*)o"
+    ).send(
+        target=target,
+        actions=actions,
+        event=event,
     )
     plugin_state.set_generating(True)
     screenshot_path = None
     try:
         data = await _fetch_pixiv(tags_text)
         if not data:
-            await actions.send(
-                group_id=event.group_id,
-                message=Manager.Message(Segments.Text(f"你给{bot_name}的标签太严格啦，换几个标签试试吧。")),
+            await UniMessage.text(
+                f"你给{bot_name}的标签太严格啦，换几个标签试试吧。"
+            ).send(
+                target=target,
+                actions=actions,
+                event=event,
             )
             return True
 
         if _is_censored(data.get("tags", [])):
-            await actions.send(
-                group_id=event.group_id,
-                message=Manager.Message(Segments.Text(f"你要的图片实在太涩啦，{bot_name}都不敢看了。")),
+            await UniMessage.text(
+                f"你要的图片实在太涩啦，{bot_name}都不敢看了。"
+            ).send(
+                target=target,
+                actions=actions,
+                event=event,
             )
             return True
 
         url = str(data["urls"]["original"])
         screenshot_path = await capture_screenshot(url, "pixiv_image", "png")
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Image(_file_uri(screenshot_path))),
+        await UniMessage.image(_file_uri(screenshot_path)).send(
+            target=target,
+            actions=actions,
+            event=event,
         )
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(_format_info(data))))
+        await UniMessage.text(_format_info(data)).send(
+            target=target,
+            actions=actions,
+            event=event,
+        )
         cooldowns[user_id] = current_time
     except Exception:
         print(traceback.format_exc())
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Text(f"{bot_name}生成图片失败了，再试一次吧。")),
+        await UniMessage.text(f"{bot_name}生成图片失败了，再试一次吧。").send(
+            target=target,
+            actions=actions,
+            event=event,
         )
     finally:
-        await _delete_message(actions, loading)
+        await _recall(loading)
         plugin_state.set_generating(False)
         if screenshot_path and os.path.exists(screenshot_path):
             os.remove(screenshot_path)
 
     return True
+
+
+_reminder = str(plugin_state.get_runtime().get("reminder", ""))
+_pixiv_command = Alconna(
+    f"{_reminder}生图 Pixiv",
+    Args["tags_text", MultiVar(str), ""],
+)
+
+
+@Command(_pixiv_command).handle()
+async def _handle_pixiv(tags_text: str, event, actions):
+    if getattr(event, "group_id", None) is None:
+        return False
+    return await generate_pixiv(tags_text, event, actions)
 
 
 async def _fetch_pixiv(tags_text: str) -> dict | None:
@@ -155,10 +188,10 @@ def _file_uri(path: str) -> str:
     return Path(path).resolve().as_uri()
 
 
-async def _delete_message(actions, receipt):
-    message_id = getattr(getattr(receipt, "data", None), "message_id", None)
-    if message_id is not None:
-        try:
-            await actions.del_message(message_id)
-        except Exception:
-            pass
+async def _recall(receipt: Receipt | None) -> None:
+    if receipt is None or receipt.message_id is None:
+        return
+    try:
+        await receipt.recall()
+    except Exception:
+        pass

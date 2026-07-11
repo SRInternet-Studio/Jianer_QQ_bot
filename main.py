@@ -192,9 +192,13 @@ def load_plugins():
 
 plugins = load_plugins() #在任何操作执行之前加载插件
 
-# 插件运行器：委托给 JianerCore PluginManager.dispatch
-async def execute_plugins(stage: str, event, actions, order: str = "") -> bool:
-    return await _bot_plugin_state.dispatch_plugins(event, actions, stage=stage, order=order)
+# 插件运行器：每条消息只委托一次给 JianerCore PluginManager.dispatch
+async def execute_plugins(event, actions, message_text: str | None = None) -> bool:
+    return await _bot_plugin_state.dispatch_plugins(
+        event,
+        actions,
+        message_text=message_text,
+    )
 
 def load_blacklist():
     return _bot_utils.load_blacklist()
@@ -371,10 +375,6 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         thread.start()
         memory_service.start()
         
-    # 执行早期全局监听插件
-    if await execute_plugins("always", event, actions):
-        return  # 只传递 event 作为位置参数
-    
     if isinstance(event, Events.NotifyEvent): # 优先判断自定义事件
         await _bot_event_handlers.handle_notify_poke(actions, Manager, Segments, event, config, logger)
 
@@ -408,6 +408,8 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         event_user = await get_user_nickname(event.user_id, Manager, actions)
         state_user_id = resolve_bound_user_id(event.user_id)
         user_message, order = str(event.message).strip(), ""
+        if await execute_plugins(event, actions, message_text=user_message):
+            return
         sys_prompt = presets_tool.gen_presets(event.user_id, bot_name, bot_name_en, event_user, lookup_uid=state_user_id)
         presets = presets_tool.read_presets()
         private_ai = private_ai_modes.get(str(state_user_id), EnableNetwork)
@@ -565,6 +567,19 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
         
         raw_user_message = str(event.message).strip()
         user_message = normalize_group_message_text(event, raw_user_message)
+        plugin_dispatched = False
+        like_plugin = _bot_plugin_state.get_plugin_module(
+            "jianerbot-plugin-like"
+        )
+        early_plugin_commands = getattr(like_plugin, "EARLY_COMMANDS", ())
+        if raw_user_message in early_plugin_commands:
+            plugin_dispatched = True
+            if await execute_plugins(
+                event,
+                actions,
+                message_text=raw_user_message,
+            ):
+                return
         feishu_mode = str(config.protocol).lower() == "feishu"
         feishu_mentioned = bool(getattr(event, "is_mentioned", False))
         feishu_mention_like = feishu_mentioned or (feishu_mode and raw_user_message.startswith("@"))
@@ -640,6 +655,10 @@ For more information, see the administrator or check the system logs.''')))
                 logger.debug(f"({event_user}) Feishu Mention ORDER Fallback: {repr(order)}")
 
         user_message = user_message_for_cmd
+
+        if not plugin_dispatched:
+            if await execute_plugins(event, actions, message_text=user_message):
+                return
 
         if order.startswith("绑定QQ "):
             qq_id = order.replace("绑定QQ ", "", 1).strip()
@@ -851,8 +870,14 @@ For more information, see the administrator or check the system logs.''')))
 
         elif "zzzz...涩图...嘿嘿..." in user_message:
             try:
-                if not await execute_plugins("command", event, actions, order="生图 ACG 随机"):
+                acg_plugin = _bot_plugin_state.get_plugin_module(
+                    "jianerbot-plugin-generate-acg"
+                )
+                generate_acg = getattr(acg_plugin, "generate_acg", None)
+                if not callable(generate_acg):
                     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}需要 GenerateFromACG 插件才能生成好看的涩图哦 (੭ु ˃̶͈̀ ω ˂̶͈́)੭ु⁾⁾")))
+                else:
+                    await generate_acg("随机", event, actions)
             except:
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(f"{bot_name}需要 GenerateFromACG 插件才能生成好看的涩图哦 (੭ु ˃̶͈̀ ω ˂̶͈́)੭ु⁾⁾")))
                 
@@ -927,14 +952,8 @@ For more information, see the administrator or check the system logs.''')))
                 return 
 
 
-            # 2. 检查用户是否要执行插件中的功能
-            try:
-                if await execute_plugins("command", event, actions, order=order):
-                    return  # 只传递 event 作为位置参数
-            except Exception as e:
-                logger.error(f"处理插件时发生错误: {e}")
-                return
-            
+            # 2. 插件已在消息标准化后通过 PluginManager 统一派发。
+
             # 3. 全都匹配不到，进入AI回复
             if len(order) < 2:  # 不响应小于两个字的废话
                 return

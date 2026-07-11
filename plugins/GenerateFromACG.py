@@ -1,7 +1,8 @@
 import time
 
-from jianer import common as Manager, segments as Segments
+from arclet.alconna import Alconna, Args, MultiVar
 from jianer.plugins import PluginMetadata
+from jianer.plugins.builtin.alconna import Command, Receipt, Target, UniMessage
 
 from bot import plugin_state
 
@@ -13,7 +14,6 @@ __plugin_meta__ = PluginMetadata(
     requires={"jianerbot-plugin-alconna"},
 )
 
-TRIGGER = "生图 ACG "
 COOLDOWN_SECONDS = 18
 
 IMAGE_APIS = {
@@ -25,65 +25,96 @@ IMAGE_APIS = {
 }
 
 
-async def dispatch(event, actions):
-    if plugin_state.current_stage() != "command":
-        return False
-
-    order = plugin_state.current_order()
-    if not order.startswith(TRIGGER):
-        return False
-
+async def generate_acg(result: str, event, actions) -> bool:
+    """Generate an ACG image for a command or another project-side shortcut."""
     runtime = plugin_state.get_runtime()
-    result = order[len(TRIGGER) :].strip()
+    result = result.strip()
     bot_name = runtime.get("bot_name", "")
     reminder = runtime.get("reminder", "")
     cooldowns = runtime.get("cooldowns", {})
     user_id = event.user_id
     current_time = time.time()
+    target = Target.from_event(event)
 
     if _is_in_cooldown(user_id, current_time, cooldowns, runtime):
         time_remaining = COOLDOWN_SECONDS - (current_time - cooldowns[user_id])
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Text(f"18秒个人cd，请等待 {time_remaining:.1f} 秒后重试")),
+        await UniMessage.text(
+            f"18秒个人cd，请等待 {time_remaining:.1f} 秒后重试"
+        ).send(
+            target=target,
+            actions=actions,
+            event=event,
         )
         return True
 
     loading = None
     try:
-        loading = await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Text(f"{bot_name}正在制作超级好看的二次元壁纸 ヾ(≧▽≦*)o")),
+        loading = await UniMessage.text(
+            f"{bot_name}正在制作超级好看的二次元壁纸 ヾ(≧▽≦*)o"
+        ).send(
+            target=target,
+            actions=actions,
+            event=event,
         )
 
         if "帮助" in result or not result:
-            await _delete_message(actions, loading)
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(_help_text(bot_name, reminder))))
+            await _recall(loading)
+            await UniMessage.text(_help_text(bot_name, reminder)).send(
+                target=target,
+                actions=actions,
+                event=event,
+            )
             return True
 
         api = next((url for keyword, url in IMAGE_APIS.items() if keyword in result), "")
         if not api:
-            await _delete_message(actions, loading)
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("指定的类型不存在")))
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(_help_text(bot_name, reminder))))
+            await _recall(loading)
+            await UniMessage.text("指定的类型不存在").send(
+                target=target,
+                actions=actions,
+                event=event,
+            )
+            await UniMessage.text(_help_text(bot_name, reminder)).send(
+                target=target,
+                actions=actions,
+                event=event,
+            )
             return True
 
         print(f"使用 LoliAPI: {api}")
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Image(api), Segments.Text(f"{result}生成 结束！✧*。٩(>ω<*)و✧*。")),
+        message = UniMessage.image(api)
+        message.append(UniMessage.text(f"{result}生成 结束！✧*。٩(>ω<*)و✧*。"))
+        await message.send(
+            target=target,
+            actions=actions,
+            event=event,
         )
-        await _delete_message(actions, loading)
+        await _recall(loading)
         cooldowns[user_id] = current_time
     except Exception as exc:
-        await _delete_message(actions, loading)
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(
-                Segments.Text(f"因为 {type(exc)}\n{bot_name}不能生成图片了，请稍候再尝试吧 o(TヘTo)")
-            ),
+        await _recall(loading)
+        await UniMessage.text(
+            f"因为 {type(exc)}\n{bot_name}不能生成图片了，请稍候再尝试吧 o(TヘTo)"
+        ).send(
+            target=target,
+            actions=actions,
+            event=event,
         )
     return True
+
+
+_reminder = str(plugin_state.get_runtime().get("reminder", ""))
+_acg_command = Alconna(
+    f"{_reminder}生图 ACG",
+    Args["image_type", MultiVar(str), ""],
+)
+
+
+@Command(_acg_command).handle()
+async def _handle_acg(image_type: str, event, actions):
+    if getattr(event, "group_id", None) is None:
+        return False
+    return await generate_acg(image_type, event, actions)
 
 
 def _is_in_cooldown(user_id, current_time: float, cooldowns: dict, runtime: dict) -> bool:
@@ -99,13 +130,13 @@ def _is_in_cooldown(user_id, current_time: float, cooldowns: dict, runtime: dict
     return str(user_id) not in privileged
 
 
-async def _delete_message(actions, receipt):
-    message_id = getattr(getattr(receipt, "data", None), "message_id", None)
-    if message_id is not None:
-        try:
-            await actions.del_message(message_id)
-        except Exception:
-            pass
+async def _recall(receipt: Receipt | None) -> None:
+    if receipt is None or receipt.message_id is None:
+        return
+    try:
+        await receipt.recall()
+    except Exception:
+        pass
 
 
 def _help_text(bot_name: str, reminder: str) -> str:

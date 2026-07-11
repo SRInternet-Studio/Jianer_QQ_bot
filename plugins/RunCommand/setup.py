@@ -4,6 +4,7 @@ import subprocess
 
 from jianer import common as Manager, segments as Segments
 from jianer.plugins import PluginMetadata
+from jianer.plugins.builtin.alconna import Command, Target, UniMessage
 
 from Tools import tools as t
 from bot import plugin_state
@@ -19,14 +20,31 @@ __plugin_meta__ = PluginMetadata(
 )
 
 TRIGGER = "runcommand"
+_REMINDER = str(plugin_state.get_runtime().get("reminder", ""))
 
 
-async def dispatch(event, actions):
-    if plugin_state.current_stage() != "command":
-        return False
+@Command(f"{_REMINDER}{TRIGGER}").handle()
+async def _handle_empty_command(event, actions):
+    return await _handle_command("", event, actions)
 
-    order = plugin_state.current_order()
-    if order != TRIGGER and not order.startswith(f"{TRIGGER} "):
+
+@Command(f"{_REMINDER}{TRIGGER} <command>").handle()
+async def _handle_command_argument(command: str, event, actions):
+    return await _handle_command(_command_text(event, command), event, actions)
+
+
+def _command_text(event, parsed_command: str) -> str:
+    raw_message = str(
+        getattr(event, "msg_str", getattr(event, "message", ""))
+    ).strip()
+    prefix = f"{_REMINDER}{TRIGGER}"
+    if raw_message.startswith(prefix):
+        return raw_message[len(prefix) :].strip()
+    return parsed_command.strip()
+
+
+async def _handle_command(command: str, event, actions):
+    if getattr(event, "group_id", None) is None:
         return False
 
     runtime = plugin_state.get_runtime()
@@ -36,15 +54,20 @@ async def dispatch(event, actions):
     confused_word = runtime.get("confused_word", "{bot_name}不能这么做。")
 
     if str(event.user_id) not in {*root_users, *super_users}:
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Text(confused_word.format(bot_name=bot_name))),
+        await UniMessage.send(
+            UniMessage.text(confused_word.format(bot_name=bot_name)),
+            target=Target.group(event.group_id),
+            actions=actions,
         )
         return True
 
-    command = order.removeprefix(TRIGGER).strip()
+    command = command.strip()
     if not command:
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("命令为空。")))
+        await UniMessage.send(
+            UniMessage.text("命令为空。"),
+            target=Target.group(event.group_id),
+            actions=actions,
+        )
         return True
 
     if hasattr(t, "replace_at_with_nickname"):
@@ -54,14 +77,21 @@ async def dispatch(event, actions):
     print(f"检查并执行命令: {command}")
     if root_users:
         admin_log = f"用户 {await get_user_nickname(event.user_id, actions)} 在 {event.time_str} 执行了以下命令：\n{command}"
-        await actions.send(user_id=root_users[0], message=Manager.Message(Segments.Text(admin_log)))
+        await UniMessage.send(
+            UniMessage.text(admin_log),
+            target=Target.private(root_users[0]),
+            actions=actions,
+        )
 
     blocked_pattern = _match_dangerous(command_lower)
     if blocked_pattern:
         print(f"检测到危险命令: {blocked_pattern}")
-        await actions.send(
-            group_id=event.group_id,
-            message=Manager.Message(Segments.Text(f"命令执行结果:\n❌ ERROR 危险命令，已屏蔽。\nℹ️ INFO 不被允许的命令：{command}")),
+        await UniMessage.send(
+            UniMessage.text(
+                f"命令执行结果:\n❌ ERROR 危险命令，已屏蔽。\nℹ️ INFO 不被允许的命令：{command}"
+            ),
+            target=Target.group(event.group_id),
+            actions=actions,
         )
         return True
 
@@ -76,7 +106,11 @@ async def dispatch(event, actions):
     else:
         message = f"命令执行结果:\n❌ ERROR 执行失败，命令可能有误\nℹ️ INFO {result['stderr']}.\n❌ ERROR 返回码：{result['returncode']}."
 
-    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(message)))
+    await UniMessage.send(
+        UniMessage.text(message),
+        target=Target.group(event.group_id),
+        actions=actions,
+    )
     return True
 
 

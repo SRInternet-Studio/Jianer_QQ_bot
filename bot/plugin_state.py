@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import ast
-import contextvars
 from pathlib import Path
 from typing import Any
 
 from jianer.plugins import PluginManager
+from jianer.plugins.builtin import alconna as alconna_plugin
 
 PLUGIN_FOLDER = "plugins"
 DISABLED_PREFIX = "d_"
@@ -34,14 +34,6 @@ _runtime: dict[str, Any] = {
     "cooldowns1": {},
     "generating": False,
 }
-
-_current_stage: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "jianer_qq_plugin_stage", default=""
-)
-_current_order: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "jianer_qq_plugin_order", default=""
-)
-
 
 def configure(
     *,
@@ -103,14 +95,6 @@ def set_auth_snapshot(
     )
 
 
-def current_stage() -> str:
-    return _current_stage.get("")
-
-
-def current_order() -> str:
-    return _current_order.get("")
-
-
 def set_generating(value: bool) -> None:
     _runtime["generating"] = bool(value)
 
@@ -141,6 +125,9 @@ def websocket_url() -> str:
 
 def reload_plugins(logger: Any | None = None):
     global _plugin_manager, _load_result, _disabled_plugins, _help_text
+    # Command matchers live in the built-in Alconna plugin. Clear registrations
+    # from the previous load so the project's runtime reload remains idempotent.
+    alconna_plugin._clear_matchers()
     manager = PluginManager(logger=logger or _logger)
     result = manager.load_plugins(PLUGIN_FOLDER)
     _plugin_manager = manager
@@ -188,19 +175,36 @@ async def dispatch_plugins(
     event: Any,
     actions: Any,
     *,
-    stage: str,
-    order: str = "",
+    message_text: str | None = None,
 ) -> bool:
     manager = get_plugin_manager()
     if manager is None:
         return False
-    stage_token = _current_stage.set(stage)
-    order_token = _current_order.set(order)
-    try:
-        return await manager.dispatch(event, actions)
-    finally:
-        _current_order.reset(order_token)
-        _current_stage.reset(stage_token)
+    dispatch_event = (
+        _MessageTextEventProxy(event, message_text)
+        if message_text is not None
+        else event
+    )
+    return await manager.dispatch(dispatch_event, actions)
+
+
+def get_plugin_module(plugin_id: str) -> Any | None:
+    manager = get_plugin_manager()
+    if manager is None:
+        return None
+    plugin = manager.plugins.get(plugin_id)
+    return getattr(plugin, "module", None)
+
+
+class _MessageTextEventProxy:
+    """Override command text while retaining the adapter event interface."""
+
+    def __init__(self, event: Any, message_text: str) -> None:
+        self._event = event
+        self.msg_str = message_text
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._event, name)
 
 
 def find_plugin_path(plugin_name: str, *, enable: bool) -> Path | None:

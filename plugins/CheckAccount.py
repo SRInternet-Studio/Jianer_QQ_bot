@@ -4,8 +4,9 @@ import uuid
 from datetime import datetime
 
 import aiohttp
-from jianer import common as Manager, segments as Segments
+from jianer import segments as Segments
 from jianer.plugins import PluginMetadata
+from jianer.plugins.builtin.alconna import Command, UniMessage
 
 from bot import plugin_state
 
@@ -15,6 +16,8 @@ __plugin_meta__ = PluginMetadata(
     usage="{reminder}开 【@一个用户/QQ号】 —> 打开该用户的账户 👁",
     requires={"jianerbot-plugin-alconna"},
 )
+
+_command = f"{plugin_state.get_runtime().get('reminder', '')}开"
 
 
 async def get_user_info_from_ws(user_id):
@@ -38,11 +41,15 @@ async def get_user_info_from_ws(user_id):
     return None
 
 
-async def dispatch(event, actions) -> bool:
-    if plugin_state.current_stage() != "command":
-        return False
-    order = plugin_state.current_order()
-    if not (order == "开" or order.startswith("开 ")):
+@Command(_command).handle()
+@Command(f"{_command} <account>").handle()
+async def check_account(
+    event,
+    actions,
+    user_message,
+    account: str = "",
+) -> bool | None:
+    if getattr(event, "group_id", None) is None:
         return False
 
     runtime = plugin_state.get_runtime()
@@ -55,21 +62,21 @@ async def dispatch(event, actions) -> bool:
 
     uid = 0
     openme = False
-    for item in getattr(event, "message", []):
+    for item in user_message or []:
         if isinstance(item, Segments.At):
             uid = int(item.qq)
             break
 
     if uid == 0:
-        uid_str = order.removeprefix("开").strip() or getattr(event, "user_id", "")
+        uid_str = account.strip() or getattr(event, "user_id", "")
         try:
             uid = int(uid_str)
         except (ValueError, TypeError):
             r = f'''{bot_name} {bot_name_en} - {one_slogan}
 ————————————————————
 失败: {uid_str} 不是一个有效的用户'''
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
-            return True
+            await UniMessage.send(UniMessage.text(r))
+            return
     if uid == event.self_id:
         uid = event.user_id
         openme = True
@@ -82,15 +89,15 @@ async def dispatch(event, actions) -> bool:
         r = f'''{bot_name} {bot_name_en} - {one_slogan}
 ————————————————————
 失败: 获取用户信息时出错: {e}'''
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
-        return True
+        await UniMessage.send(UniMessage.text(r))
+        return
 
     if not user_info:
         r = f'''{bot_name} {bot_name_en} - {one_slogan}
 ————————————————————
 失败: 未能获取到 {uid} 的信息，可能 {uid} 不是一个有效的用户，请稍后重试。'''
         print(f"get_user {uid} failed: no user_info returned")
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
+        await UniMessage.send(UniMessage.text(r))
     elif isinstance(user_info, dict) and user_info.get("user_id"):
         framework = await actions.get_version_info()
         framework = framework.data.raw
@@ -100,19 +107,17 @@ async def dispatch(event, actions) -> bool:
             avatar, r = parse_user_info(user_info, admins, supers, root_users)
         print(f"get_user {uid} successfully")
         if avatar:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(avatar), Segments.Text(r)))
+            await UniMessage.send(UniMessage.image(avatar), UniMessage.text(r))
         else:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
+            await UniMessage.send(UniMessage.text(r))
         if openme:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text("你打开了自己的账户。")))
+            await UniMessage.send(UniMessage.text("你打开了自己的账户。"))
     else:
         r = f'''{bot_name} {bot_name_en} - {one_slogan}
 ————————————————————
 失败: 返回的用户信息格式不正确。'''
         print(f"get_user {uid} failed: invalid user_info format: {type(user_info)} - {user_info}")
-        await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(r)))
-
-    return True
+        await UniMessage.send(UniMessage.text(r))
 
 
 def parser_user_info_napcat(user_dict, admins, supers, root_users):

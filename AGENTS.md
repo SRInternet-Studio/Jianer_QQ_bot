@@ -44,7 +44,7 @@ For `ARC_Spec_Python/`:
 - Use 4-space indentation and UTF-8 source files.
 - Follow existing Python naming: `snake_case` for variables/functions, `PascalCase` for classes.
 - Keep plugin folder names descriptive; directory plugin entry should remain `setup.py`.
-- New plugins must define `__plugin_meta__ = PluginMetadata(...)` and expose `async def dispatch(event, actions)`.
+- New command plugins must define `__plugin_meta__ = PluginMetadata(...)`, depend on `jianerbot-plugin-alconna`, and register handlers with `@Command(...).handle()`; only non-Alconna event plugins should expose `async def on_message(event, actions)`.
 - Use plugin IDs in the form `jianerbot-plugin-{name}`. Declare dependencies with full plugin IDs, for example `requires={"jianerbot-plugin-alconna"}`.
 - `bot/` 下的命令函数：优先使用显式参数，不要依赖 `globals()` 反射注入。
 - Comments 仅在必要处加简短说明；不要堆大量装饰性注释。
@@ -59,9 +59,9 @@ For `ARC_Spec_Python/`:
   - 在 `ARC_Spec_Python/` 内运行 `pytest / black / flake8`。
 
 ## Plugin Architecture
-- 插件加载和派发只通过 JianerCore `PluginManager`：`bot/plugin_state.py` 负责创建 manager、调用 `load_plugins("plugins")` 和 `dispatch(event, actions)`。
+- 插件加载和派发只通过 JianerCore `PluginManager`：`bot/plugin_state.py` 负责创建 manager、调用 `load_plugins("plugins")` 和 `dispatch(event, actions)`；命令匹配由内置 `jianerbot-plugin-alconna` 的 `on_message` 统一完成。
 - 旧式关键词函数插件契约不再使用；不要新增旧式插件，也不要恢复项目自托管 loader/runner。
-- 插件需要项目运行时状态时，从 `bot.plugin_state` 读取，例如 `current_stage()`、`current_order()`、`get_runtime()`、`websocket_url()`。
+- 插件需要项目运行时状态时，从 `bot.plugin_state` 读取，例如 `get_runtime()`、`websocket_url()`；不要恢复 `stage/order` 兼容上下文。
 - `d_` 前缀仍作为禁用插件约定，文件和目录都适用。
 
 ## Commit & Pull Request Guidelines

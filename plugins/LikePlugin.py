@@ -3,8 +3,8 @@ import json
 import random
 from datetime import datetime
 
-from jianer import common as Manager, segments as Segments
 from jianer.plugins import PluginMetadata
+from jianer.plugins.builtin.alconna import Command, Target, UniMessage
 
 from bot import plugin_state
 
@@ -85,33 +85,54 @@ class LikeManager:
 like_manager = LikeManager()
 
 
-async def dispatch(event, actions):
-    if plugin_state.current_stage() != "always":
-        return False
-    if not hasattr(event, "message") or not hasattr(event, "user_id"):
-        return False
+_REMINDER = str(plugin_state.get_runtime().get("reminder", ""))
+EARLY_COMMANDS = frozenset(
+    {
+        "赞我",
+        "超我",
+        "超湿我",
+        f"{_REMINDER}点赞信息",
+        f"{_REMINDER}超信息",
+    }
+)
 
-    msg = str(event.message).strip()
-    runtime = plugin_state.get_runtime()
-    reminder = runtime.get("reminder", "")
-    bot_name = runtime.get("bot_name", "")
 
-    if msg == "赞我":
-        return await _send_like(event, actions, bot_name, action="赞")
+@Command("赞我").handle()
+async def _handle_like(event, actions):
+    return await _send_like(
+        event,
+        actions,
+        str(plugin_state.get_runtime().get("bot_name", "")),
+        action="赞",
+    )
 
-    if msg in {"超我", "超湿我"}:
-        return await _send_like(event, actions, bot_name, action="超")
 
-    if msg == f"{reminder}点赞信息":
-        await _send_text(actions, event, like_manager.get_like_info(event.user_id))
-        return True
+@Command("超我").handle()
+@Command("超湿我").handle()
+async def _handle_super_like(event, actions):
+    return await _send_like(
+        event,
+        actions,
+        str(plugin_state.get_runtime().get("bot_name", "")),
+        action="超",
+    )
 
-    if msg == f"{reminder}超信息":
-        info = like_manager.get_like_info(event.user_id)
-        await _send_text(actions, event, info.replace("点赞", "超").replace("赞", "超"))
-        return True
 
-    return False
+@Command(f"{_REMINDER}点赞信息").handle()
+async def _handle_like_info(event, actions):
+    await _send_text(actions, event, like_manager.get_like_info(event.user_id))
+    return True
+
+
+@Command(f"{_REMINDER}超信息").handle()
+async def _handle_super_like_info(event, actions):
+    info = like_manager.get_like_info(event.user_id)
+    await _send_text(
+        actions,
+        event,
+        info.replace("点赞", "超").replace("赞", "超"),
+    )
+    return True
 
 
 async def _send_like(event, actions, bot_name: str, *, action: str) -> bool:
@@ -139,9 +160,11 @@ async def _send_like(event, actions, bot_name: str, *, action: str) -> bool:
 
         await _send_text(actions, event, success_msg)
         if getattr(event, "group_id", None) is not None:
-            await actions.send(
-                group_id=event.group_id,
-                message=Manager.Message(Segments.At(user_id), Segments.Text(group_msg)),
+            await UniMessage.send(
+                UniMessage.at(user_id),
+                UniMessage.text(group_msg),
+                target=Target.group(event.group_id),
+                actions=actions,
             )
     except Exception as exc:
         print(f"{action}操作失败: {exc}")
@@ -151,9 +174,8 @@ async def _send_like(event, actions, bot_name: str, *, action: str) -> bool:
 
 
 async def _send_text(actions, event, text: str):
-    target = {"message": Manager.Message(Segments.Text(text))}
-    if getattr(event, "group_id", None) is not None:
-        target["group_id"] = event.group_id
-    else:
-        target["user_id"] = event.user_id
-    return await actions.send(**target)
+    return await UniMessage.send(
+        UniMessage.text(text),
+        target=Target.from_event(event),
+        actions=actions,
+    )

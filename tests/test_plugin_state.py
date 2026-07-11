@@ -43,7 +43,7 @@ def test_reload_plugins_uses_jianercore_plugin_manager(tmp_path, monkeypatch):
             usage="{reminder}hello —> reply hello",
         )
 
-        async def dispatch(event, actions):
+        async def on_message(event, actions):
             return False
         """,
     )
@@ -59,36 +59,44 @@ def test_reload_plugins_uses_jianercore_plugin_manager(tmp_path, monkeypatch):
     assert "~hello —> reply hello" in plugin_state.plugin_help_text()
 
 
-def test_dispatch_plugins_exposes_stage_and_order_context(tmp_path, monkeypatch):
+def test_dispatch_plugins_uses_alconna_and_normalized_message_text(tmp_path, monkeypatch):
     plugins_dir = tmp_path / "plugins"
     plugins_dir.mkdir()
     _write(
         plugins_dir / "command.py",
         """
         from jianer.plugins import PluginMetadata
-        from bot import plugin_state
+        from jianer.plugins.builtin.alconna import Command
 
-        __plugin_meta__ = PluginMetadata(name="jianerbot-plugin-command")
+        __plugin_meta__ = PluginMetadata(
+            name="jianerbot-plugin-command",
+            requires={"jianerbot-plugin-alconna"},
+        )
 
-        async def dispatch(event, actions):
-            if plugin_state.current_stage() == "command" and plugin_state.current_order() == "ping":
-                actions.handled = True
-                return True
-            return False
+        @Command("~ping").handle()
+        async def _(event, actions):
+            actions.handled = event.msg_str
+            actions.calls += 1
         """,
     )
 
     monkeypatch.chdir(tmp_path)
     _configure()
     plugin_state.reload_plugins()
-    actions = SimpleNamespace(handled=False)
+    plugin_state.reload_plugins()
+    actions = SimpleNamespace(handled=False, calls=0)
 
-    handled = asyncio.run(plugin_state.dispatch_plugins(SimpleNamespace(), actions, stage="command", order="ping"))
+    handled = asyncio.run(
+        plugin_state.dispatch_plugins(
+            SimpleNamespace(msg_str="@bot ~ping"),
+            actions,
+            message_text="~ping",
+        )
+    )
 
     assert handled is True
-    assert actions.handled is True
-    assert plugin_state.current_stage() == ""
-    assert plugin_state.current_order() == ""
+    assert actions.handled == "~ping"
+    assert actions.calls == 1
 
 
 def test_disabled_plugins_and_metadata_lookup(tmp_path, monkeypatch):
@@ -101,7 +109,7 @@ def test_disabled_plugins_and_metadata_lookup(tmp_path, monkeypatch):
 
         __plugin_meta__ = PluginMetadata(name="jianerbot-plugin-blocked")
 
-        async def dispatch(event, actions):
+        async def on_message(event, actions):
             return True
         """,
     )
