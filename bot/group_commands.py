@@ -55,10 +55,10 @@ async def cmd_broadcast_blacklist_menu(actions, Manager, Segments, event, bot_na
 ''')))
 
 
-async def cmd_ping(actions, Manager, Segments, event, suffix_manager, state_user_id):
+async def cmd_ping(actions, Manager, Segments, event):
     """处理 ping。"""
     await actions.send(group_id=event.group_id, message=Manager.Message(
-        Segments.Text(suffix_manager.process_text("pong! 爆炸！v(◦'ωˉ◦)~♡ ", state_user_id))))
+        Segments.Text("pong! 爆炸！v(◦'ωˉ◦)~♡ ")))
 
 
 async def cmd_grass(actions, Manager, Segments, event):

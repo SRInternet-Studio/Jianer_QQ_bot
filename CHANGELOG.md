@@ -5,19 +5,27 @@
 ### 变更
 - Bot 框架从项目内置旧框架切换为 PyPI 包 `jianer-bot`（导入包名 `jianer`），主程序、AI 核心、工具模块和前置逻辑统一改用 JianerCore API。
 - 移除项目自托管插件加载器/派发器，插件加载与派发改由 JianerCore `PluginManager` 负责。
-- 当前仓库插件全部改写为 `PluginMetadata + dispatch(event, actions)` 新式插件，并按 `jianerbot-plugin-{name}` 规则声明插件 ID。
-- `requirements.txt` 新增 `jianer-bot>=0.91.0`。
+- AI 对话、模型/角色切换、短期上下文、TTS、回复后缀和简儿记忆迁入目录插件 `plugins/JianerAI/`。
+- 旧 `AI_bot/`、ARC AI 桥接、旧 parser、旧记忆服务与宿主 AI fallback 已删除。
+- 旧 `jianer_memory.db` 已通过可演练迁移器导入规范化 `jianer_ai.db`；支持 dry-run、stage、校验、切换和回滚。
+- 当前仓库命令插件全部改写为 `PluginMetadata + Alconna Command` 新式插件，并按 `jianerbot-plugin-{name}` 规则声明插件 ID。
+- 插件运行时重载采用候选加载、原子交换、旧 generation 关闭；正常停止会等待插件任务与资源释放。
+- `requirements.txt` 将 JianerCore 下限锁定为 `jianer-bot>=0.92.0`，以使用完整插件生命周期和持久事件循环。
 
 ### 行为变更（插件开发者请关注）
-- 旧式关键词函数插件契约不再作为项目插件接口；新增插件必须声明 `__plugin_meta__ = PluginMetadata(...)` 并暴露 `async def dispatch(event, actions)`。
-- 插件如需读取项目运行时上下文，改为使用 `bot.plugin_state`，例如 `current_stage()`、`current_order()`、`get_runtime()`。
+- 旧式关键词函数插件契约不再作为项目插件接口；命令插件必须声明 `__plugin_meta__ = PluginMetadata(...)` 并使用 `@Command(...).handle()`。
+- 非命令事件插件可提供 `on_message_observe`、`on_message` 与 `on_message_fallback`；宿主固定按 observe → normal → fallback 派发。
+- 插件如需读取项目运行时上下文，使用 `bot.plugin_state.get_runtime()`，不再依赖 stage/order 兼容状态。
 - `插件视角` 现在展示 JianerCore 插件 ID、禁用项、加载失败和加载警告。
+- QQ 群聊只接受前缀触发 AI，`@机器人 + 文本` 不触发；后缀只应用于 AI 回复。
+- 飞书绑定以 JSON 为权威源，通过持久 outbox 幂等合并 AI 身份；回调失败不回滚非 AI 绑定。
 
 ### 修复
 - Pixiv 生图插件的 `generating` 状态改为由 `plugin_state` 维护，避免派发参数副本导致并发状态丢失。
 - `broadcast.send_msg_all_groups` 在 async 上下文里改用 `await asyncio.sleep`，不再阻塞事件循环。
 - `broadcast.timing_message_loop` 修复在外层含 `⊕` 但首行不含的分支下 `time_part` 未定义可能引发的 NameError。
 - 持久化层（`auth_store / feishu_bindings / help_mode`）写入失败改为 `logger.exception` 而非静默 `pass`。
+- 删除记忆写入 suppression tombstone，防止后台提炼或并发生成把已删除事实重新写回。
 
 ## JianerNext4 Dev-20260116a
 

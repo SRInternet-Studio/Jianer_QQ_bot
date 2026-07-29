@@ -3,6 +3,7 @@ import asyncio
 import logging
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ PLUGIN_ENTRIES = [
     ROOT / "plugins" / "GenerateFromPixiv.py",
     ROOT / "plugins" / "LikePlugin.py",
     ROOT / "plugins" / "AdvancedQuote" / "setup.py",
+    ROOT / "plugins" / "JianerAI" / "setup.py",
     ROOT / "plugins" / "RunCommand" / "setup.py",
 ]
 
@@ -32,6 +34,7 @@ EXPECTED_PLUGIN_IDS = {
     "jianerbot-plugin-check-group",
     "jianerbot-plugin-generate-acg",
     "jianerbot-plugin-generate-pixiv",
+    "jianerbot-plugin-jianer-ai",
     "jianerbot-plugin-like",
     "jianerbot-plugin-run-command",
 }
@@ -84,10 +87,14 @@ def _dispatch(event, actions, text: str | None = None) -> bool:
 
 
 @pytest.fixture
-def loaded_plugins(monkeypatch):
+def loaded_plugins(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin_state, "PLUGIN_FOLDER", str(ROOT / "plugins"))
     plugin_state.configure(
-        config=SimpleNamespace(),
+        config=SimpleNamespace(
+            others={
+                "jianer_ai_db_path": str(tmp_path / "jianer_ai.db"),
+            }
+        ),
         logger=logging.getLogger("plugins_alconna_test"),
         reminder="~",
         bot_name="Jianer",
@@ -108,6 +115,10 @@ def loaded_plugins(monkeypatch):
     plugin_state.set_generating(False)
     result = plugin_state.reload_plugins()
     assert result.failed == []
+    module = plugin_state.get_plugin_module("jianerbot-plugin-jianer-ai")
+    service = module.get_service()
+    assert service is not None
+    assert service.options.database_path == (tmp_path / "jianer_ai.db").resolve()
     return result
 
 
@@ -143,9 +154,42 @@ def test_plugin_manager_loads_builtin_and_all_business_plugins(loaded_plugins):
         "~生图 Pixiv",
         "赞我",
         "~名人名言",
+        "~ai管理菜单",
         "~runcommand",
     ):
         assert command in help_text
+
+
+def test_jianer_ai_model_command_receives_plain_string(loaded_plugins):
+    module = plugin_state.get_plugin_module("jianerbot-plugin-jianer-ai")
+    service = module.get_service()
+    model = next(iter(service.providers.list_models()))
+    actions = FakeActions()
+
+    assert _dispatch(_event(f"~切换AI {model}"), actions) is True
+    assert len(actions.sent) == 1
+    response = str(actions.sent[0][1])
+    assert f"({model})" in response
+    assert "找不到AI配置" not in response
+    assert f"('{model}',)" not in response
+
+
+def test_jianer_ai_commands_respect_group_location_blacklist(loaded_plugins):
+    module = plugin_state.get_plugin_module("jianerbot-plugin-jianer-ai")
+    service = module.get_service()
+    original_options = service.options
+    actions = FakeActions()
+    try:
+        service.options = replace(
+            original_options,
+            blocked_group_ids=frozenset({"100"}),
+        )
+        assert _dispatch(_event("~ai管理菜单"), actions) is True
+    finally:
+        service.options = original_options
+
+    assert len(actions.sent) == 1
+    assert "Error 403" in str(actions.sent[0][1])
 
 
 def test_account_at_and_group_validation_commands(loaded_plugins, monkeypatch):
@@ -300,8 +344,9 @@ def test_like_alias_private_target_quote_and_runcommand_guards(
 def test_runtime_reminder_change_rebuilds_all_command_matchers(
     loaded_plugins,
 ):
+    runtime_config = plugin_state.get_runtime()["config"]
     plugin_state.configure(
-        config=SimpleNamespace(),
+        config=runtime_config,
         logger=logging.getLogger("plugins_alconna_dynamic_reminder_test"),
         reminder="!",
         bot_name="Jianer",

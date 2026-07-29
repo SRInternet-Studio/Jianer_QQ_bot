@@ -1,13 +1,12 @@
 asyncio
 datetime
 emoji
-jianer-bot>=0.91.1.post4
+jianer-bot>=0.92.0
 openai>=1.35.12
 requests
 aiohttp
 psutil
 pillow
-google-generativeai==0.7.2
 httpx
 flask
 flask-sock

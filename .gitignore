@@ -249,6 +249,9 @@ aiconfig/gemini.ai.json
 jianer_memory.db
 jianer_memory.db-shm
 jianer_memory.db-wal
+jianer_ai.db
+jianer_ai.db-shm
+jianer_ai.db-wal
 feishu_bindings.json
 help_mode_settings.json
 static/help_cards/

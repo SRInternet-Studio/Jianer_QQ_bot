@@ -28,37 +28,34 @@ def set_help_mode(help_mode_settings: dict, save_fn, user_id, mode: str) -> bool
 
 
 def build_help_message(config, Events, event, bot_name: str, reminder: str, plugins_help: str) -> str:
+    plugin_section = str(plugins_help or "").strip()
     if isinstance(event, Events.GroupMessageEvent):
         lines = [
             f"如何与{bot_name}交流( •̀ ω •́ )✧",
             f"       注：对话前必须加上 {reminder} 噢！~",
-            f"       {reminder}(任意问题，必填) —> {bot_name}回复",
-            f"       {reminder}ai管理菜单 —> 切换和管理AI模型",
-            f"       {reminder}插件视角 —> 看看{bot_name}又收集了哪些好好用的工具🔮{plugins_help}",
-            f"       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~",
-            f"       {reminder}设置特定后缀 (后缀) —> 给你自己的回复加后缀",
-            f"       {reminder}删除特定后缀 —> 删除你自己的后缀",
+            f"       {reminder}插件视角 —> 看看{bot_name}已加载的功能🔮",
         ]
         if is_feishu_protocol(config):
             lines.append(f"       {reminder}绑定QQ [QQ号] —> 绑定当前飞书账号到QQ")
             lines.append(f"       {reminder}我的绑定 —> 查看当前飞书账号绑定的QQ")
         if is_qq_protocol(config):
             lines.append(f"       {reminder}设置帮助模式 图片/文本 —> 切换帮助为图片或转发文本（仅QQ）")
+        if plugin_section:
+            lines.extend(["", "插件功能：", plugin_section])
         lines.append("快来聊天吧(*≧︶≦)")
         return "\n".join(lines)
     elif isinstance(event, Events.PrivateMessageEvent):
         lines = [
             f"如何与{bot_name}私聊( •̀ ω •́ )✧",
-            f"       (任意问题，必填) —> {bot_name}回复",
-            f"       {reminder}ai管理菜单 —> 查看你可用的私聊AI配置",
-            f"       {reminder}切换AI [AI代码] —> 仅切换你自己的私聊AI",
-            f"       {reminder}角色扮演 —> {bot_name}切换不同的角色互动噢！~",
+            "       直接发送消息即可使用支持私聊的插件功能",
         ]
         if is_qq_protocol(config):
             lines.append(f"       {reminder}设置帮助模式 图片/文本 —> 切换帮助为图片或文本（仅QQ）")
         if is_feishu_protocol(config):
             lines.append(f"       {reminder}绑定QQ [QQ号] —> 绑定当前飞书账号到QQ")
             lines.append(f"       {reminder}我的绑定 —> 查看当前飞书账号绑定的QQ")
+        if plugin_section:
+            lines.extend(["", "插件功能：", plugin_section])
         lines.append("快来聊天吧(*≧︶≦)")
         return "\n".join(lines)
     return ""
@@ -68,7 +65,6 @@ def build_admin_help(config, bot_name: str, reminder: str, is_super: bool) -> st
     """构建管理员帮助文本。"""
     content = [
         (f"{reminder}让我访问", "检索有权限的用户"),
-        (f"{reminder}注销", "删除所有用户的上下文"),
         (f"{reminder}修改 (hh:mm) (内容)", "改变定时消息时间与内容"),
         (f"{reminder}感知", "查看运行状态"),
         (f"{reminder}休眠", f"奖励{bot_name}精致睡眠 💤"),
@@ -82,13 +78,7 @@ def build_admin_help(config, bot_name: str, reminder: str, is_super: bool) -> st
         (f"{reminder}送飞机票 (@QQ)", "将用户移出群聊"),
         ("撤回【引用消息】", "撤回指定消息"),
         (f"{reminder}群发黑名单", "管理群发消息时不会发送到的群聊"),
-        (f"{reminder}角色扮演", "管理角色预设"),
-        (f"{reminder}更改TTS状态", "切换语音回复功能（默认启用）"),
         (f"{reminder}表情复述", "切换是否开启表情复述功能（默认启用）"),
-        (f"{reminder}设置全局后缀 (后缀)", "设置默认后缀（所有人）"),
-        (f"{reminder}删除全局后缀", "删除默认后缀（所有人）"),
-        (f"{reminder}设置特定后缀 (后缀)", "设置你的特定后缀（优先于全局）"),
-        (f"{reminder}删除特定后缀", "删除你的特定后缀"),
     ]
     if is_qq_protocol(config):
         content.append((f"{reminder}设置帮助模式 图片/文本", "切换帮助展示样式（仅QQ平台）"))

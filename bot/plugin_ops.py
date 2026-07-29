@@ -2,6 +2,7 @@
 
 这些命令返回最新加载结果中的插件模块列表，调用方据此刷新展示状态。
 """
+import inspect
 import os
 
 from . import plugin_state
@@ -16,6 +17,8 @@ async def cmd_reload_plugins(actions, Manager, Segments, event,
             Segments.Text(CONFUSED_WORD.format(bot_name=bot_name))))
         return None
     new_plugins = load_plugins()
+    if inspect.isawaitable(new_plugins):
+        new_plugins = await new_plugins
     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(
         f'''{bot_name} {bot_name_en} - {ONE_SLOGAN}
 ————————————————————
@@ -65,6 +68,8 @@ async def _toggle_plugin(actions, Manager, Segments, event, user_message,
         return None
 
     new_plugins = load_plugins()
+    if inspect.isawaitable(new_plugins):
+        new_plugins = await new_plugins
     verb = "启用" if enable else "禁用"
     if renamed:
         msg = f"插件 {plugin_name} 已经成功{verb}"

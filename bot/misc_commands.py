@@ -1,11 +1,8 @@
-"""杂项群命令：AI 菜单、后缀、黑名单、群成员管理、TTS 等。"""
+"""杂项群命令：黑名单、群成员管理、状态与群发等。"""
 import asyncio
-import os
-import random
 import re
 import time as _time
 
-import Tools.ARC_AI as ARC_AI
 from Tools.tools import get_system_info, seconds_to_hms
 
 from .utils import load_blacklist
@@ -21,37 +18,6 @@ async def _send(actions, Manager, Segments, event, text, reply=False):
 
 async def _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name):
     await _send(actions, Manager, Segments, event, CONFUSED_WORD.format(bot_name=bot_name))
-
-
-async def cmd_ai_menu(actions, Manager, Segments, event, bot_name, bot_name_en, reminder, EnableNetwork):
-    ais = ARC_AI.list_available_ais()
-    current_ai_friendly = ARC_AI.get_current_ai_name(EnableNetwork)
-    ai_list_str = "\n".join([f"- {friendly} (代码: {name})" for name, friendly in ais.items()])
-    menu = f'''{bot_name} {bot_name_en} - AI管理菜单
-————————————————————
-当前使用的AI: {current_ai_friendly} (代码: {EnableNetwork})
-
-可用AI列表:
-{ai_list_str}
-
-指令:
-{reminder}切换AI [AI代码] —> 切换到指定的AI
-例如: {reminder}切换AI gemini
-'''
-    await _send(actions, Manager, Segments, event, menu)
-
-
-async def cmd_switch_ai(actions, Manager, Segments, event, user_message, reminder, logger):
-    """成功时返回新的 EnableNetwork（字符串），失败/无效时返回 None。"""
-    target_ai = user_message.replace(f"{reminder}切换AI ", "").strip()
-    available_ais = ARC_AI.list_available_ais()
-    if target_ai in available_ais:
-        friendly_name = available_ais[target_ai]
-        logger.info(f"sys: AI Mode change to {friendly_name} ({target_ai})")
-        await _send(actions, Manager, Segments, event, f"成功切换到AI: {friendly_name}")
-        return target_ai
-    await _send(actions, Manager, Segments, event, f"找不到AI配置: {target_ai}，请检查代码拼写。")
-    return None
 
 
 async def cmd_list_blacklist(actions, Manager, Segments, event, ADMINS, CONFUSED_WORD, bot_name):
@@ -81,7 +47,9 @@ async def cmd_add_blacklist(actions, Manager, Segments, event, order,
         with open(_BLACKLIST_FILE, "w", encoding="utf-8") as f:
             for item in blacklist:
                 f.write(item + "\n")
-        nick = await get_user_nickname(event.user_id, Manager, actions)
+        nick = await get_user_nickname(
+            event.user_id, Manager, actions, sender=getattr(event, "sender", None)
+        )
         r_admin = f"用户 {nick} 在 {event.time_str} 将群 {target} 添加到禁止群发黑名单"
         await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
         await _send(actions, Manager, Segments, event, f"黑名单添加成功\n现在的群发黑名单: {blacklist}")
@@ -105,48 +73,14 @@ async def cmd_remove_blacklist(actions, Manager, Segments, event, order,
         with open(_BLACKLIST_FILE, "w", encoding="utf-8") as f:
             for item in blacklist:
                 f.write(item + "\n")
-        nick = await get_user_nickname(event.user_id, Manager, actions)
+        nick = await get_user_nickname(
+            event.user_id, Manager, actions, sender=getattr(event, "sender", None)
+        )
         r_admin = f"用户 {nick} 在 {event.time_str} 将群 {target} 从禁止群发黑名单中删除"
         await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
         await _send(actions, Manager, Segments, event, f"黑名单删除成功\n现在黑名单: {blacklist}")
     except Exception as e:
         await _send(actions, Manager, Segments, event, f"黑名单删除失败, 是因为\n{e}")
-
-
-async def cmd_set_global_suffix(actions, Manager, Segments, event, order,
-                                 ADMINS, CONFUSED_WORD, bot_name, suffix_manager):
-    if str(event.user_id) not in ADMINS:
-        await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
-        return
-    suffix = order[order.find("设置全局后缀 ") + len("设置全局后缀 "):].strip()
-    if suffix:
-        suffix_manager.set_global_suffix(suffix)
-        await _send(actions, Manager, Segments, event, f"全局后缀已设置为：{suffix}")
-    else:
-        await _send(actions, Manager, Segments, event, "后缀不能为空！")
-
-
-async def cmd_remove_global_suffix(actions, Manager, Segments, event,
-                                    ADMINS, CONFUSED_WORD, bot_name, suffix_manager):
-    if str(event.user_id) not in ADMINS:
-        await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
-        return
-    suffix_manager.remove_global_suffix()
-    await _send(actions, Manager, Segments, event, "全局后缀已删除。")
-
-
-async def cmd_set_user_suffix(actions, Manager, Segments, event, order, suffix_manager, state_user_id):
-    suffix = order[order.find("设置特定后缀 ") + len("设置特定后缀 "):].strip()
-    if suffix:
-        suffix_manager.set_user_suffix(state_user_id, suffix)
-        await _send(actions, Manager, Segments, event, f"已为你配置特定后缀：{suffix}")
-    else:
-        await _send(actions, Manager, Segments, event, "后缀不能为空！")
-
-
-async def cmd_remove_user_suffix(actions, Manager, Segments, event, suffix_manager, state_user_id):
-    suffix_manager.remove_user_suffix(state_user_id)
-    await _send(actions, Manager, Segments, event, "你的特定后缀已删除。")
 
 
 async def cmd_uncalm(actions, Manager, Segments, event, order,
@@ -225,122 +159,36 @@ async def cmd_kick(actions, Manager, Segments, event, order,
     for i in event.message:
         if isinstance(i, Segments.At):
             await actions.set_group_kick(group_id=event.group_id, user_id=i.qq)
-            op_nick = await get_user_nickname(event.user_id, Manager, actions)
+            op_nick = await get_user_nickname(
+                event.user_id,
+                Manager,
+                actions,
+                sender=getattr(event, "sender", None),
+            )
             target_nick = await get_user_nickname(i.qq, Manager, actions)
             r_admin = f"用户 {op_nick} 在 {event.time_str} 使 {target_nick} 退出了群聊：{event.group_id}"
             await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
 
 
 
-async def cmd_role_play(actions, Manager, Segments, event, presets, presets_tool, bot_name, bot_name_en, reminder):
-    info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-{presets_tool.list_presets(presets, presets_tool.current_preset, reminder)}
-
-发送相应的关键词，{bot_name}会尽力扮演不同角色和你交流哒！⌯>ᴗoᴗ⌯ .ᐟ.ᐟ
-————————————————————
-若您是 Manage_User, Super_User 或 ROOT_User，你可以管理这些角色，尝试：
-    {reminder}添加预设 [name] [info] : [content]
-    {reminder}删除预设 [name]
-其中，name 为角色名称， info 为预设简介， content 为预设内容。"""
-    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(info)))
-
-
-async def cmd_add_preset(actions, Manager, Segments, event, order,
-                         ADMINS, ROOT_User, CONFUSED_WORD, bot_name, bot_name_en, reminder,
-                         presets, presets_tool, PRESET_DIR):
-    if str(event.user_id) not in ADMINS:
-        await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
-        return
-    match = re.match(r"添加预设\s+(.+?)\s+(.+?)\s*[:：]\s*(.+)", order, re.DOTALL)
-    if not match:
-        info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-添加预设 格式错误。
-用法：{reminder}添加预设 [name] [info] : [content]
-其中，name 为角色名称， info 为预设简介， content 为预设内容。
-
-示例：{reminder}添加预设 助手 让{bot_name}成为你有帮助的助手！ : 你是一个有帮助的助手。"""
-        await _send(actions, Manager, Segments, event, info)
-        return
-    name, pinfo, pcontent = match.groups()
-    while True:
-        preset_id = "p" + str(random.randint(1000000, 9999999))
-        if not os.path.exists(os.path.join(PRESET_DIR, f"{preset_id}.txt")):
-            break
-    existing_preset_id = None
-    for pid, pdata in presets.items():
-        if pdata["name"] == name:
-            existing_preset_id = pid
-            break
-    if existing_preset_id:
-        preset_id = existing_preset_id
-        preset_path = os.path.join(PRESET_DIR, presets[preset_id]["path"])
-        with open(preset_path, "w", encoding="utf-8") as f:
-            f.write(pcontent)
-        presets[preset_id]["info"] = pinfo
-    else:
-        preset_filename = f"{preset_id}.txt"
-        preset_path = os.path.join(PRESET_DIR, preset_filename)
-        with open(preset_path, "w", encoding="utf-8") as f:
-            f.write(pcontent)
-        presets[preset_id] = {"name": name, "uid": [], "info": pinfo, "path": preset_filename}
-    presets_tool.write_presets(presets)
-    verb = "更新现有" if existing_preset_id else "添加"
-    await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(f"用户 {event.user_id} 在群 {event.group_id} 中{verb}预设: {name} ")))
-    info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-已{verb}预设: {name}"""
-    await _send(actions, Manager, Segments, event, info)
-
-
-async def cmd_del_preset(actions, Manager, Segments, event, order,
-                         ADMINS, ROOT_User, CONFUSED_WORD, bot_name, bot_name_en, reminder,
-                         presets, presets_tool, PRESET_DIR, logger):
-    if str(event.user_id) not in ADMINS:
-        await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
-        return
-    match = re.match(r"删除预设\s+(.+)", order)
-    if not match:
-        info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-删除预设 格式错误。
-用法：{reminder}删除预设 [name] 
-其中，name 为角色名称。
-
-示例：{reminder}删除预设 助手"""
-        await _send(actions, Manager, Segments, event, info)
-        return
-    name = match.group(1).strip()
-    preset_id_to_delete = None
-    for preset_id, preset_data in presets.items():
-        if preset_data["name"] == name:
-            preset_id_to_delete = preset_id
-            break
-    if preset_id_to_delete:
-        preset_path = os.path.join(PRESET_DIR, presets[preset_id_to_delete]["path"])
-        logger.info(f"Removed {preset_path}")
-        os.remove(preset_path)
-        del presets[preset_id_to_delete]
-        presets_tool.write_presets(presets)
-        await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(f"用户 {event.user_id} 在群 {event.group_id} 中删除 {name} 预设")))
-        info = f"""{bot_name} {bot_name_en} - 角色扮演后台
-————————————————————
-已删除预设: {name}"""
-        await _send(actions, Manager, Segments, event, info)
-
-
 async def cmd_sleep(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUSED_WORD,
-                    bot_name, suffix_manager, get_user_nickname, state_user_id):
+                    bot_name, get_user_nickname):
     """返回 True 表示要把 stop_working 置 True。"""
     if str(event.user_id) not in ADMINS:
         await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
         return False
-    nick = await get_user_nickname(event.user_id, Manager, actions)
+    nick = await get_user_nickname(
+        event.user_id, Manager, actions, sender=getattr(event, "sender", None)
+    )
     r_admin = f"用户 {nick} 在 {event.time_str} 休眠QQ机器人"
     await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
-    await _send(actions, Manager, Segments, event,
-                suffix_manager.process_text(f"谢谢喵，{bot_name}睡觉去了 ヾ(＠ ˘ω˘ ＠)ノ💤", state_user_id))
+    await _send(
+        actions,
+        Manager,
+        Segments,
+        event,
+        f"谢谢喵，{bot_name}睡觉去了 ヾ(＠ ˘ω˘ ＠)ノ💤",
+    )
     return True
 
 
@@ -363,18 +211,6 @@ CPU占用：{system_info["cpu_usage"]}%
     await _send(actions, Manager, Segments, event, feel)
 
 
-async def cmd_logout(actions, Manager, Segments, event, ADMINS, ROOT_User, CONFUSED_WORD,
-                     bot_name, user_lists, get_user_nickname):
-    if str(event.user_id) not in ADMINS:
-        await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
-        return
-    user_lists.clear()
-    await _send(actions, Manager, Segments, event, f"卸下包袱，{bot_name}更轻松了~ (/≧▽≦)/")
-    nick = await get_user_nickname(event.user_id, Manager, actions)
-    r_admin = f"用户 {nick} 在 {event.time_str} 手动清空了所有用户的 AI 对话上下文"
-    await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
-
-
 async def cmd_modify_timing(actions, Manager, Segments, event, order,
                             ADMINS, ROOT_User, CONFUSED_WORD, bot_name, reminder,
                             get_user_nickname):
@@ -390,7 +226,12 @@ async def cmd_modify_timing(actions, Manager, Segments, event, order,
             with open("timing_message.ini", "w", encoding="utf-8") as f:
                 f.write(timing_settings)
             r = f"{bot_name}设置成功！(*≧▽≦) "
-            nick = await get_user_nickname(event.user_id, Manager, actions)
+            nick = await get_user_nickname(
+                event.user_id,
+                Manager,
+                actions,
+                sender=getattr(event, "sender", None),
+            )
             r_admin = f"用户 {nick} 在 {event.time_str} 将机器人的定时群发消息修改为时间：{tm[:5]} \n内容：{tm[6::]}"
             await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
     except Exception as e:
@@ -420,7 +261,9 @@ async def cmd_broadcast_msg(actions, Manager, Segments, event, order, user_messa
         m = event.message
     words.pop(0)
     word = " ".join(words)
-    nick = await get_user_nickname(event.user_id, Manager, actions)
+    nick = await get_user_nickname(
+        event.user_id, Manager, actions, sender=getattr(event, "sender", None)
+    )
     r_admin = f"用户 {nick} 在 {event.time_str} 启动群发消息：\n"
     await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin), *m))
     await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text("已启动群发消息：\n"), *m))
@@ -433,7 +276,9 @@ async def cmd_leave_group(actions, Manager, Segments, event,
     if str(event.user_id) not in SUPERS:
         await _confused(actions, Manager, Segments, event, CONFUSED_WORD, bot_name)
         return
-    nick = await get_user_nickname(event.user_id, Manager, actions)
+    nick = await get_user_nickname(
+        event.user_id, Manager, actions, sender=getattr(event, "sender", None)
+    )
     r_admin = f"用户 {nick} 在 {event.time_str} 使机器人退出了群聊：{event.group_id}"
     await actions.send(user_id=ROOT_User[0], message=Manager.Message(Segments.Text(r_admin)))
     await _send(actions, Manager, Segments, event, "呜呜呜，各位再见了……")

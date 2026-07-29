@@ -14,7 +14,6 @@ __all__ = [
     "group_commands",
     "help_mode",
     "help_view",
-    "memory_commands",
     "misc_commands",
     "plugin_ops",
     "plugin_state",

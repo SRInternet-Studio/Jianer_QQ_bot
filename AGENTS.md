@@ -10,20 +10,19 @@ This repository is a Python-first QQ bot project with plugin-based extensions.
   - `bot/event_handlers.py` — 戳一戳、重启通知、入群/退群、入群邀请等非消息事件。
   - `bot/group_commands.py` — ping / 关于 / 群发黑名单菜单 / 插件视角 等轻量群命令。
   - `bot/admin_commands.py` — `管理 / 删除管理 / 让我访问`。
-  - `bot/memory_commands.py` — 简儿记忆子命令。
-  - `bot/misc_commands.py` — AI 菜单、后缀、黑名单、冷静、角色预设、头衔、群发等。
+  - `bot/misc_commands.py` — 黑名单、冷静、头衔、群发等宿主命令。
   - `bot/help_view.py` — 帮助文本/图片/转发三种呈现。
   - `bot/auth_store.py` / `feishu_bindings.py` / `help_mode.py` — 持久化层。
   - `bot/broadcast.py` — 定时群发与广播工具。
   - `bot/protocol.py` / `utils.py` — 协议判定与通用小工具。
   - `bot/__init__.py` 使用 PEP 562 懒加载，避免测试/静态分析场景拉起整条依赖链。
-- Framework/runtime: `jianer-bot`（导入包名 `jianer`）、`AI_bot/`（AI 核心）、`Tools/`、`parser/`。
+- Framework/runtime: `jianer-bot`（导入包名 `jianer`）；AI 对话、TTS、后缀与简儿记忆统一位于 `plugins/JianerAI/`。
 - Feature extensions: `plugins/` — 新式 JianerCore 插件；单文件插件直接放 `.py`，目录插件入口固定 `setup.py`。
 - Runtime/static resources: `static/`, `prerequisites/`, `aiconfig/`。
 - Tests: `tests/` — 根项目测试（目前覆盖 `plugin_state` 与 JianerCore 插件加载/派发）。
 - Packaging subproject: `ARC_Spec_Python/` — 独立 Python 子包，自带工具链。
 
-When adding new bot features, prefer `plugins/` for isolated capabilities. Shared business logic should go into `bot/`；只有真正跨进程/跨模块的工具才放 `Tools/` 或 `AI_bot/`。避免再往 `main.py` 里堆命令分支。
+When adding new bot features, prefer `plugins/` for isolated capabilities. Shared business logic should go into `bot/`；只有真正跨进程/跨模块的工具才放 `Tools/`。避免再往 `main.py` 里堆命令分支。
 
 ## Build, Test, and Development Commands
 Use Python 3.11+ for the root project.
@@ -69,7 +68,7 @@ Recent history uses `type(scope): summary` 风格（`feat:`, `fix:`, `refactor:`
 
 - `type: short summary` (for example, `fix: prevent timing loop high CPU`)
 - One logical change per commit; include config updates with related code changes.
-- 请勿把本地配置/数据库/密钥文件加入提交。仓库 `.gitignore` 已忽略 `config.json`、`config12.json`、`aiconfig/gemini.ai.json`、`jianer_memory.db*`；新增同类文件时同步更新。
+- 请勿把本地配置/数据库/密钥文件加入提交。仓库 `.gitignore` 已忽略 `config.json`、`config12.json`、`aiconfig/gemini.ai.json`、`jianer_ai.db*` 与作为迁移归档保留的 `jianer_memory.db*`；新增同类文件时同步更新。
 
 No repository-level PR template is present. For PRs, include:
 
