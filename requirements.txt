@@ -1,7 +1,8 @@
 asyncio
 datetime
+ddgs>=9.14.4,<10
 emoji
-jianer-bot>=0.92.0
+jianer-bot>=0.92.1
 openai>=1.35.12
 requests
 aiohttp
@@ -17,7 +18,7 @@ pyGithub
 nvidia-ml-py
 flask-cors
 flask-socketio
-playwright
+playwright>=1.58,<1.59
 pymysql
 cryptography
 aiohttp

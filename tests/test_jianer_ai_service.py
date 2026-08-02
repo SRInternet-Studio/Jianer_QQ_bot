@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,12 @@ from jianer.adapters import (
 
 from plugins.JianerAI.memory import JianerMemoryStore
 from plugins.JianerAI.presets import PresetStore
+from plugins.JianerAI.providers import (
+    AssistantTurn,
+    ProviderResponse,
+    ProviderToolCall,
+    ToolResultTurn,
+)
 from plugins.JianerAI.service import JianerAIService, RuntimeOptions
 from plugins.JianerAI.speech import SpeechArtifact, SpeechOptions
 from plugins.JianerAI.suffix import SuffixStore
@@ -101,7 +108,10 @@ def _preset_store(tmp_path: Path) -> PresetStore:
     preset_dir = tmp_path / "prerequisites"
     preset_dir.mkdir()
     (preset_dir / "Normal.txt").write_text(
-        "你是{self.bot_name}，正在和{self.event_user}交流。",
+        (
+            "你是{self.bot_name}，正在和{self.event_user}交流。\n"
+            "工具：{agent_tools}\n{agent_tools_info}"
+        ),
         encoding="utf-8",
     )
     (preset_dir / "role.txt").write_text(
@@ -128,7 +138,11 @@ def _preset_store(tmp_path: Path) -> PresetStore:
         ),
         encoding="utf-8",
     )
-    return PresetStore(preset_dir / "current.json", preset_dir)
+    return PresetStore(
+        preset_dir / "current.json",
+        preset_dir,
+        default_key="Normal",
+    )
 
 
 def _service(
@@ -173,6 +187,14 @@ def _service(
     return service, providers, speech
 
 
+def test_runtime_options_enable_agent_by_default() -> None:
+    options = RuntimeOptions.from_runtime(
+        {"config": SimpleNamespace(others={}, black_list=[])}
+    )
+
+    assert options.agent_enabled_default is True
+
+
 def _event(
     text: str,
     *,
@@ -204,6 +226,69 @@ def _event(
     else:
         values["conversation_id"] = user_id
     return SimpleNamespace(**values)
+
+
+def test_sensitive_tool_values_are_removed_from_history_transcript_and_reply(
+    tmp_path: Path,
+):
+    async def scenario():
+        service, _, _ = _service(tmp_path)
+        actions = FakeActions()
+        secret = "group-chat-password-123"
+        event = _event(f"~请代填密码 {secret}")
+
+        class SensitiveAgent:
+            async def run(self, **kwargs):
+                assert secret in kwargs["message"]
+                assert any(
+                    lock.locked()
+                    for lock in service._memory_generation_locks.values()
+                )
+                kwargs["context"].sensitive_values.add(secret)
+                return f"已填写 {secret}"
+
+        service.agent = SensitiveAgent()
+        await service.observe(event, actions)
+        assert await service.handle_fallback(event, actions) is True
+
+        histories = json.dumps(
+            list(service._histories.values()), ensure_ascii=False, default=str
+        )
+        assert secret not in histories
+        assert "[REDACTED]" in histories
+        with sqlite3.connect(service.options.database_path) as conn:
+            rows = conn.execute(
+                "SELECT content FROM raw_transcript_messages"
+            ).fetchall()
+        transcript = "\n".join(str(row[0]) for row in rows)
+        assert secret not in transcript
+        assert "[REDACTED]" in transcript
+        assert not any(
+            lock.locked()
+            for lock in service._memory_generation_locks.values()
+        )
+        sent = "\n".join(str(message) for _, message in actions.sent)
+        assert secret not in sent
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_service_exposes_privileged_web_browser_by_default(tmp_path: Path):
+    async def scenario():
+        service, _, _ = _service(tmp_path)
+        actions = FakeActions()
+        event = _event("~浏览网页")
+        key = await service._conversation_key(event, actions)
+        canonical = await asyncio.to_thread(
+            service._canonical_identity, event, actions
+        )
+        context = service._tool_context(event, actions, key, canonical)
+        names = {spec.name for spec in service.tools.available(context)}
+        assert "web_browser" in names
+        await service.shutdown()
+
+    asyncio.run(scenario())
 
 
 def test_conversation_key_is_group_shared_and_isolates_bot_protocol_and_preset(
@@ -618,6 +703,148 @@ def test_admin_snapshot_updates_are_visible_after_plugin_setup(tmp_path: Path):
             item.name == "新角色"
             for item in service.presets.list_presets()
         )
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+class ToolLoopProviders:
+    def __init__(self):
+        self.models = {"model-a": "模型 A"}
+        self.requests = []
+        self.chat_calls = []
+
+    def list_models(self):
+        return dict(self.models)
+
+    def get(self, key):
+        if key not in self.models:
+            from plugins.JianerAI.providers import UnknownModelError
+
+            raise UnknownModelError(key)
+        return SimpleNamespace(key=key, friendly_name=self.models[key])
+
+    def supports_tools(self, key):
+        return True
+
+    async def complete_request(self, key, request):
+        self.requests.append(request)
+        if len(request.turns) == 0:
+            call = ProviderToolCall(
+                id="service-call-1",
+                name="calculate_expression",
+                arguments={"expression": "20+22"},
+            )
+            turn = AssistantTurn(tool_calls=(call,))
+            return ProviderResponse(text="", tool_calls=(call,), turn=turn)
+        return ProviderResponse(
+            text="最终答案。",
+            tool_calls=(),
+            turn=AssistantTurn(text="最终答案。"),
+        )
+
+    async def chat(
+        self,
+        key,
+        message,
+        *,
+        history=(),
+        system_prompt="",
+        attachments=(),
+    ):
+        self.chat_calls.append(
+            {
+                "key": key,
+                "message": message,
+                "history": tuple(history),
+                "system_prompt": system_prompt,
+                "attachments": tuple(attachments),
+            }
+        )
+        return "普通回答。"
+
+
+def test_service_agent_keeps_tool_turns_out_of_history_suffix_and_tts(
+    tmp_path: Path,
+):
+    async def scenario():
+        service, _, speech = _service(tmp_path)
+        providers = ToolLoopProviders()
+        service.providers = providers
+        service.agent.providers = providers
+        service.suffixes.set_global("喵")
+        event = _event("~计算")
+        actions = FakeActions(
+            {Capability.SEND_REPLY, Capability.SEND_AUDIO}
+        )
+
+        assert await service.handle_fallback(event, actions)
+        assert len(providers.requests) == 2
+        system_prompt = providers.requests[0].system_prompt
+        assert "工具：calculate_expression" in system_prompt
+        assert "安全计算只包含数字、括号和基础算术运算符的表达式" in system_prompt
+        assert "用法：calculate_expression(expression)" in system_prompt
+        assert "expression（string，必填）" in system_prompt
+        assert "{agent_tools}" not in system_prompt
+        assert "{agent_tools_info}" not in system_prompt
+        assert "否则最终回答不得展示、列出或附带信息来源及 URL" in system_prompt
+        assert "调用 web_search 本身不代表用户要求展示来源" in system_prompt
+        assert "用户明确要求来源时" in system_prompt
+        assert isinstance(providers.requests[1].turns[0], AssistantTurn)
+        tool_result = providers.requests[1].turns[1]
+        assert isinstance(tool_result, ToolResultTurn)
+        assert json.loads(tool_result.content)["data"]["result"] == 42
+
+        key = await service._conversation_key(event, actions)
+        assert service._histories[key] == [
+            {"role": "user", "content": "计算"},
+            {"role": "assistant", "content": "最终答案。"},
+        ]
+        assert any("最终答案喵。" in str(message) for _, message in actions.sent)
+        assert speech.calls[-1][0] == "最终答案。"
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_agent_command_persists_session_override_and_disabled_mode_uses_chat(
+    tmp_path: Path,
+):
+    async def scenario():
+        service, _, _ = _service(tmp_path)
+        providers = ToolLoopProviders()
+        service.providers = providers
+        service.agent.providers = providers
+        event = _event("你好", group_id=None)
+        actions = FakeActions()
+
+        assert await service.configure_agent(event, actions, "关闭")
+        key = await service._conversation_key(event, actions)
+        stored = service.memory.get_session_settings(
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+            preset=key.preset,
+        )
+        assert stored.agent_enabled is False
+
+        assert await service.handle_fallback(event, actions)
+        assert providers.requests == []
+        assert len(providers.chat_calls) == 1
+        assert "工具：无\n无" in providers.chat_calls[0]["system_prompt"]
+
+        assert await service.configure_agent(event, actions, "自动")
+        stored = service.memory.get_session_settings(
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+            preset=key.preset,
+        )
+        assert stored.agent_enabled is None
+        assert await service.configure_agent(event, actions, "工具")
+        assert "calculate_expression" in str(actions.sent[-1][1])
         await service.shutdown()
 
     asyncio.run(scenario())

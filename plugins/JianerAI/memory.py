@@ -19,13 +19,14 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 GROUP_TRANSCRIPT_RETENTION_DAYS = 30
 DEFAULT_MEMORY_INTERVAL_SECONDS = 6 * 3600
 DEFAULT_GENERATION_RETRY_SECONDS = 5 * 60
 MAX_GENERATION_RETRY_SECONDS = 6 * 3600
 QQ_PROTOCOLS = frozenset({"onebot", "milky"})
 CONVERSATION_KINDS = frozenset({"group", "private"})
+_UNSET = object()
 
 
 class MemoryStoreError(RuntimeError):
@@ -161,6 +162,7 @@ class SessionSettings:
     persona: str
     tts_enabled: bool
     ai_enabled: bool
+    agent_enabled: bool | None
     memory_enabled: bool
     memory_interval_seconds: int
     last_generated_at: int
@@ -495,6 +497,7 @@ class JianerMemoryStore:
                     persona TEXT NOT NULL DEFAULT '',
                     tts_enabled INTEGER NOT NULL,
                     ai_enabled INTEGER NOT NULL DEFAULT 1,
+                    agent_enabled INTEGER,
                     memory_enabled INTEGER NOT NULL DEFAULT 1,
                     memory_interval_seconds INTEGER NOT NULL DEFAULT 21600,
                     last_generated_at INTEGER NOT NULL DEFAULT 0,
@@ -690,6 +693,19 @@ class JianerMemoryStore:
                     """
                     ALTER TABLE memory_preferences
                     ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            session_columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    "PRAGMA table_info(session_settings)"
+                )
+            }
+            if "agent_enabled" not in session_columns:
+                conn.execute(
+                    """
+                    ALTER TABLE session_settings
+                    ADD COLUMN agent_enabled INTEGER
                     """
                 )
             conn.execute(
@@ -2077,6 +2093,100 @@ class JianerMemoryStore:
         finally:
             conn.close()
 
+    def redact_transcript_values(
+        self,
+        *,
+        protocol: Any,
+        self_id: Any,
+        conversation_kind: Any,
+        conversation_id: Any,
+        message_id: Any,
+        values: Iterable[Any],
+        replacement: str = "[REDACTED]",
+    ) -> bool:
+        """Replace sensitive values in one already-recorded raw message."""
+
+        external_message_id = _required_text(message_id, "message_id")
+        secrets = tuple(
+            sorted(
+                {
+                    str(value)
+                    for value in values
+                    if str(value)
+                },
+                key=len,
+                reverse=True,
+            )
+        )
+        if not secrets:
+            return False
+        conn = self._connect()
+        try:
+            with self._transaction(conn):
+                row = conn.execute(
+                    """
+                    SELECT
+                        r.transcript_id,
+                        r.content,
+                        r.sender_protocol,
+                        r.sender_self_id,
+                        r.sender_external_id,
+                        r.occurred_at,
+                        r.message_type
+                    FROM raw_transcript_messages r
+                    JOIN conversations c
+                      ON c.conversation_pk = r.conversation_pk
+                    WHERE c.protocol = ?
+                      AND c.self_id = ?
+                      AND c.conversation_kind = ?
+                      AND c.conversation_id = ?
+                      AND r.external_message_id = ?
+                    ORDER BY r.transcript_id DESC
+                    LIMIT 1
+                    """,
+                    (
+                        normalize_protocol(protocol),
+                        _required_text(self_id, "self_id"),
+                        _required_text(
+                            conversation_kind, "conversation_kind"
+                        ).lower(),
+                        _required_text(conversation_id, "conversation_id"),
+                        external_message_id,
+                    ),
+                ).fetchone()
+                if row is None:
+                    return False
+                content = str(row["content"])
+                redacted = content
+                for secret in secrets:
+                    redacted = redacted.replace(secret, replacement)
+                if redacted == content:
+                    return False
+                payload_seed = "\x00".join(
+                    (
+                        str(row["sender_protocol"] or ""),
+                        str(row["sender_self_id"] or ""),
+                        str(row["sender_external_id"] or ""),
+                        str(int(row["occurred_at"])),
+                        str(row["message_type"] or "text"),
+                        redacted,
+                    )
+                )
+                payload_hash = hashlib.sha256(
+                    payload_seed.encode("utf-8")
+                ).hexdigest()
+                conn.execute(
+                    """
+                    UPDATE raw_transcript_messages
+                    SET content = ?, payload_hash = ?
+                    WHERE transcript_id = ?
+                    """,
+                    (redacted, payload_hash, int(row["transcript_id"])),
+                )
+                return True
+        finally:
+            conn.close()
+
     def count_transcripts(
         self,
         *,
@@ -2253,6 +2363,7 @@ class JianerMemoryStore:
         persona: str | None = None,
         tts_enabled: bool | None = None,
         ai_enabled: bool | None = None,
+        agent_enabled: Any = _UNSET,
         memory_enabled: bool | None = None,
         memory_interval_seconds: int | None = None,
         last_generated_at: int | None = None,
@@ -2297,6 +2408,13 @@ class JianerMemoryStore:
                     if value is not None:
                         assignments.append(f"{column} = ?")
                         params.append(value)
+                if agent_enabled is not _UNSET:
+                    assignments.append("agent_enabled = ?")
+                    params.append(
+                        None
+                        if agent_enabled is None
+                        else int(bool(agent_enabled))
+                    )
                 if memory_interval_seconds is not None:
                     seconds = int(memory_interval_seconds)
                     if seconds < 60:
@@ -2337,6 +2455,7 @@ class JianerMemoryStore:
         tts_enabled: bool | None = None,
         enabled: bool | None = None,
         ai_enabled: bool | None = None,
+        agent_enabled: Any = _UNSET,
         memory_enabled: bool | None = None,
         interval: int | None = None,
         memory_interval_seconds: int | None = None,
@@ -2363,6 +2482,7 @@ class JianerMemoryStore:
             ai_enabled=(
                 ai_enabled if ai_enabled is not None else enabled
             ),
+            agent_enabled=agent_enabled,
             memory_enabled=memory_enabled,
             memory_interval_seconds=(
                 memory_interval_seconds
@@ -2412,6 +2532,11 @@ class JianerMemoryStore:
             persona=str(row["persona"]),
             tts_enabled=bool(row["tts_enabled"]),
             ai_enabled=bool(row["ai_enabled"]),
+            agent_enabled=(
+                None
+                if row["agent_enabled"] is None
+                else bool(row["agent_enabled"])
+            ),
             memory_enabled=bool(row["memory_enabled"]),
             memory_interval_seconds=int(row["memory_interval_seconds"]),
             last_generated_at=int(row["last_generated_at"]),

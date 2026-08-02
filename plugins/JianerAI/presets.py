@@ -11,13 +11,15 @@ from threading import RLock
 from typing import Any
 
 
-DEFAULT_PRESET_ID = "Normal"
+DEFAULT_PRESET_ID = "XingYu"
 _PRESET_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _PLACEHOLDERS = {
     "{self.bot_name}": "bot_name",
     "{self.bot_name_en}": "bot_name_en",
     "{self.event_user}": "event_user",
     "{self.event_user_id}": "event_user_id",
+    "{agent_tools}": "agent_tools",
+    "{agent_tools_info}": "agent_tools_info",
 }
 
 
@@ -61,12 +63,16 @@ class Preset:
         bot_name_en: str,
         event_user: str,
         event_user_id: str,
+        agent_tools: str = "无",
+        agent_tools_info: str = "无",
     ) -> str:
         values = {
             "bot_name": str(bot_name),
             "bot_name_en": str(bot_name_en),
             "event_user": str(event_user),
             "event_user_id": str(event_user_id),
+            "agent_tools": str(agent_tools),
+            "agent_tools_info": str(agent_tools_info),
         }
         rendered = self.template
         for placeholder, key in _PLACEHOLDERS.items():
@@ -186,12 +192,16 @@ class PresetStore:
         bot_name_en: str,
         event_user: str,
         event_user_id: Any,
+        agent_tools: str = "无",
+        agent_tools_info: str = "无",
     ) -> str:
         return self.get(key_or_name).render(
             bot_name=bot_name,
             bot_name_en=bot_name_en,
             event_user=event_user,
             event_user_id=str(event_user_id),
+            agent_tools=agent_tools,
+            agent_tools_info=agent_tools_info,
         )
 
     def upsert(

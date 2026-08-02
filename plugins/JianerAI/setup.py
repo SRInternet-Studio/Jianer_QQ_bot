@@ -1,15 +1,17 @@
 from typing import Any
 
+from arclet.alconna import Alconna, Args
 from jianer.plugins import PluginMetadata
 from jianer.plugins.builtin.alconna import Command
 
 from bot import plugin_state
 from plugins.JianerAI.service import JianerAIService
+from plugins.JianerAI.tools import ToolRegistration, ToolSpec
 
 
 __plugin_meta__ = PluginMetadata(
     name="jianerbot-plugin-jianer-ai",
-    description="Jianer AI dialogue, personas, speech, suffixes, and long-term memory.",
+    description="Jianer AI agent, tools, dialogue, personas, speech, suffixes, and memory.",
     usage=(
         "{reminder}[问题] —> 群聊 AI 对话；私聊直接发送问题\n"
         "{reminder}ai管理菜单 / {reminder}切换AI [代码] —> 管理当前会话模型\n"
@@ -19,7 +21,8 @@ __plugin_meta__ = PluginMetadata(
         "{reminder}设置特定后缀 / {reminder}删除特定后缀 —> 管理个人 AI 后缀\n"
         "{reminder}注销 —> 清空当前会话的短期上下文\n"
         "{reminder}简儿记忆 [子命令] —> 管理长期记忆\n"
-        "{reminder}TTS [开启|关闭|状态] —> 管理当前会话语音回复"
+        "{reminder}TTS [开启|关闭|状态] —> 管理当前会话语音回复\n"
+        "{reminder}Agent [开启|关闭|自动|状态|工具] —> 管理当前会话 Agent"
     ),
     requires={"jianerbot-plugin-alconna"},
 )
@@ -31,6 +34,14 @@ _service: JianerAIService | None = None
 
 def get_service() -> JianerAIService | None:
     return _service
+
+
+def register_tool(spec: ToolSpec) -> ToolRegistration:
+    return _require_service().register_tool(spec)
+
+
+def unregister_tool(registration: ToolRegistration | str) -> bool:
+    return _require_service().unregister_tool(registration)
 
 
 def setup(client: Any, manager: Any) -> None:
@@ -182,6 +193,21 @@ async def _toggle_tts(event: Any, actions: Any) -> bool:
 @Command(f"{_REMINDER}TTS <state>").handle()
 async def _configure_tts(state: str, event: Any, actions: Any) -> bool:
     return await _invoke("configure_tts", event, actions, state)
+
+
+_agent_command = Alconna(
+    f"{_REMINDER}Agent",
+    Args["state", str, "status"],
+)
+
+
+@Command(_agent_command).handle()
+async def _configure_agent(
+    state: str = "status",
+    event: Any = None,
+    actions: Any = None,
+) -> bool:
+    return await _invoke("configure_agent", event, actions, state)
 
 
 @Command(f"{_REMINDER}注销").handle()

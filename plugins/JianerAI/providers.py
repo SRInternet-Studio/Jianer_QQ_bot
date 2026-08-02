@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import inspect
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +17,15 @@ DEFAULT_REQUEST_TIMEOUT = 120.0
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _SUPPORTED_ATTACHMENT_MIME_PREFIXES = ("image/", "audio/")
 _PROTECTED_PAYLOAD_KEYS = frozenset(
-    {"model", "messages", "contents", "systemInstruction", "generationConfig"}
+    {
+        "model",
+        "messages",
+        "contents",
+        "systemInstruction",
+        "generationConfig",
+        "tools",
+        "tool_choice",
+    }
 )
 
 
@@ -37,6 +47,10 @@ class ProviderRequestError(ProviderError):
 
 class EmptyProviderResponseError(ProviderError):
     """The provider returned no assistant text."""
+
+
+class ToolsUnsupportedError(ProviderError):
+    """The configured endpoint explicitly rejected function tools."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +113,7 @@ class ModelConfig:
     max_history_messages: int = 20
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT
     endpoint_style: str = ""
+    tools_enabled: str = "auto"
     extra_parameters: Mapping[str, Any] = field(default_factory=dict, repr=False)
     extra_body: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
@@ -139,6 +154,25 @@ class ModelConfig:
             "endpoint_style",
             str(self.endpoint_style or "").strip().casefold(),
         )
+        tools_enabled = self.tools_enabled
+        if isinstance(tools_enabled, bool):
+            tools_mode = "enabled" if tools_enabled else "disabled"
+        else:
+            tools_mode = str(tools_enabled or "auto").strip().casefold()
+        aliases = {
+            "true": "enabled",
+            "on": "enabled",
+            "enabled": "enabled",
+            "false": "disabled",
+            "off": "disabled",
+            "disabled": "disabled",
+            "auto": "auto",
+        }
+        if tools_mode not in aliases:
+            raise ModelConfigError(
+                f"model config {key!r} has an invalid ToolsEnabled value"
+            )
+        object.__setattr__(self, "tools_enabled", aliases[tools_mode])
         object.__setattr__(self, "extra_parameters", dict(self.extra_parameters))
         object.__setattr__(self, "extra_body", dict(self.extra_body))
 
@@ -159,6 +193,8 @@ class ChatRequest:
     history: tuple[Mapping[str, Any], ...] = ()
     system_prompt: str = ""
     attachments: tuple[MediaAttachment, ...] = ()
+    tools: tuple["FunctionTool", ...] = ()
+    turns: tuple["AssistantTurn | ToolResultTurn", ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "message", str(self.message or ""))
@@ -170,6 +206,60 @@ class ChatRequest:
                 "attachments must be MediaAttachment objects created from resolved bytes"
             )
         object.__setattr__(self, "attachments", attachments)
+        tools = tuple(self.tools or ())
+        if any(not isinstance(item, FunctionTool) for item in tools):
+            raise TypeError("tools must be FunctionTool objects")
+        object.__setattr__(self, "tools", tools)
+        turns = tuple(self.turns or ())
+        if any(not isinstance(item, (AssistantTurn, ToolResultTurn)) for item in turns):
+            raise TypeError("turns must contain AssistantTurn or ToolResultTurn objects")
+        object.__setattr__(self, "turns", turns)
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionTool:
+    name: str
+    description: str
+    parameters: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", str(self.name or "").strip())
+        object.__setattr__(self, "description", str(self.description or "").strip())
+        object.__setattr__(self, "parameters", dict(self.parameters))
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderToolCall:
+    id: str
+    name: str
+    arguments: Any
+
+
+@dataclass(frozen=True, slots=True)
+class AssistantTurn:
+    text: str = ""
+    tool_calls: tuple[ProviderToolCall, ...] = ()
+    provider_content: Mapping[str, Any] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "text", str(self.text or ""))
+        object.__setattr__(self, "tool_calls", tuple(self.tool_calls or ()))
+        if self.provider_content is not None:
+            object.__setattr__(self, "provider_content", _plain_mapping(self.provider_content))
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultTurn:
+    call_id: str
+    name: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderResponse:
+    text: str
+    tool_calls: tuple[ProviderToolCall, ...]
+    turn: AssistantTurn
 
 
 class ProviderRegistry:
@@ -189,6 +279,7 @@ class ProviderRegistry:
         self._transport = transport
         self._configs: dict[str, ModelConfig] = {}
         self._load_errors: dict[str, str] = {}
+        self._tool_unsupported: set[str] = set()
         self.reload()
 
     @property
@@ -216,6 +307,7 @@ class ProviderRegistry:
             configs[config.key] = config
         self._configs = configs
         self._load_errors = errors
+        self._tool_unsupported.intersection_update(configs)
         return dict(configs)
 
     def list_models(self) -> Mapping[str, str]:
@@ -230,6 +322,16 @@ class ProviderRegistry:
             return self._configs[normalized]
         except KeyError as exc:
             raise UnknownModelError(f"unknown AI model config: {normalized}") from exc
+
+    def supports_tools(self, key: str) -> bool:
+        config = self.get(key)
+        return (
+            config.tools_enabled != "disabled"
+            and config.key not in self._tool_unsupported
+        )
+
+    def mark_tools_unsupported(self, key: str) -> None:
+        self._tool_unsupported.add(self.get(key).key)
 
     async def chat(
         self,
@@ -251,23 +353,57 @@ class ProviderRegistry:
         )
 
     async def chat_request(self, key: str, request: ChatRequest) -> str:
+        response = await self.complete_request(key, request)
+        normalized_text = str(response.text or "").rstrip()
+        if normalized_text:
+            return normalized_text
         config = self.get(key)
+        if config.empty_response_text:
+            return config.empty_response_text
+        raise EmptyProviderResponseError("provider returned no assistant text")
+
+    async def complete_request(
+        self,
+        key: str,
+        request: ChatRequest,
+    ) -> ProviderResponse:
+        config = self.get(key)
+        if request.tools and not self.supports_tools(key):
+            raise ToolsUnsupportedError(
+                f"function tools are disabled for model {config.key!r}"
+            )
         if config.provider == "openai":
             payload = _build_openai_payload(config, request)
             response = await self._request("openai", config, payload)
-            text = await _extract_openai_text(response)
+            result = await _extract_openai_response(response)
+            if not result.tool_calls:
+                textual_calls = _parse_dsml_tool_calls(result.text)
+                if textual_calls:
+                    turn = AssistantTurn(tool_calls=textual_calls)
+                    result = ProviderResponse("", textual_calls, turn)
+                elif _looks_like_dsml_tool_call(result.text):
+                    raise ProviderRequestError(
+                        "provider returned malformed textual tool calls"
+                    )
         elif config.provider == "gemini":
             payload = _build_gemini_payload(config, request)
             response = await self._request("gemini", config, payload)
-            text = _extract_gemini_text(response)
+            result = _extract_gemini_response(response)
         else:  # ModelConfig validation keeps this branch unreachable.
             raise ModelConfigError(f"unsupported provider: {config.provider}")
-        normalized_text = str(text or "").rstrip()
-        if not normalized_text:
-            if config.empty_response_text:
-                return config.empty_response_text
-            raise EmptyProviderResponseError("provider returned no assistant text")
-        return normalized_text
+        normalized_text = str(result.text or "").rstrip()
+        if not normalized_text and not result.tool_calls:
+            normalized_text = config.empty_response_text
+            if not normalized_text:
+                raise EmptyProviderResponseError("provider returned no assistant text")
+        if normalized_text != result.text:
+            turn = AssistantTurn(
+                text=normalized_text,
+                tool_calls=result.tool_calls,
+                provider_content=result.turn.provider_content,
+            )
+            return ProviderResponse(normalized_text, result.tool_calls, turn)
+        return result
 
     async def _request(
         self,
@@ -285,6 +421,10 @@ class ProviderRegistry:
         except ProviderError:
             raise
         except Exception as exc:
+            if payload.get("tools") and _is_tools_unsupported_exception(exc):
+                raise ToolsUnsupportedError(
+                    f"{provider} endpoint rejected function tools for model {config.key!r}"
+                ) from exc
             raise ProviderRequestError(
                 f"{provider} request failed for model {config.key!r}"
             ) from exc
@@ -335,6 +475,7 @@ def load_model_config(path: str | Path) -> ModelConfig:
                 raw.get("RequestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT)
             ),
             endpoint_style=raw.get("EndpointStyle") or "",
+            tools_enabled=raw.get("ToolsEnabled", "auto"),
             extra_parameters=extra_parameters,
             extra_body=extra_body,
         )
@@ -420,6 +561,34 @@ def _build_openai_payload(
     else:
         messages.append({"role": "user", "content": request.message})
 
+    for turn in request.turns:
+        if isinstance(turn, AssistantTurn):
+            message: dict[str, Any] = {
+                "role": "assistant",
+                "content": turn.text or None,
+            }
+            if turn.tool_calls:
+                message["tool_calls"] = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": _arguments_json(call.arguments),
+                        },
+                    }
+                    for call in turn.tool_calls
+                ]
+            messages.append(message)
+        else:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": turn.call_id,
+                    "content": turn.content,
+                }
+            )
+
     payload: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
@@ -429,6 +598,21 @@ def _build_openai_payload(
     }
     _merge_safe_extra(payload, config.extra_parameters)
     _merge_safe_extra(payload, config.extra_body)
+    if request.tools:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": dict(tool.parameters),
+                    "strict": False,
+                },
+            }
+            for tool in request.tools
+        ]
+        payload["tool_choice"] = "auto"
+        payload["stream"] = False
     return payload
 
 
@@ -451,6 +635,35 @@ def _build_gemini_payload(
             }
         )
     contents.append({"role": "user", "parts": parts})
+    pending_results: list[dict[str, Any]] = []
+    for turn in request.turns:
+        if isinstance(turn, ToolResultTurn):
+            pending_results.append(_gemini_function_response(turn))
+            continue
+        if pending_results:
+            contents.append({"role": "user", "parts": pending_results})
+            pending_results = []
+        if turn.provider_content is not None:
+            provider_content = dict(turn.provider_content)
+            provider_content.setdefault("role", "model")
+            contents.append(provider_content)
+            continue
+        model_parts: list[dict[str, Any]] = []
+        if turn.text:
+            model_parts.append({"text": turn.text})
+        model_parts.extend(
+            {
+                "functionCall": {
+                    "id": call.id,
+                    "name": call.name,
+                    "args": _arguments_mapping(call.arguments),
+                }
+            }
+            for call in turn.tool_calls
+        )
+        contents.append({"role": "model", "parts": model_parts})
+    if pending_results:
+        contents.append({"role": "user", "parts": pending_results})
     payload: dict[str, Any] = {
         "contents": contents,
         "generationConfig": {
@@ -465,7 +678,72 @@ def _build_gemini_payload(
             "role": "system",
             "parts": [{"text": system_prompt}],
         }
+    if request.tools:
+        payload["tools"] = [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": _gemini_schema(tool.parameters),
+                    }
+                    for tool in request.tools
+                ]
+            }
+        ]
     return payload
+
+
+def _arguments_json(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    return json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+
+
+def _arguments_mapping(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, Mapping):
+        return dict(arguments)
+    if isinstance(arguments, str):
+        try:
+            value = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
+    return {}
+
+
+def _gemini_function_response(turn: ToolResultTurn) -> dict[str, Any]:
+    try:
+        decoded = json.loads(turn.content)
+    except json.JSONDecodeError:
+        decoded = {"result": turn.content}
+    if not isinstance(decoded, Mapping):
+        decoded = {"result": decoded}
+    function_response: dict[str, Any] = {
+        "name": turn.name,
+        "response": dict(decoded),
+    }
+    if turn.call_id and not turn.call_id.startswith("local-gemini-"):
+        function_response["id"] = turn.call_id
+    return {"functionResponse": function_response}
+
+
+def _gemini_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in {"additionalProperties", "default"}:
+            continue
+        if key == "properties" and isinstance(value, Mapping):
+            output[key] = {
+                str(name): _gemini_schema(child)
+                for name, child in value.items()
+                if isinstance(child, Mapping)
+            }
+        elif key == "items" and isinstance(value, Mapping):
+            output[key] = _gemini_schema(value)
+        else:
+            output[key] = _plain_value(value)
+    return output
 
 
 def _merge_safe_extra(payload: dict[str, Any], extra: Mapping[str, Any]) -> None:
@@ -531,6 +809,15 @@ async def _default_gemini_request(
             headers=headers,
         ) as response:
             if response.status >= 400:
+                if payload.get("tools") and response.status in {400, 404, 422}:
+                    try:
+                        error_data = await response.json()
+                    except (ValueError, aiohttp.ContentTypeError):
+                        error_data = None
+                    if _is_tools_unsupported_value(error_data):
+                        raise ToolsUnsupportedError(
+                            f"gemini endpoint rejected function tools for model {config.key!r}"
+                        )
                 raise ProviderRequestError(
                     f"gemini request failed with HTTP {response.status}"
                 )
@@ -548,20 +835,48 @@ async def _default_gemini_request(
 
 
 async def _extract_openai_text(response: Any) -> str:
+    return (await _extract_openai_response(response)).text
+
+
+async def _extract_openai_response(response: Any) -> ProviderResponse:
     if hasattr(response, "__aiter__"):
         chunks: list[str] = []
         async for chunk in response:
             text = _extract_openai_chunk_text(chunk)
             if text:
                 chunks.append(text)
-        return "".join(chunks)
+        text = "".join(chunks)
+        turn = AssistantTurn(text=text)
+        return ProviderResponse(text=text, tool_calls=(), turn=turn)
     if _is_sync_stream(response):
-        return "".join(
+        text = "".join(
             text
             for item in response
             if (text := _extract_openai_chunk_text(item))
         )
-    return _extract_openai_message_text(response)
+        turn = AssistantTurn(text=text)
+        return ProviderResponse(text=text, tool_calls=(), turn=turn)
+    choices = _get_value(response, "choices") or ()
+    if choices:
+        message = _get_value(choices[0], "message") or {}
+    else:
+        message = response
+    text = _normalize_content_text(_get_value(message, "content"))
+    calls: list[ProviderToolCall] = []
+    for index, item in enumerate(_get_value(message, "tool_calls") or ()):
+        function = _get_value(item, "function") or {}
+        name = str(_get_value(function, "name") or "").strip()
+        if not name:
+            continue
+        calls.append(
+            ProviderToolCall(
+                id=str(_get_value(item, "id") or f"tool-call-{index}"),
+                name=name,
+                arguments=_get_value(function, "arguments") or {},
+            )
+        )
+    turn = AssistantTurn(text=text, tool_calls=tuple(calls))
+    return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
 
 
 def _extract_openai_message_text(response: Any) -> str:
@@ -572,6 +887,98 @@ def _extract_openai_message_text(response: Any) -> str:
         return _normalize_content_text(content)
     content = _get_value(response, "content")
     return _normalize_content_text(content)
+
+
+def _parse_dsml_tool_calls(text: str) -> tuple[ProviderToolCall, ...]:
+    """Parse DeepSeek-style textual tool calls returned by some gateways."""
+
+    normalized = _normalize_dsml_markup(str(text or ""))
+    outer = re.fullmatch(
+        r"\s*<DSML:tool_calls>\s*(.*?)\s*</DSML:tool_calls>\s*",
+        normalized,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if outer is None:
+        return ()
+    body = outer.group(1)
+    invoke_pattern = re.compile(
+        r"<DSML:invoke\s+name\s*=\s*(['\"])([A-Za-z0-9_-]{1,64})\1\s*>"
+        r"(.*?)</DSML:invoke>",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    matches = tuple(invoke_pattern.finditer(body))
+    if not matches or invoke_pattern.sub("", body).strip():
+        return ()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    calls: list[ProviderToolCall] = []
+    for index, invoke in enumerate(matches):
+        parameters_body = invoke.group(3)
+        parameter_pattern = re.compile(
+            r"<DSML:parameter\s+name\s*=\s*(['\"])([A-Za-z0-9_-]{1,64})\1"
+            r"([^>]*)>(.*?)</DSML:parameter>",
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        parameters = tuple(parameter_pattern.finditer(parameters_body))
+        if parameter_pattern.sub("", parameters_body).strip():
+            return ()
+        arguments: dict[str, Any] = {}
+        for parameter in parameters:
+            name = parameter.group(2)
+            if name in arguments:
+                return ()
+            attributes = parameter.group(3)
+            string_match = re.fullmatch(
+                r"\s*string\s*=\s*(['\"])(true|false)\1\s*",
+                attributes,
+                flags=re.IGNORECASE,
+            )
+            if attributes.strip() and string_match is None:
+                return ()
+            raw_value = parameter.group(4).strip()
+            if string_match is not None and string_match.group(2).casefold() == "true":
+                value: Any = raw_value
+            else:
+                try:
+                    value = json.loads(raw_value)
+                except json.JSONDecodeError:
+                    value = raw_value
+            arguments[name] = value
+        calls.append(
+            ProviderToolCall(
+                id=f"local-dsml-{digest}-{index}",
+                name=invoke.group(2),
+                arguments=arguments,
+            )
+        )
+    return tuple(calls)
+
+
+def _looks_like_dsml_tool_call(text: str) -> bool:
+    normalized = _normalize_dsml_markup(str(text or ""))
+    return bool(
+        re.search(
+            r"</?DSML:(?:tool_calls|invoke|parameter)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _normalize_dsml_markup(text: str) -> str:
+    normalized = str(text).replace("｜", "|")
+    marker = r"(?:\|\s*)+DSML\s*(?:\|\s*)+"
+    normalized = re.sub(
+        rf"<\s*/\s*{marker}",
+        "</DSML:",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        rf"<\s*{marker}",
+        "<DSML:",
+        normalized,
+        flags=re.IGNORECASE,
+    )
 
 
 def _extract_openai_chunk_text(chunk: Any) -> str:
@@ -585,21 +992,54 @@ def _extract_openai_chunk_text(chunk: Any) -> str:
 
 
 def _extract_gemini_text(response: Any) -> str:
+    return _extract_gemini_response(response).text
+
+
+def _extract_gemini_response(response: Any) -> ProviderResponse:
     if not isinstance(response, Mapping):
-        return ""
+        turn = AssistantTurn()
+        return ProviderResponse(text="", tool_calls=(), turn=turn)
     candidates = response.get("candidates") or ()
     if not candidates or not isinstance(candidates[0], Mapping):
-        return ""
+        turn = AssistantTurn()
+        return ProviderResponse(text="", tool_calls=(), turn=turn)
     content = candidates[0].get("content") or {}
     if not isinstance(content, Mapping):
-        return ""
+        turn = AssistantTurn()
+        return ProviderResponse(text="", tool_calls=(), turn=turn)
     parts = content.get("parts") or ()
     texts = [
         str(part["text"])
         for part in parts
         if isinstance(part, Mapping) and isinstance(part.get("text"), str)
     ]
-    return "\n".join(texts).strip()
+    calls: list[ProviderToolCall] = []
+    for index, part in enumerate(parts):
+        if not isinstance(part, Mapping):
+            continue
+        function = part.get("functionCall")
+        if not isinstance(function, Mapping):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        calls.append(
+            ProviderToolCall(
+                id=str(
+                    function.get("id")
+                    or f"local-gemini-function-call-{index}"
+                ),
+                name=name,
+                arguments=function.get("args") or {},
+            )
+        )
+    text = "\n".join(texts).strip()
+    turn = AssistantTurn(
+        text=text,
+        tool_calls=tuple(calls),
+        provider_content=content,
+    )
+    return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
 
 
 def _normalize_content_text(content: Any) -> str:
@@ -643,6 +1083,74 @@ def _get_value(value: Any, key: str) -> Any:
     if isinstance(value, Mapping):
         return value.get(key)
     return getattr(value, key, None)
+
+
+def _plain_mapping(value: Any) -> dict[str, Any]:
+    plain = _plain_value(value)
+    if not isinstance(plain, Mapping):
+        raise TypeError("provider content must be a mapping")
+    return dict(plain)
+
+
+def _plain_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _plain_value(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_plain_value(item) for item in value]
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return _plain_value(dump(exclude_none=True))
+    if hasattr(value, "__dict__"):
+        return {
+            str(key): _plain_value(item)
+            for key, item in vars(value).items()
+            if not str(key).startswith("_")
+        }
+    return str(value)
+
+
+def _is_tools_unsupported_exception(exc: BaseException) -> bool:
+    candidates = [
+        getattr(exc, "param", None),
+        getattr(exc, "code", None),
+        getattr(exc, "body", None),
+        getattr(exc, "response", None),
+    ]
+    return any(_is_tools_unsupported_value(item) for item in candidates)
+
+
+def _is_tools_unsupported_value(value: Any) -> bool:
+    if value is None:
+        return False
+    plain = _plain_value(value)
+    try:
+        text = json.dumps(plain, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(plain)
+    normalized = text.casefold()
+    mentions_tools = any(
+        marker in normalized
+        for marker in (
+            "tools",
+            "tool_choice",
+            "functiondeclarations",
+            "function_declarations",
+        )
+    )
+    rejects_parameter = any(
+        marker in normalized
+        for marker in (
+            "unsupported",
+            "not supported",
+            "unknown parameter",
+            "unrecognized",
+            "unexpected field",
+            "invalid argument",
+        )
+    )
+    return mentions_tools and rejects_parameter
 
 
 def _safe_config_error(exc: BaseException) -> str:

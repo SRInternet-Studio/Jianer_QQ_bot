@@ -183,7 +183,7 @@ def test_registry_reports_bad_config_without_exposing_secret(tmp_path: Path) -> 
     assert "do-not-report" not in registry.load_errors["bad.ai.json"]
 
 
-def test_existing_five_presets_load_and_render_legacy_placeholders() -> None:
+def test_existing_presets_load_default_and_render_legacy_placeholders() -> None:
     project_root = Path(__file__).resolve().parents[1]
     store = PresetStore(
         project_root / "prerequisites" / "current.json",
@@ -191,12 +191,18 @@ def test_existing_five_presets_load_and_render_legacy_placeholders() -> None:
     )
 
     assert set(store.list_choices()) == {
+        "XingYu",
         "Normal",
         "p7993817",
         "p9930414",
         "p9360874",
         "p9428138",
     }
+    default = store.get_default()
+    assert default.key == "XingYu"
+    assert default.name == "星语"
+    assert default.info == "是机娘desu~！"
+    assert "机娘" in default.template
     rendered = store.render(
         "做我女朋友",
         bot_name="简儿",
@@ -226,13 +232,16 @@ def test_preset_store_atomic_upsert_assignment_and_delete(tmp_path: Path) -> Non
         ),
         encoding="utf-8",
     )
-    store = PresetStore(preset_dir / "current.json")
+    store = PresetStore(preset_dir / "current.json", default_key="Normal")
 
     store.upsert(
         key="p1234567",
         name="Helper",
         info="Useful",
-        template="Hello {self.event_user_id}",
+        template=(
+            "Hello {self.event_user_id}; tools={agent_tools}; "
+            "info={agent_tools_info}"
+        ),
         legacy_user_ids=("42",),
     )
     assert store.find_legacy_assignment(42).key == "p1234567"
@@ -243,7 +252,12 @@ def test_preset_store_atomic_upsert_assignment_and_delete(tmp_path: Path) -> Non
         bot_name_en="b",
         event_user="u",
         event_user_id=42,
-    ) == "Hello 42"
+        agent_tools="alpha, beta",
+        agent_tools_info="- alpha: first\n- beta: second",
+    ) == (
+        "Hello 42; tools=alpha, beta; "
+        "info=- alpha: first\n- beta: second"
+    )
     assert store.delete("p1234567") is True
     assert not (preset_dir / "p1234567.txt").exists()
     with pytest.raises(PresetError, match="default"):

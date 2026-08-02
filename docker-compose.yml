@@ -1,6 +1,9 @@
 services:
   bot:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jianer-bot:local
     container_name: jianer-bot
     working_dir: /app
     restart: unless-stopped
@@ -9,8 +12,7 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - ./:/app
-    command: >
-      sh -c "python -m pip install --no-cache-dir -r requirements.txt --disable-pip-version-check --no-warn-script-location && python main.py"
+    command: ["python", "main.py"]
 
   webui:
     image: python:3.11-slim
