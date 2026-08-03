@@ -131,6 +131,13 @@ asyncio.run(scenario())
     env["PYTHONPATH"] = str(ROOT)
     env["PYTHONUTF8"] = "1"
     env["JIANER_AGENT_TEST_DB"] = str(tmp_path / "agent-plugin.db")
+    for key in (
+        "QWEATHER_API_HOST",
+        "QWEATHER_PROJECT_ID",
+        "QWEATHER_CREDENTIAL_ID",
+        "QWEATHER_PRIVATE_KEY_PATH",
+    ):
+        env[key] = ""
     result = subprocess.run(
         [sys.executable, "-c", script],
         cwd=ROOT,

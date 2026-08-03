@@ -723,8 +723,8 @@ def _build_geo_request(
     if operation == "city_lookup" and "administrative_area" in arguments:
         params["adm"] = _required_text(arguments, "administrative_area", 80)
     if operation in {"city_lookup", "top_city"} and "country_code" in arguments:
-        country = _required_text(arguments, "country_code", 2).upper()
-        if re.fullmatch(r"[A-Z]{2}", country) is None:
+        country = _required_text(arguments, "country_code", 2).lower()
+        if re.fullmatch(r"[a-z]{2}", country) is None:
             _invalid("country_code 必须是两个英文字母。")
         params["range"] = country
     if operation in {"poi_lookup", "poi_range"}:

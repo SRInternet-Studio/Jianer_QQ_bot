@@ -104,14 +104,14 @@ def _config(key: Ed25519PrivateKey | None = None) -> QWeatherConfig:
             {"operation": "city_lookup", "location": "北京", "administrative_area": "北京", "country_code": "cn", "number": 3, "language": "zh"},
             "qweather_geo.city_lookup",
             {},
-            {"location": "北京", "adm": "北京", "range": "CN", "number": 3, "lang": "zh"},
+            {"location": "北京", "adm": "北京", "range": "cn", "number": 3, "lang": "zh"},
         ),
         (
             "qweather_geo",
             {"operation": "top_city", "country_code": "US", "number": 5},
             "qweather_geo.top_city",
             {},
-            {"range": "US", "number": 5},
+            {"range": "us", "number": 5},
         ),
         (
             "qweather_geo",
