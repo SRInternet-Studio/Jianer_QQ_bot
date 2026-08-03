@@ -69,6 +69,7 @@ _IMAGE_MIME_TYPES = frozenset(
 _MAX_HISTORY_MESSAGES = 20
 _DEFAULT_MAX_REPLY_CHARS = 350
 _DEFAULT_MAX_REPLY_PARTS = 3
+_AI_FORWARD_THRESHOLD = 5
 _RESPONSE_SYSTEM_RULES = (
     "所有最终回答必须使用纯文本，不得使用 Markdown 或 HTML。不得使用 Markdown 标题、"
     "项目符号、引用、代码围栏、行内代码、Markdown 链接、粗体、斜体或删除线语法；"
@@ -1392,12 +1393,54 @@ class JianerAIService:
             )
             if paragraph.strip()
         ]
+        parts = parts or ["（无可用回复）"]
+        if len(parts) > _AI_FORWARD_THRESHOLD:
+            if await self._send_ai_forward(event, actions, parts):
+                return
+            parts = ["\n\n".join(parts)]
         await self._send_text_parts(
             event,
             actions,
-            parts or ["（无可用回复）"],
+            parts,
             reply=reply,
         )
+
+    async def _send_ai_forward(
+        self,
+        event: Any,
+        actions: Any,
+        parts: Sequence[str],
+    ) -> bool:
+        group_id = getattr(event, "group_id", None)
+        capabilities = frozenset(getattr(actions, "capabilities", ()))
+        sender = getattr(actions, "send_group_forward_msg", None)
+        if (
+            group_id is None
+            or Capability.NATIVE_GROUP_FORWARD not in capabilities
+            or not callable(sender)
+        ):
+            return False
+
+        nodes = [
+            Segments.CustomNode(
+                str(getattr(event, "self_id", "") or "0"),
+                self.options.bot_name,
+                Manager.Message(Segments.Text(part)),
+            )
+            for part in parts
+        ]
+        try:
+            await sender(
+                group_id=group_id,
+                message=Manager.Message(*nodes),
+            )
+        except Exception:
+            self._log_exception(
+                "JianerAI native group-forward send failed; "
+                "falling back to one text message"
+            )
+            return False
+        return True
 
     async def _send_text_parts(
         self,

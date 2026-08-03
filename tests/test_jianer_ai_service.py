@@ -965,7 +965,7 @@ def test_ai_reply_markdown_is_normalized_before_history_suffix_and_send(tmp_path
     asyncio.run(scenario())
 
 
-def test_ai_reply_sends_every_paragraph_separately_without_forwarding(
+def test_ai_reply_sends_up_to_five_paragraphs_separately_without_forwarding(
     tmp_path: Path,
 ):
     class ParagraphActions(FakeActions):
@@ -1017,6 +1017,76 @@ def test_ai_reply_sends_every_paragraph_separately_without_forwarding(
             for _, message in actions.sent[1:]
         )
         assert actions.forward_calls == []
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_ai_reply_over_five_paragraphs_sends_only_group_forward(
+    tmp_path: Path,
+):
+    class ForwardActions(FakeActions):
+        def __init__(self):
+            super().__init__(
+                {
+                    Capability.SEND_REPLY,
+                    Capability.NATIVE_GROUP_FORWARD,
+                }
+            )
+            self.forward_calls = []
+
+        async def send_group_forward_msg(self, **kwargs):
+            self.forward_calls.append(kwargs)
+
+    async def scenario():
+        answer = "\n\n".join(f"第{index}段" for index in range(1, 7))
+        service, _, _ = _service(tmp_path, answer=answer)
+        event = _at_event("请详细回答")
+        actions = ForwardActions()
+
+        assert await service.handle_fallback(event, actions)
+        assert actions.sent == []
+        assert len(actions.forward_calls) == 1
+        call = actions.forward_calls[0]
+        assert call["group_id"] == event.group_id
+        nodes = list(call["message"])
+        assert len(nodes) == 6
+        assert all(isinstance(node, Segments.CustomNode) for node in nodes)
+        assert [
+            node.to_json()["data"]["content"][0]["data"]["text"]
+            for node in nodes
+        ] == [f"第{index}段" for index in range(1, 7)]
+        assert all(
+            node.to_json()["data"]["user_id"] == event.self_id
+            for node in nodes
+        )
+        assert all(
+            node.to_json()["data"]["nick_name"] == "简儿"
+            for node in nodes
+        )
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_ai_reply_over_five_paragraphs_without_native_forward_sends_one_text(
+    tmp_path: Path,
+):
+    async def scenario():
+        paragraphs = [f"第{index}段" for index in range(1, 7)]
+        service, _, _ = _service(
+            tmp_path,
+            answer="\n\n".join(paragraphs),
+        )
+        event = _at_event("请详细回答")
+        actions = FakeActions({Capability.SEND_REPLY})
+
+        assert await service.handle_fallback(event, actions)
+        assert len(actions.sent) == 1
+        sent_segments = list(actions.sent[0][1])
+        assert isinstance(sent_segments[0], Segments.Reply)
+        assert isinstance(sent_segments[1], Segments.Text)
+        assert sent_segments[1].text == "\n\n".join(paragraphs)
         await service.shutdown()
 
     asyncio.run(scenario())
