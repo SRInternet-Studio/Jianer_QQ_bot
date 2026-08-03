@@ -23,7 +23,7 @@ from plugins.JianerAI.tools import (
     ToolCall,
     ToolContext,
     ToolRegistry,
-    limit_result,
+    duplicate_call_result,
 )
 
 
@@ -35,13 +35,10 @@ class AgentError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class AgentOptions:
-    max_tool_calls: int = 8
     max_parallel_calls: int = 4
     total_timeout_seconds: float = 180.0
 
     def __post_init__(self) -> None:
-        if self.max_tool_calls < 1:
-            raise ValueError("agent max_tool_calls must be positive")
         if self.max_parallel_calls < 1:
             raise ValueError("agent max_parallel_calls must be positive")
         if self.total_timeout_seconds <= 0:
@@ -115,7 +112,6 @@ class AgentRunner:
         )
         turns: list[Any] = []
         seen_call_ids: set[str] = set()
-        used_calls = 0
         try:
             async with asyncio.timeout(self.options.total_timeout_seconds):
                 while True:
@@ -142,9 +138,7 @@ class AgentRunner:
                             arguments=item.arguments,
                         )
                         if call.id in seen_call_ids:
-                            result = limit_result(
-                                call, code="duplicate_tool_call_id"
-                            )
+                            result = duplicate_call_result(call)
                             results_by_index[index] = result
                             self._log_tool_result(
                                 call,
@@ -154,17 +148,6 @@ class AgentRunner:
                             )
                             continue
                         seen_call_ids.add(call.id)
-                        if used_calls >= self.options.max_tool_calls:
-                            result = limit_result(call)
-                            results_by_index[index] = result
-                            self._log_tool_result(
-                                call,
-                                result,
-                                context,
-                                executed=False,
-                            )
-                            continue
-                        used_calls += 1
                         calls.append((index, call))
                     executed = await self._execute_calls(
                         [call for _, call in calls], context

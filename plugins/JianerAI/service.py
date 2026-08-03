@@ -104,7 +104,6 @@ class RuntimeOptions:
     max_reply_chars: int = _DEFAULT_MAX_REPLY_CHARS
     max_reply_parts: int = _DEFAULT_MAX_REPLY_PARTS
     agent_enabled_default: bool = True
-    agent_max_tool_calls: int = 8
     agent_max_parallel_calls: int = 4
     agent_total_timeout_seconds: float = 180.0
     agent_allowed_tools: frozenset[str] | None = None
@@ -224,9 +223,6 @@ class RuntimeOptions:
                 others.get("agent_enabled_default", True),
                 default=True,
             ),
-            agent_max_tool_calls=max(
-                1, int(others.get("agent_max_tool_calls", 8))
-            ),
             agent_max_parallel_calls=max(
                 1, int(others.get("agent_max_parallel_calls", 4))
             ),
@@ -336,7 +332,6 @@ class JianerAIService:
             self.providers,
             self.tools,
             options=AgentOptions(
-                max_tool_calls=options.agent_max_tool_calls,
                 max_parallel_calls=options.agent_max_parallel_calls,
                 total_timeout_seconds=options.agent_total_timeout_seconds,
             ),

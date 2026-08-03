@@ -8,7 +8,7 @@ from plugins.JianerAI.tools.contracts import (
     ToolRisk,
     ToolSpec,
 )
-from plugins.JianerAI.tools.registry import ToolRegistry, limit_result
+from plugins.JianerAI.tools.registry import ToolRegistry, duplicate_call_result
 from plugins.JianerAI.tools.qweather import (
     QWeatherClient,
     QWeatherConfig,
@@ -37,7 +37,7 @@ __all__ = [
     "QWeatherClient",
     "QWeatherConfig",
     "QWeatherConfigError",
-    "limit_result",
+    "duplicate_call_result",
     "register_builtin_tools",
     "register_qweather_tools",
     "qweather_tools",

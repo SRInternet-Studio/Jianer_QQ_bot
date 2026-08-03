@@ -227,8 +227,12 @@ def _error_result(call: ToolCall, code: str, message: str) -> ToolResult:
     )
 
 
-def limit_result(call: ToolCall, code: str = "tool_call_limit") -> ToolResult:
-    return _error_result(call, code, "本轮工具调用次数已达到上限。")
+def duplicate_call_result(call: ToolCall) -> ToolResult:
+    return _error_result(
+        call,
+        "duplicate_tool_call_id",
+        "模型重复使用了同一个工具调用 ID。",
+    )
 
 
 def _json_safe(value: Any) -> Any:

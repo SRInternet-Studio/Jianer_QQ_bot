@@ -473,27 +473,31 @@ def test_agent_runner_falls_back_only_for_explicit_tool_unsupported():
     asyncio.run(scenario())
 
 
-def test_agent_runner_enforces_total_tool_call_limit_and_result_order():
-    class LimitedProvider(SequenceProvider):
+def test_agent_runner_executes_more_than_eight_tool_calls_and_preserves_order():
+    class ManyCallsProvider(SequenceProvider):
         async def complete_request(self, model, request):
             self.requests.append(request)
             if len(self.requests) == 1:
-                calls = (
-                    ProviderToolCall("first", "calculate_expression", {"expression": "1+1"}),
-                    ProviderToolCall("second", "calculate_expression", {"expression": "2+2"}),
+                calls = tuple(
+                    ProviderToolCall(
+                        f"call-{index}",
+                        "calculate_expression",
+                        {"expression": f"{index}+1"},
+                    )
+                    for index in range(12)
                 )
                 return ProviderResponse("", calls, AssistantTurn(tool_calls=calls))
             return ProviderResponse("done", (), AssistantTurn(text="done"))
 
     async def scenario():
-        provider = LimitedProvider()
+        provider = ManyCallsProvider()
         registry = ToolRegistry()
         register_builtin_tools(registry)
         context, _, _ = _context()
         runner = AgentRunner(
             provider,
             registry,
-            options=AgentOptions(max_tool_calls=1),
+            options=AgentOptions(max_parallel_calls=3),
         )
         assert await runner.run(
             model="model-a",
@@ -505,9 +509,12 @@ def test_agent_runner_enforces_total_tool_call_limit_and_result_order():
             enabled=True,
         ) == "done"
         results = provider.requests[1].turns[1:]
-        assert [item.call_id for item in results] == ["first", "second"]
-        assert json.loads(results[0].content)["data"]["result"] == 2
-        assert json.loads(results[1].content)["error_code"] == "tool_call_limit"
+        assert [item.call_id for item in results] == [
+            f"call-{index}" for index in range(12)
+        ]
+        assert [
+            json.loads(item.content)["data"]["result"] for item in results
+        ] == [index + 1 for index in range(12)]
 
     asyncio.run(scenario())
 

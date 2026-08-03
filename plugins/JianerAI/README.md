@@ -50,7 +50,6 @@
 - `ai_reply_chunk_chars`：单段目标字符数
 - `TTS`：音色、语速、音量与音高
 - `agent_enabled_default`：没有会话覆盖时是否启用 Agent，默认开启
-- `agent_max_tool_calls`：单轮工具调用上限，默认 8
 - `agent_max_parallel_calls`：只读工具并发上限，默认 4
 - `agent_total_timeout_seconds`：完整 Agent 轮次总超时，默认 180 秒
 - `agent_allowed_tools`：允许暴露给模型的工具名称数组或逗号分隔字符串；未配置时
