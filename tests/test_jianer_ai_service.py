@@ -217,7 +217,9 @@ def test_ai_dialogue_logs_prompt_answer_scope_and_model(tmp_path: Path):
         assert '"model":"model-a"' in logs
         assert '"conversation_kind":"group"' in logs
         assert '"conversation_id":"100"' in logs
-        assert '"prompt":"你好，简儿"' in logs
+        assert "你好，简儿" in logs
+        assert "canonical_user_id" in logs
+        assert "qq:42" in logs
         assert '"answer":"这是模型回答。"' in logs
         await service.shutdown()
 
@@ -424,10 +426,13 @@ def test_group_fallback_requires_at_and_bare_at_triggers_ai(
         assert providers.calls == []
 
         assert await service.handle_fallback(_at_event("~你好"), actions)
-        assert providers.calls[-1]["message"] == "你好"
+        assert providers.calls[-1]["message"].endswith("\n你好")
+        assert '"display_name":"user-42"' in providers.calls[-1]["message"]
+        assert '"user_id":"42"' in providers.calls[-1]["message"]
 
         assert await service.handle_fallback(_at_event(), actions)
-        assert providers.calls[-1]["message"] == (
+        assert providers.calls[-1]["message"].endswith(
+            "\n"
             "用户在群聊中只@了你，请自然地回应对方。"
         )
         await service.shutdown()
@@ -495,7 +500,8 @@ def test_feishu_mention_and_private_messages_use_ai_without_native_media(
             bare_feishu_event,
             feishu_actions,
         )
-        assert providers.calls[-1]["message"] == (
+        assert providers.calls[-1]["message"].endswith(
+            "\n"
             "用户在群聊中只@了你，请自然地回应对方。"
         )
 
@@ -873,7 +879,10 @@ def test_service_agent_keeps_tool_turns_out_of_history_suffix_and_tts(
 
         key = await service._conversation_key(event, actions)
         assert service._histories[key] == [
-            {"role": "user", "content": "计算"},
+            {
+                "role": "user",
+                "content": providers.requests[0].message,
+            },
             {"role": "assistant", "content": "最终答案。"},
         ]
         assert any("最终答案喵。" in str(message) for _, message in actions.sent)
@@ -922,6 +931,55 @@ def test_agent_command_persists_session_override_and_disabled_mode_uses_chat(
         assert stored.agent_enabled is None
         assert await service.configure_agent(event, actions, "工具")
         assert "calculate_expression" in str(actions.sent[-1][1])
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_group_ai_prefers_card_and_labels_users_in_shared_history(
+    tmp_path: Path,
+):
+    async def scenario():
+        service, providers, _ = _service(tmp_path)
+        actions = FakeActions({Capability.SEND_REPLY})
+        first = _at_event("查一下深圳盐田区天气", user_id="42")
+        first.sender = SimpleNamespace(
+            nickname="成员甲QQ昵称",
+            card="成员甲群名片",
+            user_id="42",
+        )
+        second = _at_event("再查一下上海天气", user_id="77")
+        second.sender = SimpleNamespace(
+            nickname="成员乙QQ昵称",
+            card="成员乙群名片",
+            user_id="77",
+        )
+
+        assert await service.handle_fallback(first, actions)
+        first_call = providers.calls[-1]
+        assert "正在和成员甲群名片交流" in first_call["system_prompt"]
+        assert "正在和成员甲QQ昵称交流" not in first_call["system_prompt"]
+        assert '"display_name":"成员甲群名片"' in first_call["message"]
+        assert '"user_id":"42"' in first_call["message"]
+        assert '"canonical_user_id":"qq:42"' in first_call["message"]
+
+        assert await service.handle_fallback(second, actions)
+        second_call = providers.calls[-1]
+        assert "正在和成员乙群名片交流" in second_call["system_prompt"]
+        assert "正在和成员甲群名片交流" not in second_call["system_prompt"]
+        assert '"display_name":"成员乙群名片"' in second_call["message"]
+        assert '"user_id":"77"' in second_call["message"]
+        assert '"canonical_user_id":"qq:77"' in second_call["message"]
+        assert second_call["history"][0] == {
+            "role": "user",
+            "content": first_call["message"],
+        }
+        assert '"display_name":"成员甲群名片"' in (
+            second_call["history"][0]["content"]
+        )
+        assert "必须按其中的 user_id 和 canonical_user_id 区分不同成员" in (
+            second_call["system_prompt"]
+        )
         await service.shutdown()
 
     asyncio.run(scenario())
