@@ -104,6 +104,17 @@ class FakeActions:
         )
 
 
+class RecordingLogger:
+    def __init__(self):
+        self.messages = []
+
+    def info(self, message):
+        self.messages.append(str(message))
+
+    def exception(self, message):
+        self.messages.append(str(message))
+
+
 def _preset_store(tmp_path: Path) -> PresetStore:
     preset_dir = tmp_path / "prerequisites"
     preset_dir.mkdir()
@@ -150,6 +161,7 @@ def _service(
     *,
     answer="模型回答。",
     blocked_group_ids=(),
+    logger=None,
 ):
     providers = FakeProviders(answer)
     speech = FakeSpeech(tmp_path)
@@ -177,6 +189,7 @@ def _service(
             "super_users": [],
             "manage_users": [],
             "confused_word": "{bot_name}不能这么做。",
+            **({"logger": logger} if logger is not None else {}),
         },
         providers=providers,
         memory=JianerMemoryStore(options.database_path),
@@ -185,6 +198,30 @@ def _service(
         suffixes=SuffixStore(tmp_path / "suffix.json"),
     )
     return service, providers, speech
+
+
+def test_ai_dialogue_logs_prompt_answer_scope_and_model(tmp_path: Path):
+    async def scenario():
+        logger = RecordingLogger()
+        service, _, _ = _service(
+            tmp_path,
+            answer="这是模型回答。",
+            logger=logger,
+        )
+        event = _event("~你好，简儿")
+        assert await service.handle_fallback(event, FakeActions()) is True
+
+        logs = "\n".join(logger.messages)
+        assert "JianerAI AI对话开始" in logs
+        assert "JianerAI AI对话完成" in logs
+        assert '"model":"model-a"' in logs
+        assert '"conversation_kind":"group"' in logs
+        assert '"conversation_id":"100"' in logs
+        assert '"prompt":"你好，简儿"' in logs
+        assert '"answer":"这是模型回答。"' in logs
+        await service.shutdown()
+
+    asyncio.run(scenario())
 
 
 def test_runtime_options_enable_agent_by_default() -> None:
@@ -232,7 +269,8 @@ def test_sensitive_tool_values_are_removed_from_history_transcript_and_reply(
     tmp_path: Path,
 ):
     async def scenario():
-        service, _, _ = _service(tmp_path)
+        logger = RecordingLogger()
+        service, _, _ = _service(tmp_path, logger=logger)
         actions = FakeActions()
         secret = "group-chat-password-123"
         event = _event(f"~请代填密码 {secret}")
@@ -269,6 +307,9 @@ def test_sensitive_tool_values_are_removed_from_history_transcript_and_reply(
         )
         sent = "\n".join(str(message) for _, message in actions.sent)
         assert secret not in sent
+        logs = "\n".join(logger.messages)
+        assert secret not in logs
+        assert "[REDACTED]" in logs
         await service.shutdown()
 
     asyncio.run(scenario())

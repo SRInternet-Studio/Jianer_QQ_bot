@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from plugins.JianerAI.observability import (
+    format_log_data,
+    safe_log_info,
+    sanitize_log_data,
+)
 from plugins.JianerAI.providers import (
     ChatRequest,
     FunctionTool,
@@ -50,6 +56,7 @@ class AgentRunner:
         *,
         options: AgentOptions = AgentOptions(),
         allowed_tool_names: frozenset[str] | None = None,
+        logger: Any | None = None,
     ) -> None:
         self.providers = providers
         self.tools = tools
@@ -63,6 +70,7 @@ class AgentRunner:
                 if str(item).strip()
             )
         )
+        self._logger = logger
 
     async def run(
         self,
@@ -134,13 +142,27 @@ class AgentRunner:
                             arguments=item.arguments,
                         )
                         if call.id in seen_call_ids:
-                            results_by_index[index] = limit_result(
+                            result = limit_result(
                                 call, code="duplicate_tool_call_id"
+                            )
+                            results_by_index[index] = result
+                            self._log_tool_result(
+                                call,
+                                result,
+                                context,
+                                executed=False,
                             )
                             continue
                         seen_call_ids.add(call.id)
                         if used_calls >= self.options.max_tool_calls:
-                            results_by_index[index] = limit_result(call)
+                            result = limit_result(call)
+                            results_by_index[index] = result
+                            self._log_tool_result(
+                                call,
+                                result,
+                                context,
+                                executed=False,
+                            )
                             continue
                         used_calls += 1
                         calls.append((index, call))
@@ -181,8 +203,135 @@ class AgentRunner:
 
         async def execute(call: ToolCall):
             async with semaphore:
-                return await self.tools.execute(call, context)
+                self._log_tool_start(call, context)
+                started_at = time.perf_counter()
+                try:
+                    result = await self.tools.execute(call, context)
+                except asyncio.CancelledError:
+                    self._log_tool_terminal_error(
+                        call,
+                        context,
+                        started_at,
+                        status="cancelled",
+                    )
+                    raise
+                except Exception:
+                    self._log_tool_terminal_error(
+                        call,
+                        context,
+                        started_at,
+                        status="unexpected_error",
+                    )
+                    raise
+                self._log_tool_result(
+                    call,
+                    result,
+                    context,
+                    executed=True,
+                    started_at=started_at,
+                )
+                return result
 
         if not calls:
             return ()
         return tuple(await asyncio.gather(*(execute(call) for call in calls)))
+
+    def _log_tool_start(self, call: ToolCall, context: ToolContext) -> None:
+        safe_log_info(
+            self._logger,
+            "JianerAI tool call 开始 | "
+            + format_log_data(self._tool_log_context(call, context)),
+        )
+
+    def _log_tool_result(
+        self,
+        call: ToolCall,
+        result: Any,
+        context: ToolContext,
+        *,
+        executed: bool,
+        started_at: float | None = None,
+    ) -> None:
+        payload = self._tool_log_context(call, context)
+        payload.update(
+            {
+                "executed": bool(executed),
+                "ok": bool(getattr(result, "ok", False)),
+                "error_code": getattr(result, "error_code", None),
+                "arguments": sanitize_log_data(
+                    call.arguments,
+                    sensitive_values=context.sensitive_values,
+                    tool_name=call.name,
+                ),
+                "result": sanitize_log_data(
+                    getattr(result, "content", ""),
+                    sensitive_values=context.sensitive_values,
+                    tool_name=call.name,
+                ),
+            }
+        )
+        if started_at is not None:
+            payload["duration_ms"] = round(
+                (time.perf_counter() - started_at) * 1000,
+                2,
+            )
+        phase = "完成" if executed else "拒绝"
+        safe_log_info(
+            self._logger,
+            f"JianerAI tool call {phase} | "
+            + format_log_data(
+                payload,
+                sensitive_values=context.sensitive_values,
+                tool_name=call.name,
+            ),
+        )
+
+    def _log_tool_terminal_error(
+        self,
+        call: ToolCall,
+        context: ToolContext,
+        started_at: float,
+        *,
+        status: str,
+    ) -> None:
+        payload = self._tool_log_context(call, context)
+        payload.update(
+            {
+                "status": status,
+                "arguments": sanitize_log_data(
+                    call.arguments,
+                    sensitive_values=context.sensitive_values,
+                    tool_name=call.name,
+                ),
+                "duration_ms": round(
+                    (time.perf_counter() - started_at) * 1000,
+                    2,
+                ),
+            }
+        )
+        safe_log_info(
+            self._logger,
+            "JianerAI tool call 异常 | "
+            + format_log_data(
+                payload,
+                sensitive_values=context.sensitive_values,
+                tool_name=call.name,
+            ),
+        )
+
+    @staticmethod
+    def _tool_log_context(
+        call: ToolCall,
+        context: ToolContext,
+    ) -> dict[str, Any]:
+        conversation = context.conversation
+        return {
+            "call_id": str(call.id),
+            "tool": str(call.name),
+            "protocol": str(conversation.protocol),
+            "self_id": str(conversation.self_id),
+            "conversation_kind": str(conversation.kind.value),
+            "conversation_id": str(conversation.conversation_id),
+            "preset": str(conversation.preset),
+            "user_id": str(getattr(context.event, "user_id", "")),
+        }

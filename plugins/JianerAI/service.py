@@ -28,6 +28,7 @@ from jianer.adapters import (
 
 from plugins.JianerAI.agent import AgentError, AgentOptions, AgentRunner
 from plugins.JianerAI.memory import JianerMemoryStore
+from plugins.JianerAI.observability import format_log_data, safe_log_info
 from plugins.JianerAI.presets import (
     Preset,
     PresetError,
@@ -287,6 +288,7 @@ class JianerAIService:
     ) -> None:
         self.options = options
         self.runtime = runtime if runtime is not None else {}
+        self._logger = self.runtime.get("logger") or _LOGGER
         self.providers = providers or ProviderRegistry(
             options.project_root / "aiconfig"
         )
@@ -328,7 +330,7 @@ class JianerAIService:
                 ),
                 include_web_browser=options.agent_browser_enabled,
                 project_root=options.project_root,
-                logger=self.runtime.get("logger") or _LOGGER,
+                logger=self._logger,
             )
         self.agent = AgentRunner(
             self.providers,
@@ -339,6 +341,7 @@ class JianerAIService:
                 total_timeout_seconds=options.agent_total_timeout_seconds,
             ),
             allowed_tool_names=options.agent_allowed_tools,
+            logger=self._logger,
         )
         self._active_presets: dict[ConversationBase, str] = {}
         self._models: dict[ConversationKey, str] = {}
@@ -355,7 +358,6 @@ class JianerAIService:
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
         self._start_lock = asyncio.Lock()
-        self._logger = self.runtime.get("logger") or _LOGGER
 
     @classmethod
     def from_runtime(cls, runtime: Mapping[str, Any]) -> "JianerAIService":
@@ -1096,6 +1098,23 @@ class JianerAIService:
             )
         await memory_guard.acquire()
         self._set_generating(True)
+        dialogue_started_at = time.perf_counter()
+        dialogue_context = {
+            "model": model,
+            "agent_enabled": bool(agent_enabled),
+            "protocol": key.protocol,
+            "self_id": key.self_id,
+            "conversation_kind": key.kind.value,
+            "conversation_id": key.conversation_id,
+            "preset": key.preset,
+            "user_id": str(getattr(event, "user_id", "")),
+            "history_messages": len(history),
+            "attachments": len(attachments),
+            "prompt_chars": len(final_prompt),
+        }
+        self._log_info(
+            "JianerAI AI对话开始 | " + format_log_data(dialogue_context)
+        )
         try:
             answer = await self.agent.run(
                 model=model,
@@ -1106,7 +1125,14 @@ class JianerAIService:
                 context=tool_context,
                 enabled=agent_enabled,
             )
-        except AgentError:
+        except AgentError as exc:
+            self._log_ai_dialogue_failure(
+                dialogue_context,
+                final_prompt,
+                sensitive_values,
+                dialogue_started_at,
+                error_code=exc.code,
+            )
             self._log_exception("JianerAI agent execution failed")
             await self._send_text(
                 event,
@@ -1116,6 +1142,13 @@ class JianerAIService:
             )
             return
         except ProviderError:
+            self._log_ai_dialogue_failure(
+                dialogue_context,
+                final_prompt,
+                sensitive_values,
+                dialogue_started_at,
+                error_code="provider_error",
+            )
             self._log_exception("JianerAI provider request failed")
             await self._send_text(
                 event,
@@ -1125,6 +1158,13 @@ class JianerAIService:
             )
             return
         except Exception:
+            self._log_ai_dialogue_failure(
+                dialogue_context,
+                final_prompt,
+                sensitive_values,
+                dialogue_started_at,
+                error_code="unexpected_error",
+            )
             self._log_exception("JianerAI unexpected generation failure")
             await self._send_text(
                 event,
@@ -1151,6 +1191,25 @@ class JianerAIService:
                 sensitive_values,
             )
             answer = self._redact_sensitive_text(answer, sensitive_values)
+
+        completed_context = dict(dialogue_context)
+        completed_context.update(
+            {
+                "prompt": final_prompt,
+                "answer": answer,
+                "duration_ms": round(
+                    (time.perf_counter() - dialogue_started_at) * 1000,
+                    2,
+                ),
+            }
+        )
+        self._log_info(
+            "JianerAI AI对话完成 | "
+            + format_log_data(
+                completed_context,
+                sensitive_values=sensitive_values,
+            )
+        )
 
         with self._state_lock:
             history_list = self._histories.setdefault(key, [])
@@ -2285,6 +2344,37 @@ class JianerAIService:
             method(message)
         else:
             _LOGGER.exception(message)
+
+    def _log_info(self, message: str) -> None:
+        safe_log_info(self._logger, message)
+
+    def _log_ai_dialogue_failure(
+        self,
+        context: Mapping[str, Any],
+        prompt: str,
+        sensitive_values: set[str],
+        started_at: float,
+        *,
+        error_code: str,
+    ) -> None:
+        payload = dict(context)
+        payload.update(
+            {
+                "prompt": prompt,
+                "error_code": str(error_code),
+                "duration_ms": round(
+                    (time.perf_counter() - started_at) * 1000,
+                    2,
+                ),
+            }
+        )
+        self._log_info(
+            "JianerAI AI对话失败 | "
+            + format_log_data(
+                payload,
+                sensitive_values=sensitive_values,
+            )
+        )
 
 
 def _runtime_bool(value: Any, *, default: bool) -> bool:

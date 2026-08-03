@@ -73,6 +73,14 @@ class FakeActions:
         )
 
 
+class RecordingLogger:
+    def __init__(self):
+        self.messages = []
+
+    def info(self, message):
+        self.messages.append(str(message))
+
+
 def _context(protocol="onebot"):
     actions = FakeActions()
     actions.protocol = protocol
@@ -336,7 +344,8 @@ def test_agent_runner_executes_native_tool_loop_and_keeps_structured_turns():
         registry = ToolRegistry()
         register_builtin_tools(registry)
         context, _, _ = _context()
-        runner = AgentRunner(provider, registry)
+        logger = RecordingLogger()
+        runner = AgentRunner(provider, registry, logger=logger)
 
         answer = await runner.run(
             model="model-a",
@@ -356,6 +365,83 @@ def test_agent_runner_executes_native_tool_loop_and_keeps_structured_turns():
         assert isinstance(tool_result, ToolResultTurn)
         assert json.loads(tool_result.content)["data"]["result"] == 42
         assert provider.chat_calls == []
+        logs = "\n".join(logger.messages)
+        assert "JianerAI tool call 开始" in logs
+        assert "JianerAI tool call 完成" in logs
+        assert '"tool":"calculate_expression"' in logs
+        assert '"expression":"6*7"' in logs
+        assert '"result":42' in logs
+
+    asyncio.run(scenario())
+
+
+def test_agent_tool_logs_redact_browser_fill_values():
+    secret = "browser-password-123"
+
+    class BrowserProvider(SequenceProvider):
+        async def complete_request(self, model, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                call = ProviderToolCall(
+                    "browser-1",
+                    "web_browser",
+                    {
+                        "action": "fill",
+                        "element_ref": "e1",
+                        "value": secret,
+                    },
+                )
+                return ProviderResponse(
+                    "",
+                    (call,),
+                    AssistantTurn(tool_calls=(call,)),
+                )
+            return ProviderResponse("done", (), AssistantTurn(text="done"))
+
+    async def scenario():
+        provider = BrowserProvider()
+        registry = ToolRegistry(
+            allowed_risks=frozenset({ToolRisk.PRIVILEGED})
+        )
+
+        async def fill(context, arguments):
+            context.sensitive_values.add(str(arguments["value"]))
+            return {"filled": arguments["value"]}
+
+        registry.register(
+            ToolSpec(
+                name="web_browser",
+                description="test browser fill",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "element_ref": {"type": "string"},
+                        "value": {"type": "string"},
+                    },
+                    "required": ["action", "element_ref", "value"],
+                    "additionalProperties": False,
+                },
+                handler=fill,
+                risk=ToolRisk.PRIVILEGED,
+            )
+        )
+        context, _, _ = _context()
+        logger = RecordingLogger()
+        runner = AgentRunner(provider, registry, logger=logger)
+
+        assert await runner.run(
+            model="model-a",
+            message="fill password",
+            history=(),
+            system_prompt="",
+            attachments=(),
+            context=context,
+            enabled=True,
+        ) == "done"
+        logs = "\n".join(logger.messages)
+        assert secret not in logs
+        assert "[REDACTED]" in logs
 
     asyncio.run(scenario())
 
