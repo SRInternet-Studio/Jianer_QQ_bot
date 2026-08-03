@@ -1250,7 +1250,7 @@ class JianerAIService:
             self.suffixes.apply_ai_reply, answer, canonical
         )
         processed = self._plain_text_reply(processed)
-        await self._send_text(event, actions, processed, reply=True)
+        await self._send_ai_text(event, actions, processed, reply=True)
         if self._tts_for(key):
             await self._send_speech(event, actions, answer)
 
@@ -1367,8 +1367,47 @@ class JianerAIService:
         *,
         reply: bool,
     ) -> None:
-        target = self._target_kwargs(event)
         parts = self._split_reply(str(text or "（无可用回复）"))
+        await self._send_text_parts(
+            event,
+            actions,
+            parts,
+            reply=reply,
+        )
+
+    async def _send_ai_text(
+        self,
+        event: Any,
+        actions: Any,
+        text: str,
+        *,
+        reply: bool,
+    ) -> None:
+        normalized = str(text or "（无可用回复）").rstrip()
+        parts = [
+            paragraph.rstrip()
+            for paragraph in re.split(
+                r"\n(?:[ \t]*\n)+",
+                normalized,
+            )
+            if paragraph.strip()
+        ]
+        await self._send_text_parts(
+            event,
+            actions,
+            parts or ["（无可用回复）"],
+            reply=reply,
+        )
+
+    async def _send_text_parts(
+        self,
+        event: Any,
+        actions: Any,
+        parts: Sequence[str],
+        *,
+        reply: bool,
+    ) -> None:
+        target = self._target_kwargs(event)
         capabilities = frozenset(getattr(actions, "capabilities", ()))
         for index, part in enumerate(parts):
             segments: list[Any] = []
@@ -2397,7 +2436,7 @@ class JianerAIService:
         text = re.sub(r"</?[A-Za-z][^>]*>", "", text)
         text = re.sub(r"[ \t]+\n", "\n", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip() or "（无可用回复）"
+        return text.rstrip() or "（无可用回复）"
 
     @staticmethod
     def _parse_interval(value: str) -> int:

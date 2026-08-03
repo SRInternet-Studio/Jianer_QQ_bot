@@ -944,10 +944,79 @@ def test_ai_reply_markdown_is_normalized_before_history_suffix_and_send(tmp_path
             "role": "assistant",
             "content": expected,
         }
-        sent_text = str(actions.sent[-1][1])
-        assert expected in sent_text
+        sent_texts = [
+            "".join(
+                str(getattr(segment, "text", ""))
+                for segment in message
+                if isinstance(segment, Segments.Text)
+            )
+            for _, message in actions.sent
+        ]
+        assert sent_texts == [
+            "天气",
+            "多云\n和风天气（https://www.qweather.com）\n请带伞",
+        ]
+        sent_text = "\n\n".join(sent_texts)
+        assert sent_text == expected
         for marker in ("# ", "- ", "**", "```", "]("):
             assert marker not in sent_text
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_ai_reply_sends_every_paragraph_separately_without_forwarding(
+    tmp_path: Path,
+):
+    class ParagraphActions(FakeActions):
+        def __init__(self):
+            super().__init__({Capability.SEND_REPLY})
+            self.forward_calls = []
+
+        async def send_group_forward_msg(self, **kwargs):
+            self.forward_calls.append(kwargs)
+
+        async def send_forward_msg(self, **kwargs):
+            self.forward_calls.append(kwargs)
+
+    async def scenario():
+        answer = (
+            "第一段第一行\n第一段第二行   \n\n"
+            "第二段\n\n第三段\n\n第四段\n\n第五段   \n\n"
+        )
+        service, _, _ = _service(tmp_path, answer=answer)
+        event = _at_event("请分段回答")
+        actions = ParagraphActions()
+
+        assert await service.handle_fallback(event, actions)
+        assert len(actions.sent) == 5
+        text_parts = [
+            [
+                str(getattr(segment, "text", ""))
+                for segment in message
+                if isinstance(segment, Segments.Text)
+            ]
+            for _, message in actions.sent
+        ]
+        assert text_parts == [
+            ["第一段第一行\n第一段第二行"],
+            ["第二段"],
+            ["第三段"],
+            ["第四段"],
+            ["第五段"],
+        ]
+        assert any(
+            isinstance(segment, Segments.Reply)
+            for segment in actions.sent[0][1]
+        )
+        assert all(
+            not any(
+                isinstance(segment, Segments.Reply)
+                for segment in message
+            )
+            for _, message in actions.sent[1:]
+        )
+        assert actions.forward_calls == []
         await service.shutdown()
 
     asyncio.run(scenario())
