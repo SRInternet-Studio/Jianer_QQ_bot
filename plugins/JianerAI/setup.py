@@ -13,7 +13,7 @@ __plugin_meta__ = PluginMetadata(
     name="jianerbot-plugin-jianer-ai",
     description="Jianer AI agent, tools, dialogue, personas, speech, suffixes, and memory.",
     usage=(
-        "{reminder}[问题] —> 群聊 AI 对话；私聊直接发送问题\n"
+        "@机器人 [问题] —> 群聊 AI 对话（裸 At 也会回应）；私聊直接发送问题\n"
         "{reminder}ai管理菜单 / {reminder}切换AI [代码] —> 管理当前会话模型\n"
         "{reminder}角色扮演 / {reminder}切换角色 [名称] —> 管理当前会话角色\n"
         "{reminder}添加预设 / {reminder}删除预设 —> 管理角色预设\n"

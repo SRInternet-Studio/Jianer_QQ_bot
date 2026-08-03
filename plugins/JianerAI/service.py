@@ -59,7 +59,6 @@ from plugins.JianerAI.tools.web_browser import BrowserOptions
 
 
 _LOGGER = logging.getLogger("jianer_ai")
-_QQ_PROTOCOLS = frozenset({"onebot", "onebot11", "milky", "kritor", "qq"})
 _TRUE_WORDS = frozenset({"1", "true", "on", "yes", "开启", "打开", "开"})
 _FALSE_WORDS = frozenset({"0", "false", "off", "no", "关闭", "关"})
 _STATUS_WORDS = frozenset({"status", "状态"})
@@ -82,6 +81,7 @@ _AGENT_SYSTEM_RULES = (
     "显示‘天气服务由和风天气驱动’并链接 https://www.qweather.com；天气预警和空气质量"
     "还必须原样显示工具 provider.upstream_attributions 中要求展示的上游归因。"
 )
+_BARE_MENTION_PROMPT = "用户在群聊中只@了你，请自然地回应对方。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,21 +402,21 @@ class JianerAIService:
         base = self._conversation_base(event, actions)
         raw_text = self._event_text(event)
         is_group = base.kind is ConversationKind.GROUP
-        protocol = base.protocol
-
-        if is_group and protocol in _QQ_PROTOCOLS and self._mentions_self(event):
-            return False
 
         prompt = raw_text.strip()
         if is_group:
-            has_prefix = prompt.startswith(self.options.reminder)
-            feishu_mention = protocol == "feishu" and bool(
+            segment_mention = self._mentions_self(event)
+            is_mentioned = segment_mention or bool(
                 getattr(event, "is_mentioned", False)
             )
-            if not has_prefix and not feishu_mention:
+            if not is_mentioned:
                 return False
-            if has_prefix:
+            if segment_mention:
+                prompt = self._message_text_without_mentions(event)
+            if prompt.startswith(self.options.reminder):
                 prompt = prompt[len(self.options.reminder) :].strip()
+            if not prompt and not self._has_media(event):
+                prompt = _BARE_MENTION_PROMPT
             if await self.reject_blocked_group(event, actions):
                 return True
 
@@ -431,8 +431,6 @@ class JianerAIService:
                     event, actions, base, matched_preset
                 )
 
-        if is_group and len(prompt) < 2 and not self._has_media(event):
-            return False
         if not is_group and not prompt and not self._has_media(event):
             return False
 
@@ -2287,6 +2285,16 @@ class JianerAIService:
             and str(getattr(item, "qq", "")) == self_id
             for item in (getattr(event, "message", ()) or ())
         )
+
+    @staticmethod
+    def _message_text_without_mentions(event: Any) -> str:
+        parts = [
+            str(getattr(item, "text", item)).strip()
+            for item in (getattr(event, "message", ()) or ())
+            if isinstance(item, Segments.Text)
+            and str(getattr(item, "text", item)).strip()
+        ]
+        return " ".join(parts)
 
     def _split_reply(self, text: str) -> list[str]:
         max_chars = self.options.max_reply_chars

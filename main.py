@@ -491,6 +491,15 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
             if await execute_plugins(event, actions, message_text=user_message):
                 return
 
+        # 群聊中明确 At 机器人时，普通命令优先，未匹配则只进入 AI fallback。
+        if qq_mentioned_me or feishu_mention_like:
+            await execute_plugin_fallback(
+                event,
+                actions,
+                message_text=user_message,
+            )
+            return
+
         event_user = await get_user_nickname(
             event.user_id, Manager, actions, sender=getattr(event, "sender", None)
         )
@@ -506,23 +515,6 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
                 else "ORDER"
             )
             logger.debug(f"({event_user}) {log_label}: {repr(order)}")
-
-        # 普通插件未处理后，宿主才处理裸 @ 帮助与轻量消息行为。
-        if qq_mentioned_me:
-            _has_text = any(
-                isinstance(_seg, Segments.Text) and str(_seg).strip()
-                for _seg in event.message
-            )
-            if not _has_text:
-                content = help_message(event)
-                if content:
-                    await send_help_visual(
-                        actions=actions,
-                        event=event,
-                        content=content,
-                        reply_message_id=event.message_id,
-                    )
-                return
 
         if host_message == "ping":
             logger.debug(str(event.user_id))
@@ -705,24 +697,6 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
                 content = help_message(event)
             await send_help_visual(actions=actions, event=event, content=content)
 
-        elif feishu_mode and feishu_mention_like and not order:
-            has_valid_content = False
-            for item in event.message[1:]:
-                if isinstance(item, Segments.Text):
-                    if normalize_group_message_text(event, str(item)).strip():
-                        has_valid_content = True
-                        break
-                else:
-                    has_valid_content = True
-
-            content = help_message(event) if not has_valid_content else f'''你要询问什么呢？嘻嘻(●'◡'●)
-和我聊天不需要@我哟(＾Ｕ＾)ノ~
-直接在你想对{bot_name}想说的话前面加上 {reminder} 就行啦'''
-            if not has_valid_content:
-                await send_help_visual(actions=actions, event=event, content=content, reply_message_id=event.message_id)
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(event.message_id), Segments.Text(content)))
-
         elif "关于" == order:
             await _bot_group_commands.cmd_about(actions, Manager, Segments, event, bot_name, bot_name_en, ONE_SLOGAN, version_name)
 
@@ -805,9 +779,6 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
         elif f"分配头衔 " in order:
             await _bot_misc_commands.cmd_assign_title_self(actions, Manager, Segments, event, order, SUPERS, self_service_titles)
         else:
-            # QQ 群聊只接受前缀触发 AI，@机器人加文本不能转入 fallback。
-            if qq_mentioned_me:
-                return
             await execute_plugin_fallback(
                 event,
                 actions,

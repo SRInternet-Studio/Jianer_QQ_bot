@@ -208,7 +208,7 @@ def test_ai_dialogue_logs_prompt_answer_scope_and_model(tmp_path: Path):
             answer="这是模型回答。",
             logger=logger,
         )
-        event = _event("~你好，简儿")
+        event = _at_event("你好，简儿")
         assert await service.handle_fallback(event, FakeActions()) is True
 
         logs = "\n".join(logger.messages)
@@ -265,6 +265,20 @@ def _event(
     return SimpleNamespace(**values)
 
 
+def _at_event(text: str = "", *, extra_segments=(), **kwargs):
+    self_id = str(kwargs.get("self_id", "bot-1"))
+    segments = [Segments.At(self_id)]
+    if text:
+        segments.append(Segments.Text(text))
+    segments.extend(extra_segments)
+    return _event(
+        text,
+        message=Manager.Message(*segments),
+        mentioned=True,
+        **kwargs,
+    )
+
+
 def test_sensitive_tool_values_are_removed_from_history_transcript_and_reply(
     tmp_path: Path,
 ):
@@ -273,7 +287,7 @@ def test_sensitive_tool_values_are_removed_from_history_transcript_and_reply(
         service, _, _ = _service(tmp_path, logger=logger)
         actions = FakeActions()
         secret = "group-chat-password-123"
-        event = _event(f"~请代填密码 {secret}")
+        event = _at_event(f"请代填密码 {secret}")
 
         class SensitiveAgent:
             async def run(self, **kwargs):
@@ -393,26 +407,22 @@ def test_private_sessions_are_separate_and_model_switch_clears_only_current(
     asyncio.run(scenario())
 
 
-def test_group_fallback_requires_prefix_and_qq_at_never_triggers_ai(
+def test_group_fallback_requires_at_and_bare_at_triggers_ai(
     tmp_path: Path,
 ):
     async def scenario():
         service, providers, _ = _service(tmp_path)
         actions = FakeActions({Capability.SEND_REPLY})
         assert not await service.handle_fallback(_event("你好"), actions)
+        assert not await service.handle_fallback(_event("~你好"), actions)
 
-        at_message = Manager.Message(
-            Segments.At("bot-1"),
-            Segments.Text(" ~你好"),
-        )
-        assert not await service.handle_fallback(
-            _event("~你好", message=at_message),
-            actions,
-        )
-        assert providers.calls == []
-
-        assert await service.handle_fallback(_event("~你好"), actions)
+        assert await service.handle_fallback(_at_event("~你好"), actions)
         assert providers.calls[-1]["message"] == "你好"
+
+        assert await service.handle_fallback(_at_event(), actions)
+        assert providers.calls[-1]["message"] == (
+            "用户在群聊中只@了你，请自然地回应对方。"
+        )
         await service.shutdown()
 
     asyncio.run(scenario())
@@ -425,7 +435,7 @@ def test_blocked_group_rejects_ai_fallback_and_commands(tmp_path: Path):
             blocked_group_ids={"100"},
         )
         actions = FakeActions(capabilities={Capability.SEND_REPLY})
-        event = _event("~你好")
+        event = _at_event("你好")
 
         await service.observe(event, actions)
         assert service.memory.count_transcripts(
@@ -467,6 +477,21 @@ def test_feishu_mention_and_private_messages_use_ai_without_native_media(
         assert await service.handle_fallback(feishu_event, feishu_actions)
         assert providers.calls[-1]["attachments"] == ()
 
+        bare_feishu_event = _event(
+            "",
+            protocol="feishu",
+            group_id="oc-group",
+            user_id="ou-user",
+            mentioned=True,
+        )
+        assert await service.handle_fallback(
+            bare_feishu_event,
+            feishu_actions,
+        )
+        assert providers.calls[-1]["message"] == (
+            "用户在群聊中只@了你，请自然地回应对方。"
+        )
+
         private_actions = FakeActions()
         assert await service.handle_fallback(
             _event("直接私聊", group_id=None),
@@ -504,10 +529,6 @@ def test_group_tts_defaults_on_and_resolved_media_bytes_reach_provider(
 ):
     async def scenario():
         service, providers, speech = _service(tmp_path)
-        message = Manager.Message(
-            Segments.Text("~看图"),
-            Segments.Image("https://cdn.example.test/image.png"),
-        )
         actions = FakeActions(
             {
                 Capability.SEND_REPLY,
@@ -515,7 +536,12 @@ def test_group_tts_defaults_on_and_resolved_media_bytes_reach_provider(
                 Capability.RESOLVE_MEDIA,
             }
         )
-        event = _event("~看图", message=message)
+        event = _at_event(
+            "看图",
+            extra_segments=(
+                Segments.Image("https://cdn.example.test/image.png"),
+            ),
+        )
 
         assert await service.handle_fallback(event, actions)
         assert len(providers.calls[-1]["attachments"]) == 1
@@ -814,7 +840,7 @@ def test_service_agent_keeps_tool_turns_out_of_history_suffix_and_tts(
         service.providers = providers
         service.agent.providers = providers
         service.suffixes.set_global("喵")
-        event = _event("~计算")
+        event = _at_event("计算")
         actions = FakeActions(
             {Capability.SEND_REPLY, Capability.SEND_AUDIO}
         )
