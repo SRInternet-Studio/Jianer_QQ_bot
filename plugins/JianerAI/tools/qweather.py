@@ -482,7 +482,8 @@ def qweather_tools(
                 description=(
                     f"{_DESCRIPTIONS[tool_name]} operation 必须为："
                     + "、".join(operations)
-                    + "。返回结果必须显示和风天气归因。"
+                    + "。取得结果后优先调用 render_information_card 的 render_weather，"
+                    "把天气详情和必须展示的归因放入图片。"
                 ),
                 input_schema=_tool_schema(tool_name, operations),
                 handler=handler,

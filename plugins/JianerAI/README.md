@@ -107,12 +107,29 @@ Function Calling；兼容端点明确拒绝 tools 参数时，本 generation 会
 ## Agent 工具
 
 内置工具包括当前时间、安全算术、当前发言人资料、当前会话资料、当前 canonical
-用户 + preset 的长期记忆、只返回标题/URL/摘要的 `web_search`，以及只读的
-`github_repository`，以及可查看和操作网页的高权限 `web_browser`。首版不向模型
+用户 + preset 的长期记忆、只返回标题/URL/摘要的 `web_search`、只读的
+`github_repository`、通用制图 `render_information_card`，以及可查看和操作网页的高权限
+`web_browser`。首版不向模型
 开放 shell、本地文件系统、原始 WebSocket、文件上传下载、消息管理或记忆删除能力。外部工具结果作为不可信数据处理；工具
 中间结果不会写入短期历史、TTS 或长期记忆，只有最终 AI 文本会进入原有回复链。
 调用搜索、GitHub 或网页工具本身不代表用户要求查看来源；默认回答不展示来源或 URL，只有用户在
 当前请求中明确要求来源、出处、引用、链接或参考资料时，才附上实际使用的完整 URL。
+所有场景的最终 AI 文字都会按纯文本输出，不使用 Markdown 或 HTML；制图工具内部使用的
+HTML 只用于生成图片，不会作为聊天正文发送。
+
+### 通用制图
+
+`render_information_card` 只在适配器声明 `SEND_IMAGE` 能力时提供，包含两个 operation：
+
+- `render_html`：模型自行生成 HTML/CSS/内联 SVG，适合通用信息卡、图表、表格、流程和
+  时间线。渲染环境禁用 JavaScript、网络请求、本地文件、事件属性、下载和外部资源。
+- `render_weather`：使用固定天气卡片模板，输入标题、重点指标、分区内容和上游来源；模板
+  自动显示“天气服务由和风天气驱动 · www.qweather.com”。
+
+工具会在当前群聊或私聊直接发送 PNG，随后模型只用纯文本概括。它属于
+`ToolRisk.PRESENTATION`，只允许向当前会话发送刚生成的临时图片，临时文件在发送后删除；
+HTML 正文不会写入工具日志。若配置了 `agent_allowed_tools`，需要显式加入
+`render_information_card`。Docker 镜像安装 Noto CJK 字体；Windows 使用系统中文字体。
 
 网页写请求的审计不会记录 Cookie、请求头、请求体、输入值或查询参数。填写密码框或
 显式传入 `sensitive=true` 时，值会从工具结果、短期历史、SQLite 原始转录和后续
@@ -160,14 +177,15 @@ PKCS#8 PEM 格式的 Ed25519 私钥。相对私钥路径从仓库根目录解析
 
 参数统一使用 snake_case，所有调用必须传 `operation`。列表响应支持本地 `offset`（默认 0）
 和 `limit`（默认及最大 50）分页，单次结果上限为 64 KiB。若设置了
-`agent_allowed_tools`，需要显式加入要开放的上述 Tool 名称。
+`agent_allowed_tools`，需要显式加入要开放的上述 Tool 名称以及
+`render_information_card`，否则天气数据只能退回纯文本展示。
 
 实现范围以当前[官方 API 目录](https://dev.qweather.com/docs/api/)为准：Weather 使用坐标型
 v1 接口，不包含已标记弃用的三个城市天气 v7 接口，也不包含控制台 API；分钟预报、指数、
 时光机、热带气旋、潮汐和天文等尚无替代的现行 v7 接口继续提供。鉴权遵循
 [JWT 规范](https://dev.qweather.com/docs/configuration/authentication/)。凡使用这些 Tool 的结果，
-回复必须显示“天气服务由和风天气驱动”并链接和风天气；天气预警和空气质量还必须显示响应中
-的上游归因。
+模型会优先调用固定天气卡片，把和风天气标识、官网以及天气预警/空气质量响应中的上游归因
+放入图片，聊天正文只保留纯文本天气概括。制图工具不可用或渲染失败时，归因才退回纯文本。
 
 ## 记忆与身份
 

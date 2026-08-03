@@ -10,7 +10,10 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 
 RUN python -m pip install --no-cache-dir -r requirements.txt --disable-pip-version-check --no-warn-script-location \
-    && python -m playwright install --with-deps chromium
+    && python -m playwright install --with-deps chromium \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . /app
 

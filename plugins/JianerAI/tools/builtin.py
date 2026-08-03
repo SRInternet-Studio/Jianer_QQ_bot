@@ -12,6 +12,7 @@ from typing import Any
 
 from plugins.JianerAI.tools.contracts import ToolContext, ToolSpec
 from plugins.JianerAI.tools.github_repository import github_repository_tool
+from plugins.JianerAI.tools.html_card import html_card_tool
 from plugins.JianerAI.tools.qweather import register_qweather_tools
 from plugins.JianerAI.tools.registry import ToolRegistry
 from plugins.JianerAI.tools.web_browser import (
@@ -44,6 +45,7 @@ def register_builtin_tools(
 ) -> None:
     registry.register(web_search_tool())
     registry.register(github_repository_tool())
+    registry.register(html_card_tool())
     if include_web_browser:
         registry.register(web_browser_tool(browser_options))
     registry.register(

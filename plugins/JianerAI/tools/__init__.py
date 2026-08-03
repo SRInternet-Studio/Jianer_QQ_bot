@@ -16,6 +16,11 @@ from plugins.JianerAI.tools.qweather import (
     qweather_tools,
     register_qweather_tools,
 )
+from plugins.JianerAI.tools.html_card import (
+    HtmlCardRenderer,
+    RenderedCard,
+    html_card_tool,
+)
 from plugins.JianerAI.tools.web_browser import (
     BrowserManager,
     BrowserOptions,
@@ -34,10 +39,13 @@ __all__ = [
     "ToolSpec",
     "BrowserManager",
     "BrowserOptions",
+    "HtmlCardRenderer",
+    "RenderedCard",
     "QWeatherClient",
     "QWeatherConfig",
     "QWeatherConfigError",
     "duplicate_call_result",
+    "html_card_tool",
     "register_builtin_tools",
     "register_qweather_tools",
     "qweather_tools",

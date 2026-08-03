@@ -14,6 +14,7 @@ _TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 class ToolRisk(str, Enum):
     READ_ONLY = "read_only"
+    PRESENTATION = "presentation"
     MUTATING = "mutating"
     PRIVILEGED = "privileged"
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -93,6 +94,10 @@ def _sanitize(value: Any, *, secrets: tuple[str, ...], tool_name: str) -> Any:
             and "value" in source
         ):
             source["value"] = _REDACTED
+        if tool_name == "render_information_card" and "html" in source:
+            raw_html = str(source.get("html") or "")
+            digest = hashlib.sha256(raw_html.encode("utf-8")).hexdigest()[:12]
+            source["html"] = f"<html:{len(raw_html)} chars sha256:{digest}>"
         output: dict[str, Any] = {}
         for key, item in source.items():
             key_text = str(key)

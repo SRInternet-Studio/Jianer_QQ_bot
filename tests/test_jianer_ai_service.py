@@ -864,6 +864,8 @@ def test_service_agent_keeps_tool_turns_out_of_history_suffix_and_tts(
         assert "否则最终回答不得展示、列出或附带信息来源及 URL" in system_prompt
         assert "调用 web_search 本身不代表用户要求展示来源" in system_prompt
         assert "用户明确要求来源时" in system_prompt
+        assert "所有最终回答必须使用纯文本" in system_prompt
+        assert "不得使用 Markdown 或 HTML" in system_prompt
         assert isinstance(providers.requests[1].turns[0], AssistantTurn)
         tool_result = providers.requests[1].turns[1]
         assert isinstance(tool_result, ToolResultTurn)
@@ -907,6 +909,7 @@ def test_agent_command_persists_session_override_and_disabled_mode_uses_chat(
         assert providers.requests == []
         assert len(providers.chat_calls) == 1
         assert "工具：无\n无" in providers.chat_calls[0]["system_prompt"]
+        assert "所有最终回答必须使用纯文本" in providers.chat_calls[0]["system_prompt"]
 
         assert await service.configure_agent(event, actions, "自动")
         stored = service.memory.get_session_settings(
@@ -919,6 +922,32 @@ def test_agent_command_persists_session_override_and_disabled_mode_uses_chat(
         assert stored.agent_enabled is None
         assert await service.configure_agent(event, actions, "工具")
         assert "calculate_expression" in str(actions.sent[-1][1])
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_ai_reply_markdown_is_normalized_before_history_suffix_and_send(tmp_path: Path):
+    async def scenario():
+        service, providers, _ = _service(tmp_path)
+        providers.answer = (
+            "# 天气\n\n- **多云**\n- [和风天气](https://www.qweather.com)\n"
+            "```text\n请带伞\n```"
+        )
+        event = _event("天气", group_id=None)
+        actions = FakeActions()
+
+        assert await service.handle_fallback(event, actions)
+        key = await service._conversation_key(event, actions)
+        expected = "天气\n\n多云\n和风天气（https://www.qweather.com）\n请带伞"
+        assert service._histories[key][-1] == {
+            "role": "assistant",
+            "content": expected,
+        }
+        sent_text = str(actions.sent[-1][1])
+        assert expected in sent_text
+        for marker in ("# ", "- ", "**", "```", "]("):
+            assert marker not in sent_text
         await service.shutdown()
 
     asyncio.run(scenario())

@@ -612,9 +612,12 @@ def test_unconfigured_and_invalid_registration_skip_safely(tmp_path: Path, caplo
 
 def test_system_rules_include_mandatory_qweather_attribution_exception():
     assert "qweather_" in _AGENT_SYSTEM_RULES
+    assert "render_information_card" in _AGENT_SYSTEM_RULES
+    assert "render_weather" in _AGENT_SYSTEM_RULES
     assert "天气服务由和风天气驱动" in _AGENT_SYSTEM_RULES
-    assert "https://www.qweather.com" in _AGENT_SYSTEM_RULES
+    assert "www.qweather.com" in _AGENT_SYSTEM_RULES
     assert "upstream_attributions" in _AGENT_SYSTEM_RULES
+    assert "不得再重复归因、来源或 URL" in _AGENT_SYSTEM_RULES
 
 
 def test_agent_allowlist_only_declares_explicit_qweather_tool(tmp_path: Path):
