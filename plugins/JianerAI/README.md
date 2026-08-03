@@ -127,6 +127,49 @@ Function Calling；兼容端点明确拒绝 tools 参数时，本 generation 会
 token 应在依赖插件 shutdown 时传给 `unregister_tool()`；当前策略只会向模型暴露
 允许风险等级且通过 `agent_allowed_tools` 白名单的工具。
 
+## 和风天气 Tools
+
+JianerAI 可按需注册 11 个只读和风天气 Tool，覆盖天气与气候相关的 23 个操作：
+
+| Tool | operation |
+| --- | --- |
+| `qweather_geo` | `city_lookup`、`top_city`、`poi_lookup`、`poi_range` |
+| `qweather_weather` | `current`、`daily`、`hourly` |
+| `qweather_minutely` | `precipitation` |
+| `qweather_warning` | `current` |
+| `qweather_indices` | `forecast` |
+| `qweather_air_quality` | `current`、`hourly`、`daily`、`station` |
+| `qweather_time_machine` | `weather` |
+| `qweather_tropical_cyclone` | `list`、`track`、`forecast` |
+| `qweather_ocean` | `tide` |
+| `qweather_solar_radiation` | `forecast` |
+| `qweather_astronomy` | `sun`、`moon`、`solar_elevation` |
+
+将仓库根目录的 `.env.example` 复制为 `.env`，配置以下四项：
+
+```dotenv
+QWEATHER_API_HOST=your-api-host.qweatherapi.com
+QWEATHER_PROJECT_ID=your-project-id
+QWEATHER_CREDENTIAL_ID=your-credential-id
+QWEATHER_PRIVATE_KEY_PATH=secrets/qweather-ed25519-private.pem
+```
+
+`QWEATHER_API_HOST` 必须是控制台分配的专属 `*.qweatherapi.com` 主机；私钥必须是
+PKCS#8 PEM 格式的 Ed25519 私钥。相对私钥路径从仓库根目录解析。四项完全未配置时不注册
+这些 Tool；只配置一部分或私钥无效时会安全跳过，不影响 JianerAI 的其余功能。系统环境变量
+优先于 `.env`。不要提交 `.env`、PEM 或 key 文件。
+
+参数统一使用 snake_case，所有调用必须传 `operation`。列表响应支持本地 `offset`（默认 0）
+和 `limit`（默认及最大 50）分页，单次结果上限为 64 KiB。若设置了
+`agent_allowed_tools`，需要显式加入要开放的上述 Tool 名称。
+
+实现范围以当前[官方 API 目录](https://dev.qweather.com/docs/api/)为准：Weather 使用坐标型
+v1 接口，不包含已标记弃用的三个城市天气 v7 接口，也不包含控制台 API；分钟预报、指数、
+时光机、热带气旋、潮汐和天文等尚无替代的现行 v7 接口继续提供。鉴权遵循
+[JWT 规范](https://dev.qweather.com/docs/configuration/authentication/)。凡使用这些 Tool 的结果，
+回复必须显示“天气服务由和风天气驱动”并链接和风天气；天气预警和空气质量还必须显示响应中
+的上游归因。
+
 ## 记忆与身份
 
 - OneBot/Milky QQ 身份自动归一到 `qq:<id>`。

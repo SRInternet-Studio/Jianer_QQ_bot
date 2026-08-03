@@ -9,6 +9,8 @@ aiohttp
 psutil
 pillow
 httpx
+PyJWT[crypto]>=2.10,<3
+python-dotenv>=1.0,<2
 flask
 flask-sock
 websocket-client

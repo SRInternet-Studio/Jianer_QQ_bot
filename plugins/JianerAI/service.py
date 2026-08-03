@@ -77,6 +77,9 @@ _AGENT_SYSTEM_RULES = (
     "展示、列出或附带信息来源及 URL；调用 web_search 本身不代表用户要求展示来源。"
     "用户明确要求来源时，只能引用工具实际返回的来源，并附上对应的完整 URL；"
     "搜索摘要不等同于已经核验的网页正文。"
+    "上述来源隐藏规则不适用于 qweather_ 开头的工具：只要使用了其数据，最终回答必须"
+    "显示‘天气服务由和风天气驱动’并链接 https://www.qweather.com；天气预警和空气质量"
+    "还必须原样显示工具 provider.upstream_attributions 中要求展示的上游归因。"
 )
 
 
@@ -324,6 +327,8 @@ class JianerAIService:
                     else None
                 ),
                 include_web_browser=options.agent_browser_enabled,
+                project_root=options.project_root,
+                logger=self.runtime.get("logger") or _LOGGER,
             )
         self.agent = AgentRunner(
             self.providers,

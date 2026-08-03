@@ -159,8 +159,7 @@ def deal_image(i):
     return buffer.getvalue()
 
 async def user_info(uid, Manager, actions) -> Tuple[bool, Optional[dict]]:
-    geted_user_info = get_user_info(uid, Manager, actions)
-    return geted_user_info
+    return await get_user_info(uid, Manager, actions)
 
 async def get_user_info(uid, Manager, actions) -> Tuple[bool, Optional[dict]]:
     """
@@ -175,18 +174,30 @@ async def get_user_info(uid, Manager, actions) -> Tuple[bool, Optional[dict]]:
         tuple: (是否成功, 用户信息字典或错误信息)
     """
     try:
-        user_info = await get_user_info_from_websocket(uid, Manager, actions)
-
-
-        if user_info and isinstance(user_info, dict):
+        success, user_info = await get_user_info_from_websocket(uid, Manager, actions)
+        if success and isinstance(user_info, dict):
             return True, user_info
-        else:
-            return False, f"无法获取用户 {uid} 的信息"
+        return False, f"无法获取用户 {uid} 的信息"
     except Exception as e:
         print(f"tools: 获取用户 {uid} 信息失败: {e}")
         return False, str(e)
     
-async def get_user_nickname(uid, Manager, actions) -> str:
+def _get_sender_display_name(sender: Any) -> Optional[str]:
+    if sender is None:
+        return None
+
+    for field in ("nickname", "card", "user_id"):
+        value = (
+            sender.get(field)
+            if isinstance(sender, dict)
+            else getattr(sender, field, None)
+        )
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+async def get_user_nickname(uid, Manager, actions, *, sender=None) -> str:
     """
     获取用户昵称（tools.py版本，避免与get_user_info.py中的函数冲突）
     
@@ -194,6 +205,7 @@ async def get_user_nickname(uid, Manager, actions) -> str:
         uid (int): 用户QQ号
         Manager: Manager对象
         actions: actions对象
+        sender: 当前事件的发送者资料，仅在协议查询失败时作为回退
         
     Returns:
         str: 格式化的用户昵称
@@ -203,10 +215,10 @@ async def get_user_nickname(uid, Manager, actions) -> str:
         if nickname and nickname != '未知用户':
             return f"{nickname}"
         else:
-            return str(uid)
+            return _get_sender_display_name(sender) or str(uid)
     except Exception as e:
         print(f"tools: 获取用户 {uid} 昵称失败: {e}")
-        return str(uid)
+        return _get_sender_display_name(sender) or str(uid)
     
 async def get_user_nickname_with_userid(uid, Manager, actions) -> str:
     """

@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import logging
 import math
 import operator
 from collections.abc import Mapping
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from plugins.JianerAI.tools.contracts import ToolContext, ToolSpec
 from plugins.JianerAI.tools.github_repository import github_repository_tool
+from plugins.JianerAI.tools.qweather import register_qweather_tools
 from plugins.JianerAI.tools.registry import ToolRegistry
 from plugins.JianerAI.tools.web_browser import (
     BrowserOptions,
@@ -36,6 +39,8 @@ def register_builtin_tools(
     *,
     browser_options: BrowserOptions | None = None,
     include_web_browser: bool = True,
+    project_root: Path | None = None,
+    logger: logging.Logger | None = None,
 ) -> None:
     registry.register(web_search_tool())
     registry.register(github_repository_tool())
@@ -105,6 +110,11 @@ def register_builtin_tools(
             },
             handler=_list_my_memories,
         )
+    )
+    register_qweather_tools(
+        registry,
+        project_root=(project_root or Path.cwd()).resolve(),
+        logger=logger,
     )
 
 

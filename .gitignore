@@ -152,6 +152,8 @@ activemq-data/
 # Environments
 .env
 .envrc
+*.pem
+*.key
 .venv
 env/
 venv/
@@ -246,6 +248,7 @@ prerequisites/ffmpeg.zip
 config.json
 config12.json
 aiconfig/gemini.ai.json
+aiconfig/deepseek.ai.json
 jianer_memory.db
 jianer_memory.db-shm
 jianer_memory.db-wal
