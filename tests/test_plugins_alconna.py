@@ -174,6 +174,32 @@ def test_jianer_ai_model_command_receives_plain_string(loaded_plugins):
     assert f"('{model}',)" not in response
 
 
+def test_jianer_ai_persona_command_and_fallback_shortcut(loaded_plugins):
+    actions = FakeActions()
+    assert _dispatch(_event("~切换角色 机娘"), actions) is True
+    assert "是机娘desu~！" in str(actions.sent[-1][1])
+
+    shortcut_actions = FakeActions()
+    assert asyncio.run(
+        plugin_state.dispatch_fallback(
+            _event("~机娘"),
+            shortcut_actions,
+            message_text="~机娘",
+        )
+    ) is True
+    assert "是机娘desu~！" in str(shortcut_actions.sent[-1][1])
+
+    unrelated_actions = FakeActions()
+    assert asyncio.run(
+        plugin_state.dispatch_fallback(
+            _event("~这不是预设"),
+            unrelated_actions,
+            message_text="~这不是预设",
+        )
+    ) is False
+    assert unrelated_actions.sent == []
+
+
 def test_jianer_ai_commands_respect_group_location_blacklist(loaded_plugins):
     module = plugin_state.get_plugin_module("jianerbot-plugin-jianer-ai")
     service = module.get_service()

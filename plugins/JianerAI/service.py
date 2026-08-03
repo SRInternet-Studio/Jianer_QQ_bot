@@ -410,7 +410,18 @@ class JianerAIService:
                 getattr(event, "is_mentioned", False)
             )
             if not is_mentioned:
-                return False
+                if not prompt.startswith(self.options.reminder):
+                    return False
+                preset = self._find_preset(
+                    prompt[len(self.options.reminder) :].strip()
+                )
+                if preset is None:
+                    return False
+                if await self.reject_blocked_group(event, actions):
+                    return True
+                return await self._activate_preset(
+                    event, actions, base, preset
+                )
             if segment_mention:
                 prompt = self._message_text_without_mentions(event)
             if prompt.startswith(self.options.reminder):

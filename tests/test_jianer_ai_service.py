@@ -415,6 +415,13 @@ def test_group_fallback_requires_at_and_bare_at_triggers_ai(
         actions = FakeActions({Capability.SEND_REPLY})
         assert not await service.handle_fallback(_event("你好"), actions)
         assert not await service.handle_fallback(_event("~你好"), actions)
+        assert providers.calls == []
+
+        assert await service.handle_fallback(
+            _event("~测试角色"), actions
+        )
+        assert "已切换测试角色" in str(actions.sent[-1][1])
+        assert providers.calls == []
 
         assert await service.handle_fallback(_at_event("~你好"), actions)
         assert providers.calls[-1]["message"] == "你好"
