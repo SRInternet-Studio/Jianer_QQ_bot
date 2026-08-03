@@ -200,7 +200,7 @@ def test_existing_presets_load_default_and_render_legacy_placeholders() -> None:
     }
     default = store.get_default()
     assert default.key == "XingYu"
-    assert default.name == "星语"
+    assert default.name == "机娘"
     assert default.info == "是机娘desu~！"
     assert "机娘" in default.template
     rendered = store.render(
