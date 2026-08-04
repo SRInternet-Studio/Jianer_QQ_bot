@@ -24,6 +24,7 @@ PLUGIN_ENTRIES = [
     ROOT / "plugins" / "LikePlugin.py",
     ROOT / "plugins" / "AdvancedQuote" / "setup.py",
     ROOT / "plugins" / "JianerAI" / "setup.py",
+    ROOT / "plugins" / "MaimaiDX" / "setup.py",
     ROOT / "plugins" / "RunCommand" / "setup.py",
 ]
 
@@ -36,6 +37,7 @@ EXPECTED_PLUGIN_IDS = {
     "jianerbot-plugin-generate-pixiv",
     "jianerbot-plugin-jianer-ai",
     "jianerbot-plugin-like",
+    "jianerbot-plugin-maimaidx",
     "jianerbot-plugin-run-command",
 }
 
@@ -138,7 +140,15 @@ def test_all_plugin_entries_use_alconna_contract():
         }
 
         assert "__plugin_meta__" in assigned_names, path
-        assert "@Command" in source, path
+        if path.parent.name == "MaimaiDX":
+            command_source = "\n".join(
+                command.read_text(encoding="utf-8")
+                for command in (path.parent / "commands").glob("*.py")
+            )
+            assert "@Command" in command_source, path
+            assert "from plugins.MaimaiDX import commands" in source, path
+        else:
+            assert "@Command" in source, path
         assert "jianerbot-plugin-alconna" in source, path
         assert "dispatch" not in async_names, path
 
@@ -155,9 +165,111 @@ def test_plugin_manager_loads_builtin_and_all_business_plugins(loaded_plugins):
         "赞我",
         "~名人名言",
         "~ai管理菜单",
+        "帮助maimaiDX",
         "~runcommand",
     ):
         assert command in help_text
+
+
+def test_maimaidx_ai_tools_register_with_jianer_ai(loaded_plugins):
+    module = plugin_state.get_plugin_module("jianerbot-plugin-jianer-ai")
+    service = module.get_service()
+    assert service is not None
+    assert {
+        name
+        for name in service.tools._tools
+        if name.startswith("maimaidx_")
+    } == {
+        "maimaidx_b50",
+        "maimaidx_song_search",
+        "maimaidx_song_info",
+        "maimaidx_player_song_score",
+        "maimaidx_rating_ranking",
+    }
+
+
+def test_maimaidx_registers_every_pinned_upstream_command_and_alias(
+    loaded_plugins,
+):
+    from jianer.plugins.builtin import alconna
+
+    manager = plugin_state.get_plugin_manager()
+    matchers = alconna._MATCHERS[manager.manager_id][
+        "jianerbot-plugin-maimaidx"
+    ]
+    expected_names = {
+        "AP50",
+        "B50",
+        "GINFO",
+        "Ginfo",
+        "INFO",
+        "Info",
+        "MINFO",
+        "Minfo",
+        "ap50",
+        "b50",
+        "ginfo",
+        "info",
+        "lxbind",
+        "minfo",
+        "主题",
+        "今日舞萌",
+        "关闭mai猜歌",
+        "分数线",
+        "同意别名",
+        "同意别称",
+        "增加别名",
+        "增添别名",
+        "帮助maimaiDX",
+        "帮助maimaidx",
+        "开启mai猜歌",
+        "当前别名投票",
+        "当前别称投票",
+        "当前投票",
+        "我的排名",
+        "数据源",
+        "更新maimai数据",
+        "更新别名库",
+        "更新完成表",
+        "更新定数表",
+        "查看排名",
+        "添加别名",
+        "添加别称",
+        "添加本地别名",
+        "添加本地别称",
+        "牌子条件",
+        "猜曲绘",
+        "猜歌",
+        "申请别名",
+        "绑定lx",
+        "绑定落雪",
+        "重置猜歌",
+        "项目地址maimaiDX",
+        "项目地址maimaidx",
+    }
+
+    assert len(matchers) == 80
+    assert {matcher.command.name for matcher in matchers} == expected_names
+
+
+def test_maimaidx_command_dispatches_through_builtin_alconna(loaded_plugins):
+    actions = FakeActions()
+    assert _dispatch(_event("项目地址maimaiDX"), actions) is True
+    assert len(actions.sent) == 1
+    response = str(actions.sent[0][1])
+    assert "nonebot-plugin-maimaidx" in response
+    assert "v3.0.13 / 83a1bee" in response
+
+
+def test_repeated_hot_reload_keeps_alconna_registry_bounded(loaded_plugins):
+    from arclet.alconna import command_manager
+
+    initial_count = command_manager.current_count
+    for _ in range(4):
+        result = plugin_state.reload_plugins()
+        assert result.failed == []
+        assert "jianerbot-plugin-maimaidx" in result.loaded
+    assert command_manager.current_count == initial_count
 
 
 def test_jianer_ai_model_command_receives_plain_string(loaded_plugins):
@@ -365,6 +477,59 @@ def test_like_alias_private_target_quote_and_runcommand_guards(
     blocked_actions = FakeActions()
     assert _dispatch(_event("~runcommand rm -rf /"), blocked_actions) is True
     assert len(blocked_actions.sent) == 2
+
+
+def test_like_plugin_stops_before_unsupported_milky_endpoint(
+    loaded_plugins,
+    monkeypatch,
+):
+    like = plugin_state.get_plugin_module("jianerbot-plugin-like")
+    monkeypatch.setattr(like.like_manager, "can_like_today", lambda _: True)
+    calls = []
+
+    async def send_like(**kwargs):
+        calls.append(kwargs)
+
+    actions = FakeActions()
+    actions.protocol = "milky"
+    actions.custom.send_like = send_like
+
+    assert asyncio.run(
+        like._send_like(_event("赞我"), actions, "Jianer", action="赞")
+    ) is True
+    assert calls == []
+    assert len(actions.sent) == 1
+    assert "不支持QQ名片点赞" in str(actions.sent[0][1])
+
+
+def test_like_plugin_uses_one_bounded_onebot_action(
+    loaded_plugins,
+    monkeypatch,
+):
+    like = plugin_state.get_plugin_module("jianerbot-plugin-like")
+    monkeypatch.setattr(like.like_manager, "can_like_today", lambda _: True)
+    monkeypatch.setattr(like.like_manager, "get_remaining_likes", lambda _: 0)
+    recorded = []
+    monkeypatch.setattr(
+        like.like_manager,
+        "record_like",
+        lambda user_id, times: recorded.append((user_id, times)),
+    )
+    calls = []
+
+    async def send_like(**kwargs):
+        calls.append(kwargs)
+
+    actions = FakeActions()
+    actions.protocol = "onebot"
+    actions.custom.send_like = send_like
+
+    assert asyncio.run(
+        like._send_like(_event("赞我"), actions, "Jianer", action="赞")
+    ) is True
+    assert calls == [{"user_id": 2, "times": like.DAILY_LIMIT}]
+    assert recorded == [(2, like.DAILY_LIMIT)]
+    assert len(actions.sent) == 2
 
 
 def test_runtime_reminder_change_rebuilds_all_command_matchers(

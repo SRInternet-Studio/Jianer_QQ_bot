@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -38,6 +38,11 @@ class ToolContext:
     canonical_user_id: str
     runtime: Mapping[str, Any]
     memory: Any = field(repr=False)
+    history: Sequence[Mapping[str, str]] = field(
+        default_factory=tuple,
+        repr=False,
+        compare=False,
+    )
     sensitive_values: set[str] = field(
         default_factory=set,
         repr=False,

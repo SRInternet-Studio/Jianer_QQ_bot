@@ -2232,6 +2232,49 @@ class JianerMemoryStore:
         finally:
             conn.close()
 
+    def list_conversation_sender_ids(
+        self,
+        *,
+        protocol: Any,
+        self_id: Any,
+        conversation_kind: Any,
+        conversation_id: Any,
+        limit: int = 200,
+    ) -> tuple[str, ...]:
+        """Return recently seen sender IDs for one concrete conversation."""
+
+        limit_i = max(1, min(int(limit), 500))
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT r.sender_external_id, MAX(r.occurred_at) AS last_seen
+                FROM raw_transcript_messages r
+                JOIN conversations c
+                  ON c.conversation_pk = r.conversation_pk
+                WHERE c.protocol = ?
+                  AND c.self_id = ?
+                  AND c.conversation_kind = ?
+                  AND c.conversation_id = ?
+                  AND r.sender_external_id != ''
+                GROUP BY r.sender_external_id
+                ORDER BY last_seen DESC
+                LIMIT ?
+                """,
+                (
+                    normalize_protocol(protocol),
+                    _required_text(self_id, "self_id"),
+                    _required_text(
+                        conversation_kind, "conversation_kind"
+                    ).lower(),
+                    _required_text(conversation_id, "conversation_id"),
+                    limit_i,
+                ),
+            ).fetchall()
+            return tuple(str(row["sender_external_id"]) for row in rows)
+        finally:
+            conn.close()
+
     def prune_group_transcripts(
         self,
         *,

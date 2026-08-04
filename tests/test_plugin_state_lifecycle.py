@@ -39,6 +39,29 @@ def _basic_plugin(*, setup_body: str = "", marker: str = "old") -> str:
     return textwrap.dedent(body) + "\n" + textwrap.dedent(setup_body)
 
 
+def _listener_plugin(marker: str, *, fail_replay: bool = False) -> str:
+    failure = (
+        'raise RuntimeError("listener replay exploded")'
+        if fail_replay
+        else ""
+    )
+    return _basic_plugin(
+        marker=f"{marker}-handler",
+        setup_body=f"""
+        async def _started(event, actions):
+            actions.calls.append("{marker}-listener")
+            {failure}
+
+        def setup(client, manager):
+            client.subscribe(_started, events.HyperListenerStartNotify)
+        """,
+    ).replace(
+        "from jianer.plugins import PluginMetadata",
+        "from jianer import events\nfrom jianer.plugins import PluginMetadata",
+        1,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _isolated_plugin_runtime(tmp_path, monkeypatch):
     asyncio.run(plugin_state.shutdown_plugins())
@@ -111,6 +134,104 @@ def test_initial_load_owns_client_and_exposes_three_dispatch_phases(
         "old:normalized",
         "fallback:normalized",
     ]
+
+
+def test_setup_subscriptions_receive_host_lifecycle_events(
+    _isolated_plugin_runtime,
+):
+    plugin_file = _isolated_plugin_runtime / "lifecycle.py"
+    _write(
+        plugin_file,
+        _basic_plugin(
+            setup_body="""
+            async def _started(event, actions):
+                actions.calls.append("listener-started:" + event.type)
+
+            def setup(client, manager):
+                client.subscribe(_started, events.HyperListenerStartNotify)
+            """,
+        ).replace(
+            "from jianer.plugins import PluginMetadata",
+            "from jianer import events\nfrom jianer.plugins import PluginMetadata",
+            1,
+        ),
+    )
+    plugin_state.reload_plugins()
+    actions = SimpleNamespace(calls=[])
+    event = events.HyperListenerStartNotify(0, "milky")
+
+    asyncio.run(plugin_state.dispatch_subscriptions(event, actions))
+
+    assert actions.calls == ["listener-started:milky"]
+
+
+def test_hot_reload_replays_listener_start_to_new_active_generation(
+    _isolated_plugin_runtime,
+):
+    plugin_file = _isolated_plugin_runtime / "lifecycle.py"
+    _write(plugin_file, _listener_plugin("old"))
+    plugin_state.reload_plugins()
+    old_manager = plugin_state.get_plugin_manager()
+    actions = SimpleNamespace(calls=[])
+    event = events.HyperListenerStartNotify(0, "milky")
+    asyncio.run(plugin_state.dispatch_subscriptions(event, actions))
+
+    _write(plugin_file, _listener_plugin("new-generation"))
+    result = asyncio.run(plugin_state.reload_plugins_async())
+    new_manager = plugin_state.get_plugin_manager()
+
+    assert actions.calls == ["old-listener", "new-generation-listener"]
+    assert result is plugin_state.get_load_result()
+    assert new_manager is not None and new_manager is not old_manager
+    assert new_manager.state == PluginManagerState.ACTIVE
+    assert old_manager is not None
+    assert old_manager.state == PluginManagerState.CLOSED
+
+
+def test_listener_replay_failure_is_reported_but_new_generation_stays_active(
+    _isolated_plugin_runtime,
+):
+    plugin_file = _isolated_plugin_runtime / "lifecycle.py"
+    _write(plugin_file, _listener_plugin("old"))
+    plugin_state.reload_plugins()
+    old_manager = plugin_state.get_plugin_manager()
+    actions = SimpleNamespace(calls=[])
+    event = events.HyperListenerStartNotify(0, "milky")
+    asyncio.run(plugin_state.dispatch_subscriptions(event, actions))
+
+    _write(
+        plugin_file,
+        _listener_plugin("new-generation-failing", fail_replay=True),
+    )
+    with pytest.raises(
+        plugin_state.PluginReloadError,
+        match="new plugin generation is active",
+    ) as captured:
+        asyncio.run(plugin_state.reload_plugins_async())
+
+    error = captured.value
+    active_manager = plugin_state.get_plugin_manager()
+    active_result = plugin_state.get_load_result()
+    assert actions.calls == [
+        "old-listener",
+        "new-generation-failing-listener",
+    ]
+    assert error.candidate_manager is None
+    assert error.active_manager is active_manager
+    assert error.result is active_result
+    assert active_manager is not None and active_manager is not old_manager
+    assert active_manager.state == PluginManagerState.ACTIVE
+    assert old_manager is not None
+    assert old_manager.state == PluginManagerState.CLOSED
+
+    actions.calls.clear()
+    handled = asyncio.run(
+        plugin_state.dispatch_plugins(
+            SimpleNamespace(msg_str="after-replay-error"), actions
+        )
+    )
+    assert handled is False
+    assert "new-generation-failing-handler:after-replay-error" in actions.calls
 
 
 def test_setup_failure_keeps_old_manager_and_removes_candidate_callbacks(

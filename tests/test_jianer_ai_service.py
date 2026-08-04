@@ -962,6 +962,14 @@ def test_group_ai_prefers_card_and_labels_users_in_shared_history(
         assert '"display_name":"成员甲群名片"' in first_call["message"]
         assert '"user_id":"42"' in first_call["message"]
         assert '"canonical_user_id":"qq:42"' in first_call["message"]
+        key = await service._conversation_key(second, actions)
+        tool_context = service._tool_context(
+            second,
+            actions,
+            key,
+            "qq:77",
+        )
+        assert tool_context.history[0]["content"] == first_call["message"]
 
         assert await service.handle_fallback(second, actions)
         second_call = providers.calls[-1]

@@ -1,6 +1,4 @@
-import asyncio
 import json
-import random
 from datetime import datetime
 
 from jianer.plugins import PluginMetadata
@@ -17,7 +15,6 @@ __plugin_meta__ = PluginMetadata(
 )
 
 DAILY_LIMIT = 10
-LIKE_API_ATTEMPTS = 55
 
 
 class LikeManager:
@@ -137,15 +134,26 @@ async def _handle_super_like_info(event, actions):
 
 async def _send_like(event, actions, bot_name: str, *, action: str) -> bool:
     user_id = event.user_id
+    protocol = str(
+        getattr(actions, "protocol", None)
+        or getattr(event, "protocol", None)
+        or ""
+    ).strip().lower()
+    if protocol != "onebot":
+        await _send_text(
+            actions,
+            event,
+            f"当前{protocol or '未知'}协议不支持QQ名片点赞，已停止操作。",
+        )
+        return True
+
     if not like_manager.can_like_today(user_id):
         verb = "点赞" if action == "赞" else "超"
         await _send_text(actions, event, f"今天已经{verb}过10次啦，明天再来吧~ (｡•́︿•̀｡)")
         return True
 
     try:
-        for _ in range(LIKE_API_ATTEMPTS):
-            await actions.custom.send_like(user_id=user_id, times=1)
-            await asyncio.sleep(random.uniform(0.1, 0.5))
+        await actions.custom.send_like(user_id=user_id, times=DAILY_LIMIT)
 
         like_manager.record_like(user_id, DAILY_LIMIT)
         remaining = like_manager.get_remaining_likes(user_id)

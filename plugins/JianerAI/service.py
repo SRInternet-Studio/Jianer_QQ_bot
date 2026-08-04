@@ -1702,6 +1702,8 @@ class JianerAIService:
         *,
         sensitive_values: set[str] | None = None,
     ) -> ToolContext:
+        with self._state_lock:
+            history = tuple(self._histories.get(key, ()))
         return ToolContext(
             event=event,
             actions=actions,
@@ -1709,6 +1711,7 @@ class JianerAIService:
             canonical_user_id=canonical,
             runtime=self.runtime,
             memory=self.memory,
+            history=history,
             sensitive_values=(
                 sensitive_values
                 if sensitive_values is not None

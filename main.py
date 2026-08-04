@@ -291,6 +291,15 @@ def normalize_group_message_text(event: Events.GroupMessageEvent, text: str) -> 
     return _bot_protocol.normalize_group_message_text(config, text)
 
 
+def plugin_message_text(event: Events.MessageEvent, fallback: str) -> str:
+    return _bot_protocol.plugin_message_text(
+        config,
+        event.message,
+        fallback,
+        text_segment_type=Segments.Text,
+    )
+
+
 def build_auth_groups() -> tuple[list[str], list[str]]:
     admins = [str(i) for i in (Super_User + ROOT_User + Manage_User)]
     supers = [str(i) for i in (Super_User + ROOT_User)]
@@ -367,7 +376,11 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
 
     elif isinstance(event, Events.PrivateMessageEvent):
         user_message, order = str(event.message).strip(), ""
-        if await execute_plugins(event, actions, message_text=user_message):
+        if await execute_plugins(
+            event,
+            actions,
+            message_text=plugin_message_text(event, user_message),
+        ):
             return
         event_user = await get_user_nickname(
             event.user_id, Manager, actions, sender=getattr(event, "sender", None)
@@ -445,18 +458,19 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
         
         raw_user_message = str(event.message).strip()
         user_message = normalize_group_message_text(event, raw_user_message)
+        plugin_user_message = plugin_message_text(event, user_message)
         host_message = user_message
         plugin_dispatched = False
         like_plugin = _bot_plugin_state.get_plugin_module(
             "jianerbot-plugin-like"
         )
         early_plugin_commands = getattr(like_plugin, "EARLY_COMMANDS", ())
-        if raw_user_message in early_plugin_commands:
+        if plugin_user_message in early_plugin_commands:
             plugin_dispatched = True
             if await execute_plugins(
                 event,
                 actions,
-                message_text=raw_user_message,
+                message_text=plugin_user_message,
             ):
                 return
         feishu_mode = str(config.protocol).lower() == "feishu"
@@ -488,7 +502,11 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
         user_message = user_message_for_cmd
 
         if not plugin_dispatched:
-            if await execute_plugins(event, actions, message_text=user_message):
+            if await execute_plugins(
+                event,
+                actions,
+                message_text=plugin_user_message,
+            ):
                 return
 
         # 群聊中明确 At 机器人时，普通命令优先，未匹配则只进入 AI fallback。
@@ -795,6 +813,7 @@ async def handler(event: Events.Event, actions: Listener.Actions) -> None:
     ) as pipeline:
         token = _active_plugin_pipeline.set(pipeline)
         try:
+            await _bot_plugin_state.dispatch_subscriptions(event, actions)
             return await _handler_impl(event, actions)
         finally:
             _active_plugin_pipeline.reset(token)

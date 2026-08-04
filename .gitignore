@@ -50,6 +50,7 @@ coverage.xml
 *.lcov
 .hypothesis/
 .pytest_cache/
+.pytest-tmp-*/
 cover/
 
 # Translations
@@ -241,7 +242,10 @@ lgr/
 .trae
 .claude/
 .claude
-AGENTS.MD
+.codex/
+.agent/
+.agents/
+AGENTS.md
 config2.json
 prerequisites/ffmpeg.exe
 prerequisites/ffmpeg.zip
@@ -262,3 +266,4 @@ like_data.json
 restart.temp
 suffix_config.json
 prerequisites/current.json
+.pytest_tmp_*/

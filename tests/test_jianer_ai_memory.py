@@ -216,6 +216,41 @@ def _create_legacy_database(path: Path) -> None:
         conn.close()
 
 
+def test_list_conversation_sender_ids_is_scoped_and_recent_first(tmp_path: Path):
+    store = _store(tmp_path)
+    _record(
+        store,
+        kind="group",
+        conversation_id="group-1",
+        message_id="old",
+        user_id="24680",
+        timestamp=100,
+    )
+    _record(
+        store,
+        kind="group",
+        conversation_id="group-1",
+        message_id="new",
+        user_id="13579",
+        timestamp=200,
+    )
+    _record(
+        store,
+        kind="group",
+        conversation_id="group-2",
+        message_id="other-group",
+        user_id="99999",
+        timestamp=300,
+    )
+
+    assert store.list_conversation_sender_ids(
+        protocol="onebot",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-1",
+    ) == ("13579", "24680")
+
+
 def test_qq_aliases_share_fixed_canonical_identity(tmp_path: Path):
     store = _store(tmp_path)
 

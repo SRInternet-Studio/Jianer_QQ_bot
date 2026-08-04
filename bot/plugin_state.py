@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from jianer import Client, get_dispatch_runner, submit_awaitable
+from jianer import Client, events, get_dispatch_runner, submit_awaitable
 from jianer.plugins import (
     PluginManager,
     PluginManagerState,
@@ -35,6 +35,7 @@ _retirement_failures: dict[str, ShutdownReport] = {}
 _load_result: Any = None
 _disabled_plugins: list[str] = []
 _help_text = ""
+_last_listener_start: tuple[Any, Any] | None = None
 _state_lock = threading.RLock()
 _sync_reload_lock = threading.Lock()
 _runtime_reload_lock = threading.Lock()
@@ -129,7 +130,7 @@ def is_generating() -> bool:
 
 
 class PluginReloadError(RuntimeError):
-    """A staged plugin generation failed without replacing the active one."""
+    """A plugin reload failed before or after activating its candidate."""
 
     def __init__(
         self,
@@ -138,11 +139,13 @@ class PluginReloadError(RuntimeError):
         result: Any = None,
         candidate_manager: PluginManager | None = None,
         cleanup_report: ShutdownReport | None = None,
+        active_manager: PluginManager | None = None,
     ) -> None:
         super().__init__(message)
         self.result = result
         self.candidate_manager = candidate_manager
         self.cleanup_report = cleanup_report
+        self.active_manager = active_manager
 
 
 class PluginRetirementError(RuntimeError):
@@ -378,6 +381,7 @@ async def reload_plugins_async(logger: Any | None = None):
             ) from exc
 
         _publish_manager(manager, result, disabled, help_text)
+        retirement_error: PluginRetirementError | None = None
         if old_manager is not None:
             current_pipeline = _current_plugin_pipeline.get()
             if (
@@ -389,13 +393,26 @@ async def reload_plugins_async(logger: Any | None = None):
             report = await _retire_manager(old_manager)
             if not report.completed:
                 _log_shutdown_errors("old plugin manager", report)
-                raise PluginRetirementError(
+                retirement_error = PluginRetirementError(
                     "new plugin generation is active, but the old "
                     "generation did not shut down cleanly",
                     result=result,
                     active_manager=manager,
                     retirement_report=report,
                 )
+        try:
+            await _replay_listener_start(client)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise PluginReloadError(
+                "new plugin generation is active, but replaying the "
+                "listener-start lifecycle event failed",
+                result=result,
+                active_manager=manager,
+            ) from exc
+        if retirement_error is not None:
+            raise retirement_error
         return result
 
 
@@ -403,7 +420,7 @@ async def shutdown_plugins() -> ShutdownReport:
     """Close the active plugin manager and every plugin-owned callback."""
 
     global _plugin_client, _plugin_manager, _load_result
-    global _disabled_plugins, _help_text
+    global _disabled_plugins, _help_text, _last_listener_start
 
     async with _runtime_reload_guard():
         with _state_lock:
@@ -457,6 +474,8 @@ async def shutdown_plugins() -> ShutdownReport:
         )
 
         if not reports:
+            with _state_lock:
+                _last_listener_start = None
             return ShutdownReport(
                 manager_id="bot-plugin-state",
                 completed=True,
@@ -475,6 +494,7 @@ async def shutdown_plugins() -> ShutdownReport:
                     _load_result = None
                     _disabled_plugins = []
                     _help_text = ""
+                    _last_listener_start = None
         errors = tuple(
             error
             for report in reports
@@ -572,6 +592,39 @@ async def observe_plugins(
         actions,
     ) as pipeline:
         await pipeline.observe(message_text=message_text)
+
+
+async def dispatch_subscriptions(event: Any, actions: Any) -> None:
+    """Deliver framework events to setup-time ``Client.subscribe`` hooks."""
+
+    global _last_listener_start
+    if isinstance(event, events.HyperListenerStartNotify):
+        with _state_lock:
+            _last_listener_start = (event, actions)
+    client = get_plugin_client()
+    if client is None:
+        return
+    await client.distributor(event, actions)
+
+
+async def _replay_listener_start(client: Client) -> None:
+    """Restore setup-time tasks after a hot-reload generation swap."""
+
+    with _state_lock:
+        latest = _last_listener_start
+    if latest is None:
+        return
+    try:
+        await client.distributor(*latest)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger = _logger
+        if logger is not None:
+            logger.exception(
+                "replaying the listener-start lifecycle event failed"
+            )
+        raise
 
 
 async def dispatch_normal(
@@ -708,6 +761,7 @@ async def _retire_manager(manager: PluginManager) -> ShutdownReport:
     with _state_lock:
         _retiring_managers[manager.manager_id] = manager
 
+    retiring_alconna_commands = _snapshot_alconna_commands(manager.manager_id)
     task = asyncio.create_task(manager.shutdown())
     report: ShutdownReport | None = None
     try:
@@ -718,6 +772,7 @@ async def _retire_manager(manager: PluginManager) -> ShutdownReport:
             raise
     finally:
         if manager.state == PluginManagerState.CLOSED:
+            _reconcile_alconna_commands(retiring_alconna_commands)
             with _state_lock:
                 if _retiring_managers.get(manager.manager_id) is manager:
                     _retiring_managers.pop(manager.manager_id, None)
@@ -731,6 +786,77 @@ async def _retire_manager(manager: PluginManager) -> ShutdownReport:
     if report is None:
         raise RuntimeError("plugin manager shutdown did not return a report")
     return report
+
+
+def _snapshot_alconna_commands(manager_id: str) -> list[Any]:
+    """Keep command objects alive until Arclet's weak registry is reconciled."""
+
+    try:
+        from jianer.plugins.builtin import alconna
+    except Exception:
+        return []
+    commands: list[Any] = []
+    seen: set[int] = set()
+    lock = getattr(alconna, "_MATCHER_LOCK", contextlib.nullcontext())
+    with lock:
+        manager_matchers = getattr(alconna, "_MATCHERS", {}).get(manager_id, {})
+        for matchers in manager_matchers.values():
+            for matcher in matchers:
+                command = getattr(matcher, "command", None)
+                if command is not None and id(command) not in seen:
+                    seen.add(id(command))
+                    commands.append(command)
+    return commands
+
+
+def _reconcile_alconna_commands(retiring_commands: list[Any]) -> None:
+    """Remove a retired generation and repoint Arclet at live matchers.
+
+    Arclet stores the command chosen for a name through a weak reference. During
+    staged reload the new matcher is compiled, but the weak name entry can still
+    point at the retiring generation. Once that generation is released,
+    ``current_count`` leaks and repeated hot reloads eventually raise
+    ``ExceedMaxCount``. Re-registering the live generation after deletion keeps
+    the parser registry and its counter consistent.
+    """
+
+    if not retiring_commands:
+        return
+    try:
+        from arclet.alconna import command_manager
+        from jianer.plugins.builtin import alconna
+    except Exception:
+        return
+
+    live_commands: list[Any] = []
+    seen: set[int] = set()
+    lock = getattr(alconna, "_MATCHER_LOCK", contextlib.nullcontext())
+    with lock:
+        matcher_groups = [
+            matchers
+            for plugins in getattr(alconna, "_MATCHERS", {}).values()
+            for matchers in plugins.values()
+        ]
+        matcher_groups.append(getattr(alconna, "_LEGACY_MATCHERS", ()))
+        for matchers in matcher_groups:
+            for matcher in matchers:
+                command = getattr(matcher, "command", None)
+                if command is not None and id(command) not in seen:
+                    seen.add(id(command))
+                    live_commands.append(command)
+
+    for command in retiring_commands:
+        try:
+            command_manager.delete(command)
+        except Exception:
+            if _logger is not None:
+                _logger.exception("failed to unregister retired Alconna command")
+    for command in live_commands:
+        try:
+            command_manager.register(command)
+        except Exception:
+            if _logger is not None:
+                _logger.exception("failed to register live Alconna command")
 
 
 def _schedule_retirement_retry(manager: PluginManager) -> None:

@@ -2,6 +2,12 @@
 
 ## 未发布
 
+### 新增
+- 移植 `nonebot-plugin-maimaidx` v3.0.13 为 JianerCore 目录插件 `plugins/MaimaiDX/`，覆盖成绩、曲目、别名、猜歌、表格、数据源和主题等命令，并保留上游 MIT 许可与绘图署名。
+- 新增水鱼查分器、落雪查分器 OAuth 与 Yuri-YuzuChaN 别名数据源适配；OAuth Token 使用 Windows DPAPI 和受限 ACL 保护，运行时凭据统一从未跟踪的 `.env` 读取。
+- 为 JianerAI 注册 MaimaiDX B50、曲目搜索/详情、单曲成绩与 Rating 排行榜工具；图片工具按当前适配器能力过滤，并限制他人查询只能使用公开数据。
+- 新增脱敏的 `config.example.json`，提供 OneBot、Milky、Kritor、飞书和 AI 基础配置结构。
+
 ### 变更
 - Bot 框架从项目内置旧框架切换为 PyPI 包 `jianer-bot`（导入包名 `jianer`），主程序、AI 核心、工具模块和前置逻辑统一改用 JianerCore API。
 - 移除项目自托管插件加载器/派发器，插件加载与派发改由 JianerCore `PluginManager` 负责。
@@ -10,7 +16,10 @@
 - 旧 `jianer_memory.db` 已通过可演练迁移器导入规范化 `jianer_ai.db`；支持 dry-run、stage、校验、切换和回滚。
 - 当前仓库命令插件全部改写为 `PluginMetadata + Alconna Command` 新式插件，并按 `jianerbot-plugin-{name}` 规则声明插件 ID。
 - 插件运行时重载采用候选加载、原子交换、旧 generation 关闭；正常停止会等待插件任务与资源释放。
-- `requirements.txt` 将 JianerCore 下限锁定为 `jianer-bot>=0.92.0`，以使用完整插件生命周期和持久事件循环。
+- 插件订阅事件纳入宿主统一派发，热重载后会重放 listener-start 生命周期，并回收旧代 Alconna 命令注册。
+- JianerAI Tool 上下文增加当前会话历史和会话发送者查询，供工具在不猜测身份的前提下解析群名片或昵称。
+- `config.json`、`.codex/`、`.agent/`、`.agents/` 和 `AGENTS.md` 改为仅本地使用，不再纳入版本控制。
+- `requirements.txt` 将 JianerCore 下限锁定为 `jianer-bot>=0.92.2`，并补充 MaimaiDX 所需的异步 IO、数据模型、绘图与 WebSocket 依赖。
 
 ### 行为变更（插件开发者请关注）
 - 旧式关键词函数插件契约不再作为项目插件接口；命令插件必须声明 `__plugin_meta__ = PluginMetadata(...)` 并使用 `@Command(...).handle()`。
@@ -26,6 +35,9 @@
 - `broadcast.timing_message_loop` 修复在外层含 `⊕` 但首行不含的分支下 `time_part` 未定义可能引发的 NameError。
 - 持久化层（`auth_store / feishu_bindings / help_mode`）写入失败改为 `logger.exception` 而非静默 `pass`。
 - 删除记忆写入 suppression tombstone，防止后台提炼或并发生成把已删除事实重新写回。
+- QQ 插件命令文本只拼接文本段，保留原始 `@` 段供 MaimaiDX 等插件精确识别目标成员。
+- 热重载完成后重新对齐 Arclet Alconna 命令注册，避免旧 generation 释放后计数泄漏并最终触发 `ExceedMaxCount`。
+- 名片点赞仅在 OneBot 协议执行，并改为一次请求提交每日点赞数量，避免在不支持的协议上重复调用。
 
 ## JianerNext4 Dev-20260116a
 
