@@ -95,6 +95,53 @@ Function Calling；兼容端点明确拒绝 tools 参数时，本 generation 会
 对话。部分 DeepSeek 兼容网关把调用返回为 DSML 文本；插件会把完整合法的 DSML
 转换为结构化工具调用，并拒绝把损坏的调用标记发送给用户。不要提交包含密钥的本地配置。
 
+`ResponseType` 使用以下规范名称；旧值 `openai`、`openai-compatible`、`gemini`、
+`google`、`claude` 等仍可读取：
+
+| ResponseType | 请求协议 | 附件能力 |
+| --- | --- | --- |
+| `OpenAI Chat Completions` | OpenAI `chat.completions` | 图片；模型支持时可读 MP3/WAV 语音，其他音频先转 WAV；不支持视频 |
+| `OpenAI Responses` | OpenAI `responses` | 原生图片；语音先走转写；视频抽取最多 8 帧并转写音轨 |
+| `Google GenerateContent` | Google GenAI SDK `generate_content` | 原生图片、语音和视频 |
+| `Anthropic Messages` | Anthropic SDK `messages` | 图片；当前 Anthropic 协议不接收语音或视频 |
+
+所有协议都支持 `BaseUrl` 自定义端点。`Google GenerateContent` 通过官方
+`google-genai` SDK 的 `HttpOptions(base_url=...)` 发送异步请求；若配置地址以
+`/v1`、`/v1alpha` 或 `/v1beta` 结尾，JianerAI 会把末段识别为 SDK 的 API 版本，避免
+重复拼接。Gemini 3 的 Agent 工具回合在未配置时默认使用 `ThinkingLevel: "medium"`，避免
+默认高强度思考耗尽较小的 `MaxTokens` 后只返回空 candidate；普通无工具对话仍沿用模型
+默认值，也可以把 `ThinkingLevel` 显式设为 `minimal`、`low`、`medium` 或 `high`。
+`OpenAI Responses` 的语音和视频音轨使用同一 `BaseUrl` 下的 OpenAI
+transcription 接口，默认模型为
+`gpt-4o-mini-transcribe`，可通过 `TranscriptionModel` 修改。所有协议的对话上下文都只
+使用 JianerAI 自己维护的本地短期历史。`OpenAI Responses` 每轮固定发送
+`store: false`，不会发送或保存 `previous_response_id`，并在 `input` 中携带当前会话的
+完整短期历史、当前消息和本轮结构化工具调用结果；配置文件中的 `other` 或 `Extra_Body`
+也不能覆盖 `input`、`store` 或注入 `previous_response_id`。因此不会发起协议能力探测，
+也不依赖官方服务或第三方中转站保存 Response。短期历史按完整 JianerCore 会话键
+（协议、机器人账号、群聊/私聊、会话 ID、角色预设）隔离；切换模型、执行“注销”或
+删除对应角色时仍由 JianerAI 清空相关本地上下文。
+
+音视频预处理要求系统存在 `ffmpeg` 和 `ffprobe`；Docker 镜像会自动安装。单个视频
+上限为 20 MiB、5 分钟，每次 OpenAI Responses 请求最多一个视频。JianerAI 只处理
+适配器通过 `RESOLVE_MEDIA` 安全解析后返回的固定字节，不会把聊天中的原始 URL 或本地
+路径直接交给 FFmpeg 或模型提供商。
+
+示例：
+
+```json
+{
+  "FriendlyName": "Claude",
+  "Model": "claude-sonnet-4-5",
+  "ResponseType": "Anthropic Messages",
+  "ApiKey": "your-api-key",
+  "BaseUrl": "https://api.anthropic.com",
+  "Temperature": 0.5,
+  "MaxTokens": 2000,
+  "ToolsEnabled": "auto"
+}
+```
+
 角色人设模板除现有的 `{self.bot_name}`、`{self.bot_name_en}`、
 `{self.event_user}`、`{self.event_user_id}` 外，还可使用：
 

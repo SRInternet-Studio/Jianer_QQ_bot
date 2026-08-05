@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import html as html_lib
+import ipaddress
 import json
 import logging
 import re
+import socket
 import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
+import aiohttp
 from jianer import common as Manager, segments as Segments
 from jianer.adapters import (
     Capability,
@@ -24,6 +28,7 @@ from jianer.adapters import (
     MediaPolicy,
     MediaRequest,
     MediaSourceKind,
+    ResolutionErrorCode,
     ResolutionStatus,
 )
 
@@ -38,6 +43,7 @@ from plugins.JianerAI.presets import (
 )
 from plugins.JianerAI.providers import (
     MediaAttachment,
+    MediaCapabilityError,
     ProviderError,
     ProviderRegistry,
     UnknownModelError,
@@ -66,6 +72,25 @@ _STATUS_WORDS = frozenset({"status", "状态"})
 _IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp"}
 )
+_AUDIO_MIME_TYPES = frozenset(
+    {
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/ogg",
+        "audio/flac",
+        "audio/mp4",
+        "audio/x-m4a",
+        "audio/webm",
+    }
+)
+_VIDEO_MIME_TYPES = frozenset(
+    {"video/mp4", "video/webm", "video/quicktime", "video/mpeg"}
+)
+_MILKY_MEDIA_HOSTS = frozenset({"multimedia.nt.qq.com.cn"})
+_TUN_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_HISTORY_MESSAGES = 20
 _DEFAULT_MAX_REPLY_CHARS = 350
 _DEFAULT_MAX_REPLY_PARTS = 3
@@ -99,6 +124,67 @@ _AGENT_SYSTEM_RULES = (
     "‘天气服务由和风天气驱动 www.qweather.com’，并原样显示必须展示的上游归因。"
 )
 _BARE_MENTION_PROMPT = "用户在群聊中只@了你，请自然地回应对方。"
+
+
+def _trusted_milky_media_origin(
+    locator: str,
+) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(locator)
+        host = (parsed.hostname or "").casefold()
+        if (
+            parsed.scheme.casefold() != "https"
+            or host not in _MILKY_MEDIA_HOSTS
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port not in (None, 443)
+        ):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return "https", host, 443
+
+
+class _PinnedMediaResolver(aiohttp.abc.AbstractResolver):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        records: Sequence[tuple[Any, ...]],
+    ) -> None:
+        self._host = host.casefold()
+        self._port = int(port)
+        self._records = tuple(records)
+
+    async def resolve(
+        self,
+        host: str,
+        port: int = 0,
+        family: int = socket.AF_INET,
+    ) -> list[dict[str, Any]]:
+        if host.casefold() != self._host or int(port) != self._port:
+            raise OSError("unvalidated Milky media host")
+        resolved: list[dict[str, Any]] = []
+        for record in self._records:
+            record_family, _, protocol, _, sockaddr = record
+            if family not in (socket.AF_UNSPEC, 0) and record_family != family:
+                continue
+            resolved.append(
+                {
+                    "hostname": host,
+                    "host": sockaddr[0],
+                    "port": int(port),
+                    "family": record_family,
+                    "proto": protocol,
+                    "flags": socket.AI_NUMERICHOST,
+                }
+            )
+        if not resolved:
+            raise OSError("validated Milky media host has no compatible address")
+        return resolved
+
+    async def close(self) -> None:
+        self._records = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1099,9 +1185,28 @@ class JianerAIService:
             if system_prompt
             else _RESPONSE_SYSTEM_RULES
         )
-        reference_text, attachments = await self._resolve_inputs(
-            event, actions, key
-        )
+        try:
+            reference_text, attachments = await self._resolve_inputs(
+                event, actions, key
+            )
+        except MediaCapabilityError as exc:
+            self._log_info(
+                "JianerAI media input rejected | "
+                + format_log_data(
+                    {
+                        "protocol": key.protocol,
+                        "conversation_kind": key.kind.value,
+                        "reason": exc.safe_message,
+                    }
+                )
+            )
+            await self._send_text(
+                event,
+                actions,
+                exc.safe_message,
+                reply=True,
+            )
+            return
         final_prompt = prompt.strip()
         if reference_text:
             final_prompt = (
@@ -1179,6 +1284,21 @@ class JianerAIService:
                 event,
                 actions,
                 f"{self.options.bot_name}的工具调用未能在安全限制内完成，请稍后再试。",
+                reply=True,
+            )
+            return
+        except MediaCapabilityError as exc:
+            self._log_ai_dialogue_failure(
+                dialogue_context,
+                final_prompt,
+                sensitive_values,
+                dialogue_started_at,
+                error_code="media_capability_error",
+            )
+            await self._send_text(
+                event,
+                actions,
+                exc.safe_message,
                 reply=True,
             )
             return
@@ -1298,15 +1418,26 @@ class JianerAIService:
             except Exception:
                 self._log_exception("JianerAI reference resolution failed")
 
-        if Capability.RESOLVE_MEDIA not in capabilities:
+        media_segments = [
+            segment
+            for segment in segments
+            if isinstance(
+                segment,
+                (Segments.Image, Segments.Record, Segments.Video),
+            )
+        ]
+        if not media_segments:
             return reference_text, ()
+        if Capability.RESOLVE_MEDIA not in capabilities:
+            raise MediaCapabilityError(
+                "当前消息适配器无法安全读取图片、语音或视频附件。"
+            )
         attachments: list[MediaAttachment] = []
-        for segment in segments:
-            if not isinstance(segment, (Segments.Image, Segments.Record)):
-                continue
+        for segment in media_segments:
             request = self._media_request(segment, event)
             if request is None:
                 continue
+            fallback_attempted = False
             try:
                 policy = self._media_policy(request)
                 resolution = await actions.resolve_media(
@@ -1314,12 +1445,57 @@ class JianerAIService:
                     conversation=key,
                     policy=policy,
                 )
+                if self._should_use_milky_fake_ip_fallback(
+                    key,
+                    request,
+                    resolution,
+                ):
+                    fallback_attempted = True
+                    media_bytes = await self._download_milky_fake_ip_media(
+                        request,
+                        policy,
+                    )
+                    retry_request = MediaRequest(
+                        kind=MediaSourceKind.DATA_URI,
+                        media_kind=request.media_kind,
+                        locator=(
+                            "base64://"
+                            + base64.b64encode(media_bytes).decode("ascii")
+                        ),
+                        message_id=request.message_id,
+                    )
+                    resolution = await actions.resolve_media(
+                        retry_request,
+                        conversation=key,
+                        policy=policy,
+                    )
                 if resolution.status is ResolutionStatus.OK:
                     attachments.append(MediaAttachment.from_resolution(resolution))
-            except Exception:
-                self._log_exception("JianerAI media resolution failed")
+                else:
+                    self._log_media_resolution_rejection(
+                        key,
+                        request,
+                        resolution,
+                        fallback_attempted=fallback_attempted,
+                    )
+            except Exception as exc:
+                self._log_info(
+                    "JianerAI media resolution failed | "
+                    + format_log_data(
+                        {
+                            "protocol": key.protocol,
+                            "media_kind": request.media_kind.value,
+                            "fallback_attempted": fallback_attempted,
+                            "error_type": exc.__class__.__name__,
+                        }
+                    )
+                )
             if len(attachments) >= 4:
                 break
+        if not attachments:
+            raise MediaCapabilityError(
+                "附件读取失败；请确认文件仍然有效，并使用受支持的图片、语音或视频格式。"
+            )
         return reference_text, tuple(attachments)
 
     def _media_request(
@@ -1338,11 +1514,14 @@ class JianerAIService:
             source_kind = MediaSourceKind.DATA_URI
         else:
             source_kind = MediaSourceKind.ADAPTER_RESOURCE
-        media_kind = (
-            MediaKind.IMAGE
-            if isinstance(segment, Segments.Image)
-            else MediaKind.AUDIO
-        )
+        if isinstance(segment, Segments.Image):
+            media_kind = MediaKind.IMAGE
+        elif isinstance(segment, Segments.Record):
+            media_kind = MediaKind.AUDIO
+        elif isinstance(segment, Segments.Video):
+            media_kind = MediaKind.VIDEO
+        else:
+            return None
         return MediaRequest(
             kind=source_kind,
             media_kind=media_kind,
@@ -1360,21 +1539,161 @@ class JianerAIService:
                 origins = frozenset(
                     {f"{parsed.scheme.casefold()}://{parsed.hostname.casefold()}{port}"}
                 )
-        allowed_mimes = (
-            _IMAGE_MIME_TYPES
-            if request.media_kind is MediaKind.IMAGE
-            else frozenset(
-                {"audio/mpeg", "audio/wav", "audio/ogg", "audio/flac"}
-            )
-        )
+        if request.media_kind is MediaKind.IMAGE:
+            allowed_mimes = _IMAGE_MIME_TYPES
+        elif request.media_kind is MediaKind.AUDIO:
+            allowed_mimes = _AUDIO_MIME_TYPES
+        else:
+            allowed_mimes = _VIDEO_MIME_TYPES
+        is_video = request.media_kind is MediaKind.VIDEO
         return MediaPolicy(
-            max_bytes=10 * 1024 * 1024,
+            max_bytes=(20 if is_video else 10) * 1024 * 1024,
             connect_timeout_seconds=3.0,
-            total_timeout_seconds=15.0,
+            total_timeout_seconds=30.0 if is_video else 15.0,
             max_redirects=3,
             allowed_remote_origins=origins,
             allowed_local_roots=(),
             allowed_mime_types=allowed_mimes,
+        )
+
+    @staticmethod
+    def _should_use_milky_fake_ip_fallback(
+        key: ConversationKey,
+        request: MediaRequest,
+        resolution: Any,
+    ) -> bool:
+        if (
+            key.protocol != "milky"
+            or request.kind is not MediaSourceKind.REMOTE_URL
+            or getattr(resolution, "error_code", None)
+            is not ResolutionErrorCode.ORIGIN_NOT_ALLOWED
+        ):
+            return False
+        return _trusted_milky_media_origin(request.locator) is not None
+
+    @staticmethod
+    async def _download_milky_fake_ip_media(
+        request: MediaRequest,
+        policy: MediaPolicy,
+    ) -> bytes:
+        expected_origin = _trusted_milky_media_origin(request.locator)
+        if expected_origin is None:
+            raise RuntimeError("Milky media URL is outside the trusted origin")
+        _, host, port = expected_origin
+        loop = asyncio.get_running_loop()
+        records = await loop.getaddrinfo(
+            host,
+            port,
+            type=socket.SOCK_STREAM,
+        )
+        addresses = {
+            str(record[4][0]).split("%", 1)[0]
+            for record in records
+            if record[4]
+        }
+        parsed_addresses = tuple(
+            ipaddress.ip_address(address) for address in addresses
+        )
+        has_tun_fake_ip = any(
+            address in _TUN_FAKE_IP_NETWORK for address in parsed_addresses
+        )
+        has_unsafe_address = any(
+            not address.is_global and address not in _TUN_FAKE_IP_NETWORK
+            for address in parsed_addresses
+        )
+        if not parsed_addresses or not has_tun_fake_ip or has_unsafe_address:
+            raise RuntimeError("Milky media host is not a safe TUN fake-IP target")
+
+        current_url = request.locator
+        timeout = aiohttp.ClientTimeout(
+            total=policy.total_timeout_seconds,
+            connect=policy.connect_timeout_seconds,
+            sock_connect=policy.connect_timeout_seconds,
+            sock_read=policy.total_timeout_seconds,
+        )
+        connector = aiohttp.TCPConnector(
+            resolver=_PinnedMediaResolver(host, port, records),
+            use_dns_cache=False,
+        )
+        async with aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            auto_decompress=True,
+            trust_env=False,
+        ) as client:
+            for redirect_count in range(policy.max_redirects + 1):
+                async with client.get(
+                    current_url,
+                    allow_redirects=False,
+                ) as response:
+                    if response.status in _REDIRECT_STATUSES:
+                        location = response.headers.get("location")
+                        if not location or redirect_count >= policy.max_redirects:
+                            raise RuntimeError("Milky media redirect limit reached")
+                        redirected_url = urljoin(current_url, location)
+                        redirected = urlsplit(redirected_url)
+                        redirected_origin = (
+                            redirected.scheme.casefold(),
+                            (redirected.hostname or "").casefold(),
+                            redirected.port or 443,
+                        )
+                        if (
+                            redirected.username is not None
+                            or redirected.password is not None
+                            or redirected_origin != expected_origin
+                        ):
+                            raise RuntimeError(
+                                "Milky media redirect left the trusted origin"
+                            )
+                        current_url = redirected_url
+                        continue
+                    if response.status < 200 or response.status >= 300:
+                        raise RuntimeError("Milky media endpoint rejected the request")
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            if int(content_length) > policy.max_bytes:
+                                raise RuntimeError("Milky media exceeds the size limit")
+                        except ValueError as exc:
+                            raise RuntimeError(
+                                "Milky media returned an invalid content length"
+                            ) from exc
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in response.content.iter_chunked(64 * 1024):
+                        size += len(chunk)
+                        if size > policy.max_bytes:
+                            raise RuntimeError("Milky media exceeds the size limit")
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+        raise RuntimeError("Milky media could not be downloaded")
+
+    def _log_media_resolution_rejection(
+        self,
+        key: ConversationKey,
+        request: MediaRequest,
+        resolution: Any,
+        *,
+        fallback_attempted: bool,
+    ) -> None:
+        status = getattr(resolution, "status", None)
+        error_code = getattr(resolution, "error_code", None)
+        self._log_info(
+            "JianerAI media resolution rejected | "
+            + format_log_data(
+                {
+                    "protocol": key.protocol,
+                    "media_kind": request.media_kind.value,
+                    "status": getattr(status, "value", str(status or "unknown")),
+                    "error_code": getattr(
+                        error_code,
+                        "value",
+                        str(error_code or "unknown"),
+                    ),
+                    "fallback_attempted": fallback_attempted,
+                    "source": str(getattr(resolution, "source", "")),
+                }
+            )
         )
 
     async def _send_text(
@@ -2407,6 +2726,8 @@ class JianerAIService:
                 parts.append("[图片]")
             elif isinstance(segment, Segments.Record):
                 parts.append("[语音]")
+            elif isinstance(segment, Segments.Video):
+                parts.append("[视频]")
         return " ".join(parts)
 
     def _transcript_content(self, event: Any) -> str:
@@ -2423,6 +2744,8 @@ class JianerAIService:
                 parts.append("[图片]")
             elif isinstance(segment, Segments.Record):
                 parts.append("[语音]")
+            elif isinstance(segment, Segments.Video):
+                parts.append("[视频]")
             elif isinstance(segment, Segments.Reply):
                 parts.append(f"[回复:{getattr(segment, 'id', '')}]")
             elif isinstance(segment, Segments.At):
@@ -2434,7 +2757,10 @@ class JianerAIService:
     @staticmethod
     def _has_media(event: Any) -> bool:
         return any(
-            isinstance(item, (Segments.Image, Segments.Record))
+            isinstance(
+                item,
+                (Segments.Image, Segments.Record, Segments.Video),
+            )
             for item in (getattr(event, "message", ()) or ())
         )
 

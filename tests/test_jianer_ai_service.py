@@ -10,7 +10,11 @@ from jianer import common as Manager, segments as Segments
 from jianer.adapters import (
     Capability,
     ConversationKind,
+    MediaKind,
+    MediaRequest,
     MediaResolution,
+    MediaSourceKind,
+    ResolutionErrorCode,
     ResolutionStatus,
 )
 
@@ -569,6 +573,107 @@ def test_group_tts_defaults_on_and_resolved_media_bytes_reach_provider(
         assert speech.closed
 
     asyncio.run(scenario())
+
+
+def test_milky_fake_ip_media_falls_back_to_bounded_download(
+    tmp_path: Path,
+):
+    class FakeMilkyActions(FakeActions):
+        protocol = "milky"
+
+        async def resolve_media(self, request, *, conversation, policy):
+            self.media_requests.append((request, conversation, policy))
+            if request.kind is MediaSourceKind.REMOTE_URL:
+                return MediaResolution(
+                    status=ResolutionStatus.REJECTED,
+                    error_code=ResolutionErrorCode.ORIGIN_NOT_ALLOWED,
+                    mime=None,
+                    size=0,
+                    data=None,
+                    source="https://multimedia.nt.qq.com.cn",
+                )
+            return MediaResolution(
+                status=ResolutionStatus.OK,
+                error_code=None,
+                mime="image/png",
+                size=12,
+                data=b"\x89PNG\r\n\x1a\nrest",
+                source="data:image/png",
+            )
+
+    async def scenario():
+        service, providers, _ = _service(tmp_path)
+        downloaded = []
+
+        async def fake_download(request, policy):
+            downloaded.append((request, policy))
+            return b"\x89PNG\r\n\x1a\nrest"
+
+        service._download_milky_fake_ip_media = fake_download
+        actions = FakeMilkyActions(
+            {Capability.SEND_REPLY, Capability.RESOLVE_MEDIA}
+        )
+        event = _at_event(
+            "这是什么",
+            protocol="milky",
+            extra_segments=(
+                Segments.Image(
+                    "https://multimedia.nt.qq.com.cn/download?token=secret"
+                ),
+            ),
+        )
+
+        assert await service.handle_fallback(event, actions)
+        assert len(downloaded) == 1
+        assert [
+            request.kind for request, _, _ in actions.media_requests
+        ] == [MediaSourceKind.REMOTE_URL, MediaSourceKind.DATA_URI]
+        assert len(providers.calls[-1]["attachments"]) == 1
+        assert providers.calls[-1]["attachments"][0].mime == "image/png"
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_milky_fake_ip_fallback_is_limited_to_official_https_origin():
+    service = object.__new__(JianerAIService)
+    key = SimpleNamespace(protocol="milky")
+    rejected = MediaResolution(
+        status=ResolutionStatus.REJECTED,
+        error_code=ResolutionErrorCode.ORIGIN_NOT_ALLOWED,
+        mime=None,
+        size=0,
+        data=None,
+        source="https://multimedia.nt.qq.com.cn",
+    )
+
+    def request(locator: str) -> MediaRequest:
+        return MediaRequest(
+            kind=MediaSourceKind.REMOTE_URL,
+            media_kind=MediaKind.IMAGE,
+            locator=locator,
+        )
+
+    assert service._should_use_milky_fake_ip_fallback(
+        key,
+        request("https://multimedia.nt.qq.com.cn/download?token=secret"),
+        rejected,
+    )
+    assert not service._should_use_milky_fake_ip_fallback(
+        key,
+        request("http://multimedia.nt.qq.com.cn/download"),
+        rejected,
+    )
+    assert not service._should_use_milky_fake_ip_fallback(
+        key,
+        request("https://multimedia.nt.qq.com.cn.evil.test/download"),
+        rejected,
+    )
+    assert not service._should_use_milky_fake_ip_fallback(
+        SimpleNamespace(protocol="onebot"),
+        request("https://multimedia.nt.qq.com.cn/download"),
+        rejected,
+    )
 
 
 def test_observer_deduplicates_group_transcript_across_active_presets(

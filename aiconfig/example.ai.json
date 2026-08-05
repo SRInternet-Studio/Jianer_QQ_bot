@@ -1,7 +1,7 @@
 {
   "FriendlyName": "example",
   "Model": "gemini-2.5-flash",
-  "ResponseType": "openai",
+  "ResponseType": "OpenAI Chat Completions",
   "ApiKey": "sk-",
   "BaseUrl": "https://rinkoai.com/v1",
   "Temperature": 0.7,

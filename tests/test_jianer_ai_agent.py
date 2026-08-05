@@ -773,7 +773,7 @@ def test_gemini_provider_preserves_signature_and_replays_function_response(tmp_p
         assert answer == "81"
         declaration = payloads[0]["tools"][0]["functionDeclarations"][0]
         assert declaration["name"] == "calculate_expression"
-        assert "additionalProperties" not in declaration["parameters"]
+        assert declaration["parametersJsonSchema"]["additionalProperties"] is False
         model_content = payloads[1]["contents"][-2]
         assert model_content["parts"][0]["thoughtSignature"] == "opaque-signature"
         response = payloads[1]["contents"][-1]["parts"][0]["functionResponse"]

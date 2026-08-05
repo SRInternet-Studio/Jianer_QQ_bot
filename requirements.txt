@@ -5,7 +5,9 @@ datetime
 ddgs>=9.14.4,<10
 emoji
 jianer-bot>=0.92.5
-openai>=1.35.12
+openai>=2.30,<3
+anthropic>=0.117,<1
+google-genai>=2.16,<3
 requests
 aiohttp
 psutil
@@ -30,6 +32,5 @@ flask-socketio
 playwright>=1.58,<1.59
 pymysql
 cryptography
-aiohttp
 pycryptodome
 lark-oapi

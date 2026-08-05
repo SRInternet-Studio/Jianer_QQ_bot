@@ -6,23 +6,34 @@ import inspect
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from plugins.JianerAI.media_input import (
+    MediaProcessingError,
+    normalize_audio,
+    process_video,
+)
+
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
+DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_REQUEST_TIMEOUT = 120.0
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
-_SUPPORTED_ATTACHMENT_MIME_PREFIXES = ("image/", "audio/")
+_SUPPORTED_ATTACHMENT_MIME_PREFIXES = ("image/", "audio/", "video/")
 _PROTECTED_PAYLOAD_KEYS = frozenset(
     {
         "model",
         "messages",
+        "input",
+        "instructions",
+        "previous_response_id",
+        "store",
         "contents",
         "systemInstruction",
         "generationConfig",
+        "system",
         "tools",
         "tool_choice",
     }
@@ -51,6 +62,14 @@ class EmptyProviderResponseError(ProviderError):
 
 class ToolsUnsupportedError(ProviderError):
     """The configured endpoint explicitly rejected function tools."""
+
+
+class MediaCapabilityError(ProviderError):
+    """The selected protocol cannot safely consume an attachment."""
+
+    def __init__(self, safe_message: str) -> None:
+        self.safe_message = str(safe_message or "当前模型无法读取该附件。").strip()
+        super().__init__(self.safe_message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +133,8 @@ class ModelConfig:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT
     endpoint_style: str = ""
     tools_enabled: str = "auto"
+    transcription_model: str = "gpt-4o-mini-transcribe"
+    thinking_level: str = ""
     extra_parameters: Mapping[str, Any] = field(default_factory=dict, repr=False)
     extra_body: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
@@ -144,6 +165,17 @@ class ModelConfig:
         object.__setattr__(self, "api_key", api_key)
         object.__setattr__(self, "base_url", str(self.base_url or "").strip())
         object.__setattr__(self, "personality", str(self.personality or ""))
+        object.__setattr__(
+            self,
+            "transcription_model",
+            str(self.transcription_model or "gpt-4o-mini-transcribe").strip(),
+        )
+        thinking_level = str(self.thinking_level or "").strip().casefold()
+        if thinking_level not in {"", "minimal", "low", "medium", "high"}:
+            raise ModelConfigError(
+                "ThinkingLevel must be minimal, low, medium, or high"
+            )
+        object.__setattr__(self, "thinking_level", thinking_level)
         object.__setattr__(
             self,
             "empty_response_text",
@@ -372,7 +404,8 @@ class ProviderRegistry:
             raise ToolsUnsupportedError(
                 f"function tools are disabled for model {config.key!r}"
             )
-        if config.provider == "openai":
+        if config.provider == "openai_chat_completions":
+            request = await self._prepare_openai_chat_request(request)
             payload = _build_openai_payload(config, request)
             response = await self._request("openai", config, payload)
             result = await _extract_openai_response(response)
@@ -385,10 +418,18 @@ class ProviderRegistry:
                     raise ProviderRequestError(
                         "provider returned malformed textual tool calls"
                     )
-        elif config.provider == "gemini":
+        elif config.provider == "openai_responses":
+            result = await self._complete_responses(config, request)
+        elif config.provider == "google_generate_content":
             payload = _build_gemini_payload(config, request)
             response = await self._request("gemini", config, payload)
             result = _extract_gemini_response(response)
+            if not result.text and not result.tool_calls:
+                raise _gemini_empty_response_error(response)
+        elif config.provider == "anthropic_messages":
+            payload = _build_anthropic_payload(config, request)
+            response = await self._request("anthropic", config, payload)
+            result = _extract_anthropic_response(response)
         else:  # ModelConfig validation keeps this branch unreachable.
             raise ModelConfigError(f"unsupported provider: {config.provider}")
         normalized_text = str(result.text or "").rstrip()
@@ -405,6 +446,151 @@ class ProviderRegistry:
             return ProviderResponse(normalized_text, result.tool_calls, turn)
         return result
 
+    async def _complete_responses(
+        self,
+        config: ModelConfig,
+        request: ChatRequest,
+    ) -> ProviderResponse:
+        prepared_request = await self._prepare_responses_request(
+            config,
+            request,
+        )
+        payload = _build_responses_payload(config, prepared_request)
+        response = await self._request("responses", config, payload)
+        return _extract_responses_response(response)
+
+    async def _prepare_openai_chat_request(
+        self,
+        request: ChatRequest,
+    ) -> ChatRequest:
+        prepared: list[MediaAttachment] = []
+        for attachment in request.attachments:
+            if attachment.mime.startswith("video/"):
+                raise MediaCapabilityError(
+                    "OpenAI Chat Completions 不支持视频输入，请切换到 "
+                    "OpenAI Responses 或 Google GenerateContent。"
+                )
+            if not attachment.mime.startswith("audio/") or attachment.mime in {
+                "audio/mpeg",
+                "audio/mp3",
+                "audio/wav",
+                "audio/x-wav",
+            }:
+                prepared.append(attachment)
+                continue
+            try:
+                normalized = await normalize_audio(
+                    attachment.data,
+                    attachment.mime,
+                )
+            except MediaProcessingError as exc:
+                raise MediaCapabilityError(exc.safe_message) from exc
+            prepared.append(
+                MediaAttachment(
+                    data=normalized.data,
+                    mime=normalized.mime,
+                    source=attachment.source,
+                )
+            )
+        return replace(request, attachments=tuple(prepared))
+
+    async def _prepare_responses_request(
+        self,
+        config: ModelConfig,
+        request: ChatRequest,
+    ) -> ChatRequest:
+        prepared: list[MediaAttachment] = []
+        notes: list[str] = []
+        video_count = 0
+        for attachment in request.attachments:
+            if attachment.mime.startswith("image/"):
+                prepared.append(attachment)
+                continue
+            if attachment.mime.startswith("audio/"):
+                try:
+                    normalized = await normalize_audio(
+                        attachment.data,
+                        attachment.mime,
+                    )
+                except MediaProcessingError as exc:
+                    raise MediaCapabilityError(exc.safe_message) from exc
+                transcript = await self._transcribe_audio(
+                    config,
+                    normalized.data,
+                    normalized.mime,
+                )
+                notes.append(f"[语音转写]\n{transcript}")
+                continue
+            if attachment.mime.startswith("video/"):
+                video_count += 1
+                if video_count > 1:
+                    raise MediaCapabilityError(
+                        "OpenAI Responses 每次最多处理一个视频附件。"
+                    )
+                try:
+                    video = await process_video(
+                        attachment.data,
+                        attachment.mime,
+                    )
+                except MediaProcessingError as exc:
+                    raise MediaCapabilityError(exc.safe_message) from exc
+                prepared.extend(
+                    MediaAttachment(
+                        data=frame.data,
+                        mime=frame.mime,
+                        source=attachment.source,
+                    )
+                    for frame in video.frames
+                )
+                notes.append(
+                    "[视频画面] 已按时间顺序抽取 "
+                    f"{len(video.frames)} 帧（视频时长约 "
+                    f"{video.duration_seconds:.1f} 秒）。"
+                )
+                if video.audio is not None:
+                    transcript = await self._transcribe_audio(
+                        config,
+                        video.audio.data,
+                        video.audio.mime,
+                    )
+                    notes.append(f"[视频音轨转写]\n{transcript}")
+                continue
+            raise MediaCapabilityError(
+                f"OpenAI Responses 不支持附件格式 {attachment.mime}。"
+            )
+        message = request.message
+        if notes:
+            note_text = "\n\n".join(notes)
+            message = f"{message}\n\n{note_text}" if message else note_text
+        return replace(
+            request,
+            message=message,
+            attachments=tuple(prepared),
+        )
+
+    async def _transcribe_audio(
+        self,
+        config: ModelConfig,
+        data: bytes,
+        mime: str,
+    ) -> str:
+        response = await self._request(
+            "transcription",
+            config,
+            {
+                "model": config.transcription_model,
+                "file": {
+                    "name": f"input.{_audio_format(mime)}",
+                    "data": data,
+                    "mime": mime,
+                },
+            },
+        )
+        text = _extract_transcription_text(response).strip()
+        if not text:
+            raise MediaCapabilityError("语音转写没有返回可识别的文字。")
+        return text
+
     async def _request(
         self,
         provider: str,
@@ -417,7 +603,15 @@ class ProviderRegistry:
                 return await result if inspect.isawaitable(result) else result
             if provider == "openai":
                 return await _default_openai_request(config, payload)
-            return await _default_gemini_request(config, payload)
+            if provider == "responses":
+                return await _default_responses_request(config, payload)
+            if provider == "transcription":
+                return await _default_transcription_request(config, payload)
+            if provider == "gemini":
+                return await _default_gemini_request(config, payload)
+            if provider == "anthropic":
+                return await _default_anthropic_request(config, payload)
+            raise ModelConfigError(f"unsupported provider transport: {provider}")
         except ProviderError:
             raise
         except Exception as exc:
@@ -476,6 +670,10 @@ def load_model_config(path: str | Path) -> ModelConfig:
             ),
             endpoint_style=raw.get("EndpointStyle") or "",
             tools_enabled=raw.get("ToolsEnabled", "auto"),
+            transcription_model=raw.get(
+                "TranscriptionModel", "gpt-4o-mini-transcribe"
+            ),
+            thinking_level=raw.get("ThinkingLevel", ""),
             extra_parameters=extra_parameters,
             extra_body=extra_body,
         )
@@ -484,14 +682,26 @@ def load_model_config(path: str | Path) -> ModelConfig:
 
 
 def _normalize_provider(value: Any) -> str:
-    normalized = str(value or "").strip().casefold().replace("_", "-")
+    normalized = re.sub(
+        r"[\s_-]+",
+        "-",
+        str(value or "").strip().casefold(),
+    )
     aliases = {
-        "openai": "openai",
-        "openai-compatible": "openai",
-        "chat-completions": "openai",
-        "gemini": "gemini",
-        "google": "gemini",
-        "google-gemini": "gemini",
+        "openai": "openai_chat_completions",
+        "openai-compatible": "openai_chat_completions",
+        "chat-completions": "openai_chat_completions",
+        "openai-chat-completions": "openai_chat_completions",
+        "responses": "openai_responses",
+        "openai-responses": "openai_responses",
+        "gemini": "google_generate_content",
+        "google": "google_generate_content",
+        "google-gemini": "google_generate_content",
+        "google-generatecontent": "google_generate_content",
+        "google-generate-content": "google_generate_content",
+        "anthropic": "anthropic_messages",
+        "claude": "anthropic_messages",
+        "anthropic-messages": "anthropic_messages",
     }
     try:
         return aliases[normalized]
@@ -556,6 +766,11 @@ def _build_openai_payload(
                             "format": _audio_format(attachment.mime),
                         },
                     }
+                )
+            elif attachment.mime.startswith("video/"):
+                raise MediaCapabilityError(
+                    "OpenAI Chat Completions 不支持视频输入，请切换到 "
+                    "OpenAI Responses 或 Google GenerateContent。"
                 )
         messages.append({"role": "user", "content": content})
     else:
@@ -664,13 +879,21 @@ def _build_gemini_payload(
         contents.append({"role": "model", "parts": model_parts})
     if pending_results:
         contents.append({"role": "user", "parts": pending_results})
+    generation_config: dict[str, Any] = {
+        "temperature": config.temperature,
+        "topP": config.top_p,
+        "maxOutputTokens": config.max_tokens,
+    }
+    thinking_level = config.thinking_level
+    if not thinking_level and request.tools and _is_gemini_3_model(config.model):
+        thinking_level = "medium"
+    if thinking_level:
+        generation_config["thinkingConfig"] = {
+            "thinkingLevel": thinking_level,
+        }
     payload: dict[str, Any] = {
         "contents": contents,
-        "generationConfig": {
-            "temperature": config.temperature,
-            "topP": config.top_p,
-            "maxOutputTokens": config.max_tokens,
-        },
+        "generationConfig": generation_config,
     }
     system_prompt = _final_system_prompt(config, request)
     if system_prompt:
@@ -685,12 +908,239 @@ def _build_gemini_payload(
                     {
                         "name": tool.name,
                         "description": tool.description,
-                        "parameters": _gemini_schema(tool.parameters),
+                        "parametersJsonSchema": dict(tool.parameters),
                     }
                     for tool in request.tools
                 ]
             }
         ]
+    return payload
+
+
+def _is_gemini_3_model(model: str) -> bool:
+    normalized = str(model or "").strip().casefold().replace("_", "-")
+    return "gemini-3" in normalized
+
+
+def _build_responses_payload(
+    config: ModelConfig,
+    request: ChatRequest,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": config.model,
+        "input": _responses_full_input(config, request),
+        "store": False,
+        "temperature": config.temperature,
+        "top_p": config.top_p,
+        "max_output_tokens": config.max_tokens,
+    }
+    system_prompt = _final_system_prompt(config, request)
+    if system_prompt:
+        payload["instructions"] = system_prompt
+    _merge_safe_extra(payload, config.extra_parameters)
+    _merge_safe_extra(payload, config.extra_body)
+    if request.tools:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": dict(tool.parameters),
+                "strict": False,
+            }
+            for tool in request.tools
+        ]
+        payload["tool_choice"] = "auto"
+    return payload
+
+
+def _responses_full_input(
+    config: ModelConfig,
+    request: ChatRequest,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = [
+        {"role": item["role"], "content": item["content"]}
+        for item in _history_messages(config, request.history)
+    ]
+    items.append(
+        {"role": "user", "content": _responses_user_content(request)}
+    )
+    for turn in request.turns:
+        if isinstance(turn, AssistantTurn):
+            if turn.text:
+                items.append(
+                    {
+                        "role": "assistant",
+                        "content": turn.text,
+                    }
+                )
+            items.extend(_responses_function_call(call) for call in turn.tool_calls)
+        else:
+            items.append(_responses_function_result(turn))
+    return items
+
+
+def _responses_user_content(
+    request: ChatRequest,
+) -> str | list[dict[str, Any]]:
+    if not request.attachments:
+        return request.message or "请回复当前请求。"
+    content: list[dict[str, Any]] = []
+    if request.message:
+        content.append({"type": "input_text", "text": request.message})
+    for attachment in request.attachments:
+        encoded = base64.b64encode(attachment.data).decode("ascii")
+        if attachment.mime.startswith("image/"):
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{attachment.mime};base64,{encoded}",
+                    "detail": "auto",
+                }
+            )
+            continue
+        if attachment.mime.startswith("audio/"):
+            raise MediaCapabilityError(
+                "OpenAI Responses 的语音需要先完成转写。"
+            )
+        if attachment.mime.startswith("video/"):
+            raise MediaCapabilityError(
+                "OpenAI Responses 的视频需要先完成抽帧和音轨转写。"
+            )
+    if not content:
+        content.append({"type": "input_text", "text": "请回复当前请求。"})
+    return content
+
+
+def _responses_function_call(call: ProviderToolCall) -> dict[str, Any]:
+    return {
+        "type": "function_call",
+        "call_id": call.id,
+        "name": call.name,
+        "arguments": _arguments_json(call.arguments),
+    }
+
+
+def _responses_function_result(turn: ToolResultTurn) -> dict[str, Any]:
+    return {
+        "type": "function_call_output",
+        "call_id": turn.call_id,
+        "output": turn.content,
+    }
+
+
+def _build_anthropic_payload(
+    config: ModelConfig,
+    request: ChatRequest,
+) -> dict[str, Any]:
+    messages: list[dict[str, Any]] = [
+        {
+            "role": item["role"],
+            "content": item["content"],
+        }
+        for item in _history_messages(config, request.history)
+    ]
+    user_content: list[dict[str, Any]] = []
+    if request.message:
+        user_content.append({"type": "text", "text": request.message})
+    for attachment in request.attachments:
+        if attachment.mime.startswith("image/"):
+            if attachment.mime not in {
+                "image/jpeg",
+                "image/png",
+                "image/gif",
+                "image/webp",
+            }:
+                raise MediaCapabilityError(
+                    f"Anthropic Messages 不支持图片格式 {attachment.mime}。"
+                )
+            user_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": attachment.mime,
+                        "data": base64.b64encode(attachment.data).decode("ascii"),
+                    },
+                }
+            )
+            continue
+        if attachment.mime.startswith("audio/"):
+            raise MediaCapabilityError(
+                "Anthropic Messages 当前不支持语音输入，请切换到支持语音的模型。"
+            )
+        if attachment.mime.startswith("video/"):
+            raise MediaCapabilityError(
+                "Anthropic Messages 当前不支持视频输入，请切换到支持视频的模型。"
+            )
+    if not user_content:
+        user_content.append({"type": "text", "text": "请回复当前请求。"})
+    messages.append({"role": "user", "content": user_content})
+
+    pending_results: list[dict[str, Any]] = []
+    for turn in request.turns:
+        if isinstance(turn, ToolResultTurn):
+            pending_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": turn.call_id,
+                    "content": turn.content,
+                }
+            )
+            continue
+        if pending_results:
+            messages.append({"role": "user", "content": pending_results})
+            pending_results = []
+        stored = (
+            turn.provider_content.get("anthropic_content")
+            if turn.provider_content is not None
+            else None
+        )
+        if isinstance(stored, Sequence) and not isinstance(
+            stored, (str, bytes, bytearray)
+        ):
+            content = [
+                dict(item) for item in stored if isinstance(item, Mapping)
+            ]
+        else:
+            content = []
+            if turn.text:
+                content.append({"type": "text", "text": turn.text})
+            content.extend(
+                {
+                    "type": "tool_use",
+                    "id": call.id,
+                    "name": call.name,
+                    "input": _arguments_mapping(call.arguments),
+                }
+                for call in turn.tool_calls
+            )
+        messages.append({"role": "assistant", "content": content})
+    if pending_results:
+        messages.append({"role": "user", "content": pending_results})
+
+    payload: dict[str, Any] = {
+        "model": config.model,
+        "messages": messages,
+        "temperature": config.temperature,
+        "top_p": config.top_p,
+        "max_tokens": config.max_tokens,
+    }
+    system_prompt = _final_system_prompt(config, request)
+    if system_prompt:
+        payload["system"] = system_prompt
+    if request.tools:
+        payload["tools"] = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": dict(tool.parameters),
+            }
+            for tool in request.tools
+        ]
+        payload["tool_choice"] = {"type": "auto"}
+    _merge_safe_extra(payload, config.extra_parameters)
+    _merge_safe_extra(payload, config.extra_body)
     return payload
 
 
@@ -726,24 +1176,6 @@ def _gemini_function_response(turn: ToolResultTurn) -> dict[str, Any]:
     if turn.call_id and not turn.call_id.startswith("local-gemini-"):
         function_response["id"] = turn.call_id
     return {"functionResponse": function_response}
-
-
-def _gemini_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
-    output: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key in {"additionalProperties", "default"}:
-            continue
-        if key == "properties" and isinstance(value, Mapping):
-            output[key] = {
-                str(name): _gemini_schema(child)
-                for name, child in value.items()
-                if isinstance(child, Mapping)
-            }
-        elif key == "items" and isinstance(value, Mapping):
-            output[key] = _gemini_schema(value)
-        else:
-            output[key] = _plain_value(value)
-    return output
 
 
 def _merge_safe_extra(payload: dict[str, Any], extra: Mapping[str, Any]) -> None:
@@ -782,56 +1214,264 @@ async def _default_openai_request(
                 await result
 
 
+async def _default_responses_request(
+    config: ModelConfig,
+    payload: Mapping[str, Any],
+) -> Any:
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as exc:
+        raise ProviderRequestError(
+            "OpenAI Responses requires the 'openai' package"
+        ) from exc
+    client = AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url or DEFAULT_OPENAI_BASE_URL,
+        timeout=config.request_timeout_seconds,
+    )
+    try:
+        return await client.responses.create(**dict(payload))
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+
+
+async def _default_transcription_request(
+    config: ModelConfig,
+    payload: Mapping[str, Any],
+) -> Any:
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as exc:
+        raise ProviderRequestError(
+            "OpenAI transcription requires the 'openai' package"
+        ) from exc
+    file_data = payload.get("file")
+    if not isinstance(file_data, Mapping):
+        raise ProviderRequestError("transcription request is missing audio bytes")
+    data = file_data.get("data")
+    if not isinstance(data, bytes) or not data:
+        raise ProviderRequestError("transcription request has invalid audio bytes")
+    client = AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url or DEFAULT_OPENAI_BASE_URL,
+        timeout=config.request_timeout_seconds,
+    )
+    try:
+        return await client.audio.transcriptions.create(
+            model=str(payload.get("model") or config.transcription_model),
+            file=(
+                str(file_data.get("name") or "input.wav"),
+                data,
+                str(file_data.get("mime") or "audio/wav"),
+            ),
+        )
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+
+
+async def _default_anthropic_request(
+    config: ModelConfig,
+    payload: Mapping[str, Any],
+) -> Any:
+    try:
+        from anthropic import AsyncAnthropic
+    except ImportError as exc:
+        raise ProviderRequestError(
+            "Anthropic Messages requires the 'anthropic' package"
+        ) from exc
+    client = AsyncAnthropic(
+        api_key=config.api_key,
+        base_url=config.base_url or DEFAULT_ANTHROPIC_BASE_URL,
+        timeout=config.request_timeout_seconds,
+    )
+    try:
+        return await client.messages.create(**dict(payload))
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+
+
 async def _default_gemini_request(
     config: ModelConfig,
     payload: Mapping[str, Any],
 ) -> Any:
     try:
-        import aiohttp
+        from google import genai
+        from google.genai import types
     except ImportError as exc:
         raise ProviderRequestError(
-            "Gemini provider requires the 'aiohttp' package"
+            "Google GenerateContent requires the 'google-genai' package"
         ) from exc
-    base_url = (config.base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/")
-    if base_url.endswith("/v1beta"):
-        endpoint = f"{base_url}/models/{config.model}:generateContent"
-    else:
-        endpoint = f"{base_url}/v1beta/models/{config.model}:generateContent"
-    timeout = aiohttp.ClientTimeout(total=config.request_timeout_seconds)
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": config.api_key,
+    contents = _google_sdk_contents(payload, types)
+    generate_config = _google_sdk_generate_config(payload, types)
+    http_options = _google_sdk_http_options(config, types)
+    client = genai.Client(
+        api_key=config.api_key,
+        http_options=http_options,
+    )
+    async_client = client.aio
+    try:
+        response = await async_client.models.generate_content(
+            model=config.model,
+            contents=contents,
+            config=generate_config,
+        )
+        return _google_sdk_response_payload(response)
+    finally:
+        await async_client.aclose()
+
+
+def _google_sdk_contents(payload: Mapping[str, Any], types: Any) -> list[Any]:
+    raw_contents = payload.get("contents")
+    if not isinstance(raw_contents, Sequence) or isinstance(
+        raw_contents,
+        (str, bytes, bytearray),
+    ):
+        raise ProviderRequestError(
+            "Google GenerateContent request is missing contents"
+        )
+    try:
+        return [types.Content.model_validate(item) for item in raw_contents]
+    except (TypeError, ValueError) as exc:
+        raise ProviderRequestError(
+            "Google GenerateContent request contains invalid content"
+        ) from exc
+
+
+def _google_sdk_generate_config(payload: Mapping[str, Any], types: Any) -> Any:
+    raw_generation = payload.get("generationConfig")
+    if not isinstance(raw_generation, Mapping):
+        raise ProviderRequestError(
+            "Google GenerateContent request is missing generation config"
+        )
+    raw_config: dict[str, Any] = dict(raw_generation)
+    system_instruction = payload.get("systemInstruction")
+    if system_instruction is not None:
+        raw_config["systemInstruction"] = system_instruction
+    tools = payload.get("tools")
+    if tools is not None:
+        raw_config["tools"] = _google_sdk_tools(tools)
+    raw_config["automatic_function_calling"] = {"disable": True}
+    raw_config["should_return_http_response"] = True
+    try:
+        return types.GenerateContentConfig.model_validate(raw_config)
+    except (TypeError, ValueError) as exc:
+        raise ProviderRequestError(
+            "Google GenerateContent request contains invalid generation config"
+        ) from exc
+
+
+def _google_sdk_response_payload(response: Any) -> dict[str, Any]:
+    if isinstance(response, Mapping):
+        return dict(response)
+    sdk_http_response = getattr(response, "sdk_http_response", None)
+    raw_body = getattr(sdk_http_response, "body", None)
+    if isinstance(raw_body, str) and raw_body.strip():
+        try:
+            data = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise ProviderRequestError(
+                "google-genai returned a malformed raw JSON response"
+            ) from exc
+        if not isinstance(data, dict):
+            raise ProviderRequestError(
+                "google-genai returned an unexpected raw response shape"
+            )
+        return data
+    dump = getattr(response, "model_dump", None)
+    if not callable(dump):
+        raise ProviderRequestError(
+            "google-genai returned an unexpected response shape"
+        )
+    data = dump(mode="json", by_alias=True, exclude_none=True)
+    if not isinstance(data, dict):
+        raise ProviderRequestError(
+            "google-genai returned an unexpected response shape"
+        )
+    return data
+
+
+def _google_sdk_tools(tools: Any) -> Any:
+    if not isinstance(tools, Sequence) or isinstance(
+        tools,
+        (str, bytes, bytearray),
+    ):
+        return tools
+    converted_tools: list[Any] = []
+    for raw_tool in tools:
+        if not isinstance(raw_tool, Mapping):
+            converted_tools.append(raw_tool)
+            continue
+        tool = dict(raw_tool)
+        declarations = tool.get("functionDeclarations")
+        if not isinstance(declarations, Sequence) or isinstance(
+            declarations,
+            (str, bytes, bytearray),
+        ):
+            converted_tools.append(tool)
+            continue
+        converted_declarations: list[Any] = []
+        for raw_declaration in declarations:
+            if not isinstance(raw_declaration, Mapping):
+                converted_declarations.append(raw_declaration)
+                continue
+            declaration = dict(raw_declaration)
+            parameters = declaration.pop("parameters", None)
+            if parameters is not None:
+                # google-genai's typed `parameters` field only accepts string
+                # enum members. Its JSON Schema field preserves valid numeric
+                # and boolean enums without changing tool argument semantics.
+                declaration.setdefault("parametersJsonSchema", parameters)
+            converted_declarations.append(declaration)
+        tool["functionDeclarations"] = converted_declarations
+        converted_tools.append(tool)
+    return converted_tools
+
+
+def _google_sdk_http_options(config: ModelConfig, types: Any) -> Any:
+    try:
+        import httpx
+    except ImportError as exc:
+        raise ProviderRequestError(
+            "Google GenerateContent requires the 'httpx' package"
+        ) from exc
+    options: dict[str, Any] = {
+        "timeout": max(1, int(config.request_timeout_seconds * 1000)),
+        # JianerCore currently pins aiohttp 3.9.x. Supplying an explicit
+        # transport keeps google-genai on its supported httpx path instead of
+        # selecting an incompatible optional aiohttp transport.
+        "async_client_args": {
+            "transport": httpx.AsyncHTTPTransport(),
+        },
     }
-    async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-        async with session.post(
-            endpoint,
-            json=dict(payload),
-            headers=headers,
-        ) as response:
-            if response.status >= 400:
-                if payload.get("tools") and response.status in {400, 404, 422}:
-                    try:
-                        error_data = await response.json()
-                    except (ValueError, aiohttp.ContentTypeError):
-                        error_data = None
-                    if _is_tools_unsupported_value(error_data):
-                        raise ToolsUnsupportedError(
-                            f"gemini endpoint rejected function tools for model {config.key!r}"
-                        )
-                raise ProviderRequestError(
-                    f"gemini request failed with HTTP {response.status}"
-                )
-            try:
-                data = await response.json()
-            except (ValueError, aiohttp.ContentTypeError) as exc:
-                raise ProviderRequestError(
-                    "gemini returned a malformed JSON response"
-                ) from exc
-            if not isinstance(data, dict):
-                raise ProviderRequestError(
-                    "gemini returned an unexpected response shape"
-                )
-            return data
+    base_url = config.base_url.rstrip("/")
+    if base_url:
+        api_version = ""
+        for candidate in ("v1beta", "v1alpha", "v1"):
+            suffix = f"/{candidate}"
+            if base_url.casefold().endswith(suffix):
+                base_url = base_url[: -len(suffix)].rstrip("/")
+                api_version = candidate
+                break
+        if not base_url:
+            raise ProviderRequestError(
+                "Google GenerateContent BaseUrl is invalid"
+            )
+        options["base_url"] = base_url
+        if api_version:
+            options["api_version"] = api_version
+    return types.HttpOptions.model_validate(options)
 
 
 async def _extract_openai_text(response: Any) -> str:
@@ -877,6 +1517,128 @@ async def _extract_openai_response(response: Any) -> ProviderResponse:
         )
     turn = AssistantTurn(text=text, tool_calls=tuple(calls))
     return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
+
+
+def _extract_responses_response(response: Any) -> ProviderResponse:
+    plain = _plain_value(response)
+    if not isinstance(plain, Mapping):
+        turn = AssistantTurn()
+        return ProviderResponse(text="", tool_calls=(), turn=turn)
+    output = plain.get("output")
+    output_items = (
+        list(output)
+        if isinstance(output, Sequence)
+        and not isinstance(output, (str, bytes, bytearray))
+        else []
+    )
+    texts: list[str] = []
+    calls: list[ProviderToolCall] = []
+    for index, item in enumerate(output_items):
+        if not isinstance(item, Mapping):
+            continue
+        item_type = str(item.get("type") or "").casefold()
+        if item_type == "function_call":
+            name = str(item.get("name") or "").strip()
+            if name:
+                calls.append(
+                    ProviderToolCall(
+                        id=str(
+                            item.get("call_id")
+                            or item.get("id")
+                            or f"responses-call-{index}"
+                        ),
+                        name=name,
+                        arguments=item.get("arguments") or {},
+                    )
+                )
+            continue
+        if item_type != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, Sequence) or isinstance(
+            content, (str, bytes, bytearray)
+        ):
+            continue
+        for part in content:
+            if not isinstance(part, Mapping):
+                continue
+            part_type = str(part.get("type") or "").casefold()
+            if part_type == "output_text" and part.get("text") is not None:
+                texts.append(str(part["text"]))
+            elif part_type == "refusal" and part.get("refusal") is not None:
+                texts.append(str(part["refusal"]))
+    if not texts:
+        output_text = plain.get("output_text")
+        if isinstance(output_text, str):
+            texts.append(output_text)
+    text = "\n".join(item for item in texts if item).strip()
+    provider_content = {
+        "responses_output": [
+            dict(item) for item in output_items if isinstance(item, Mapping)
+        ]
+    }
+    turn = AssistantTurn(
+        text=text,
+        tool_calls=tuple(calls),
+        provider_content=provider_content,
+    )
+    return ProviderResponse(
+        text=text,
+        tool_calls=tuple(calls),
+        turn=turn,
+    )
+
+
+def _extract_anthropic_response(response: Any) -> ProviderResponse:
+    plain = _plain_value(response)
+    if not isinstance(plain, Mapping):
+        turn = AssistantTurn()
+        return ProviderResponse(text="", tool_calls=(), turn=turn)
+    content = plain.get("content")
+    blocks = (
+        list(content)
+        if isinstance(content, Sequence)
+        and not isinstance(content, (str, bytes, bytearray))
+        else []
+    )
+    texts: list[str] = []
+    calls: list[ProviderToolCall] = []
+    for index, item in enumerate(blocks):
+        if not isinstance(item, Mapping):
+            continue
+        item_type = str(item.get("type") or "").casefold()
+        if item_type == "text" and item.get("text") is not None:
+            texts.append(str(item["text"]))
+        elif item_type == "tool_use":
+            name = str(item.get("name") or "").strip()
+            if name:
+                calls.append(
+                    ProviderToolCall(
+                        id=str(item.get("id") or f"anthropic-call-{index}"),
+                        name=name,
+                        arguments=item.get("input") or {},
+                    )
+                )
+    text = "\n".join(item for item in texts if item).strip()
+    turn = AssistantTurn(
+        text=text,
+        tool_calls=tuple(calls),
+        provider_content={
+            "anthropic_content": [
+                dict(item) for item in blocks if isinstance(item, Mapping)
+            ]
+        },
+    )
+    return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
+
+
+def _extract_transcription_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response
+    value = _get_value(response, "text")
+    if value is not None:
+        return str(value)
+    return ""
 
 
 def _extract_openai_message_text(response: Any) -> str:
@@ -1017,7 +1779,7 @@ def _extract_gemini_response(response: Any) -> ProviderResponse:
     for index, part in enumerate(parts):
         if not isinstance(part, Mapping):
             continue
-        function = part.get("functionCall")
+        function = part.get("functionCall") or part.get("function_call")
         if not isinstance(function, Mapping):
             continue
         name = str(function.get("name") or "").strip()
@@ -1040,6 +1802,83 @@ def _extract_gemini_response(response: Any) -> ProviderResponse:
         provider_content=content,
     )
     return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
+
+
+def _gemini_empty_response_error(response: Any) -> EmptyProviderResponseError:
+    details: list[str] = []
+    if isinstance(response, Mapping):
+        candidates = response.get("candidates")
+        if isinstance(candidates, Sequence) and not isinstance(
+            candidates,
+            (str, bytes, bytearray),
+        ):
+            first = candidates[0] if candidates else None
+            if isinstance(first, Mapping):
+                reason = first.get("finishReason") or first.get("finish_reason")
+                if reason:
+                    details.append(f"finish_reason={reason}")
+                content = first.get("content")
+                if isinstance(content, Mapping):
+                    parts = content.get("parts")
+                    if isinstance(parts, Sequence) and not isinstance(
+                        parts,
+                        (str, bytes, bytearray),
+                    ):
+                        details.append(f"parts={len(parts)}")
+                        part_fields = sorted(
+                            {
+                                str(key)[:40]
+                                for part in parts
+                                if isinstance(part, Mapping)
+                                for key in part
+                                if str(key)
+                                not in {
+                                    "thoughtSignature",
+                                    "thought_signature",
+                                }
+                            }
+                        )
+                        if part_fields:
+                            details.append(
+                                "part_fields=" + "|".join(part_fields[:12])
+                            )
+        prompt_feedback = response.get("promptFeedback") or response.get(
+            "prompt_feedback"
+        )
+        if isinstance(prompt_feedback, Mapping):
+            block_reason = prompt_feedback.get(
+                "blockReason"
+            ) or prompt_feedback.get("block_reason")
+            if block_reason:
+                details.append(f"block_reason={block_reason}")
+        usage = response.get("usageMetadata") or response.get("usage_metadata")
+        if isinstance(usage, Mapping):
+            for output_name, aliases in (
+                ("prompt_tokens", ("promptTokenCount", "prompt_token_count")),
+                (
+                    "candidate_tokens",
+                    ("candidatesTokenCount", "candidates_token_count"),
+                ),
+                (
+                    "thoughts_tokens",
+                    ("thoughtsTokenCount", "thoughts_token_count"),
+                ),
+                ("total_tokens", ("totalTokenCount", "total_token_count")),
+            ):
+                value = next(
+                    (
+                        usage.get(alias)
+                        for alias in aliases
+                        if usage.get(alias) is not None
+                    ),
+                    None,
+                )
+                if isinstance(value, int) and not isinstance(value, bool):
+                    details.append(f"{output_name}={value}")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return EmptyProviderResponseError(
+        "Google GenerateContent returned no text or function call" + suffix
+    )
 
 
 def _normalize_content_text(content: Any) -> str:
@@ -1117,6 +1956,7 @@ def _is_tools_unsupported_exception(exc: BaseException) -> bool:
         getattr(exc, "code", None),
         getattr(exc, "body", None),
         getattr(exc, "response", None),
+        str(exc),
     ]
     return any(_is_tools_unsupported_value(item) for item in candidates)
 
