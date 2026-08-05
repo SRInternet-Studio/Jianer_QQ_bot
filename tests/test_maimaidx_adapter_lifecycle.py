@@ -136,8 +136,24 @@ def test_milky_actions_consume_unique_responses_and_normalize_login():
     assert groups[0]["group_id"] == 100
     assert sent.echo.startswith("maimaidx:send_group_message:")
     assert forwarded.echo.startswith("maimaidx:send_group_message:")
+    forward_data = calls[-1][1]["message"][0]["data"]
+    assert forward_data["title"] == "群聊的聊天记录"
+    assert forward_data["preview"] == ["MaimaiDX: node"]
+    assert forward_data["summary"] == "查看1条转发消息"
     assert not any(key.startswith("maimaidx:") for key in reports.contents)
     assert all(item[2]["attempts"] == 1 for item in calls)
+
+
+def test_milky_forward_preview_uses_qq_style_labels_and_single_line_text():
+    content = [
+        {"type": "text", "data": {"text": "first\nsecond"}},
+        {"type": "image", "data": {"file": "base64://ignored"}},
+        {"type": "video", "data": {"file": "file://ignored"}},
+    ]
+
+    assert adapter._milky_forward_preview(content) == (
+        "first second[图片][视频]"
+    )
 
 
 def test_milky_long_text_uses_actions_chunking_but_composite_stays_single():

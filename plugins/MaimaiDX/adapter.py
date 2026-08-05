@@ -661,23 +661,37 @@ async def _milky_forward(
     if not callable(converter):
         raise RuntimeError("Milky actions do not expose forward conversion")
     outgoing_nodes = []
+    previews = []
     for node in nodes:
         data = node.to_json().get("data", {})
         content = data.get("content", [])
+        sender_name = str(
+            data.get("sender_name")
+            or data.get("nickname")
+            or data.get("nick_name")
+            or data.get("user_id")
+        )
         outgoing_nodes.append(
             MilkyOutGoingSegBuilder.outgoing_forward(
                 int(data.get("user_id")),
-                str(
-                    data.get("sender_name")
-                    or data.get("nickname")
-                    or data.get("nick_name")
-                    or data.get("user_id")
-                ),
+                sender_name,
                 [converter(item) for item in content],
             )
         )
+        if len(previews) < 4:
+            previews.append(
+                f"{sender_name}: {_milky_forward_preview(content)}"
+            )
     numeric_group_id = _numeric_id(actions, group_id, "group_id")
     outgoing = MilkyOutGoingSegBuilder().forward(outgoing_nodes).build()
+    forward_data = outgoing[0]["data"]
+    forward_data.update(
+        {
+            "title": "群聊的聊天记录",
+            "preview": previews,
+            "summary": f"查看{len(outgoing_nodes)}条转发消息",
+        }
+    )
     payload = await _packet_call(
         actions,
         "send_group_message",
@@ -690,6 +704,32 @@ async def _milky_forward(
     data["message_id"] = msg_enid(1, int(data["message_seq"]), numeric_group_id)
     data.setdefault("forward_id", "")
     return _ret(payload, SendGrpForwardRsp)
+
+
+def _milky_forward_preview(content: Iterable[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    labels = {
+        "at": "[提及]",
+        "face": "[表情]",
+        "file": "[文件]",
+        "forward": "[聊天记录]",
+        "image": "[图片]",
+        "record": "[语音]",
+        "reply": "[回复]",
+        "video": "[视频]",
+    }
+    for item in content:
+        if not isinstance(item, dict):
+            parts.append("[消息]")
+            continue
+        segment_type = str(item.get("type") or "")
+        data = item.get("data")
+        if segment_type == "text" and isinstance(data, dict):
+            parts.append(str(data.get("text", "")))
+        else:
+            parts.append(labels.get(segment_type, "[消息]"))
+    preview = " ".join("".join(parts).split())
+    return preview or "[消息]"
 
 
 async def send_group_forward(

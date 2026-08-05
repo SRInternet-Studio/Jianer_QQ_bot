@@ -6,7 +6,7 @@
 
 ## 运行要求
 
-- Python 3.11+（当前项目使用 JianerCore 0.92.1）。
+- Python 3.11+（当前项目使用 JianerCore 0.92.3）。
 - `requirements.txt` 中的 aiofiles、aiosqlite、Pydantic、Pyecharts、
   Playwright、httpx-ws、NumPy、SQLModel 和 Pillow。
 - Playwright Chromium：`python -m playwright install chromium`。
