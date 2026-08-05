@@ -4,7 +4,7 @@ aiosqlite>=0.22.1
 datetime
 ddgs>=9.14.4,<10
 emoji
-jianer-bot>=0.92.2
+jianer-bot>=0.92.5
 openai>=1.35.12
 requests
 aiohttp
