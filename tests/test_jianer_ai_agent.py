@@ -382,7 +382,7 @@ def test_builtin_memory_tools_route_group_scope_to_current_group_only(
     asyncio.run(scenario())
 
 
-def test_builtin_memory_tools_preserve_canonical_and_persona_styled_text(
+def test_builtin_memory_tools_preserve_canonical_and_persona_voice_text(
     tmp_path: Path,
 ):
     async def scenario():
@@ -1037,23 +1037,19 @@ def test_agent_runner_executes_more_than_eight_tool_calls_and_preserves_order():
     asyncio.run(scenario())
 
 
-def _write_model_config(
-    root: Path,
-    provider: str,
-    **overrides,
-) -> None:
+def _write_model_config(root: Path, provider: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    config = {
-        "FriendlyName": "Agent",
-        "Model": "test-model",
-        "ResponseType": provider,
-        "ApiKey": "test-secret",
-        "BaseUrl": "https://provider.invalid/v1",
-        "ToolsEnabled": "auto",
-    }
-    config.update(overrides)
     (root / "agent.ai.json").write_text(
-        json.dumps(config),
+        json.dumps(
+            {
+                "FriendlyName": "Agent",
+                "Model": "test-model",
+                "ResponseType": provider,
+                "ApiKey": "test-secret",
+                "BaseUrl": "https://provider.invalid/v1",
+                "ToolsEnabled": "auto",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1061,11 +1057,7 @@ def _write_model_config(
 def test_openai_provider_builds_and_replays_native_function_calls(tmp_path: Path):
     async def scenario():
         config_dir = tmp_path / "openai"
-        _write_model_config(
-            config_dir,
-            "openai",
-            EmptyResponseRetries=1,
-        )
+        _write_model_config(config_dir, "openai")
         payloads = []
 
         async def transport(provider, config, payload):
@@ -1107,7 +1099,6 @@ def test_openai_provider_builds_and_replays_native_function_calls(tmp_path: Path
         )
 
         assert answer == "64"
-        assert len(payloads) == 2
         assert payloads[0]["stream"] is False
         declaration = payloads[0]["tools"][0]["function"]
         assert declaration["name"] == "calculate_expression"
@@ -1116,48 +1107,6 @@ def test_openai_provider_builds_and_replays_native_function_calls(tmp_path: Path
         assert payloads[1]["messages"][-1]["tool_call_id"] == "openai-call-1"
 
     asyncio.run(scenario())
-
-
-def test_provider_retries_configured_empty_response_once(tmp_path: Path):
-    async def scenario():
-        config_dir = tmp_path / "empty-retry"
-        _write_model_config(
-            config_dir,
-            "openai",
-            EmptyResponseRetries=1,
-        )
-        payloads = []
-
-        async def transport(provider, config, payload):
-            payloads.append(payload)
-            if len(payloads) == 1:
-                return {"choices": [{"message": {"content": None}}]}
-            return {"choices": [{"message": {"content": "recovered"}}]}
-
-        providers = ProviderRegistry(config_dir, transport=transport)
-        assert providers.get("agent").empty_response_retries == 1
-
-        answer = await providers.chat("agent", "hello")
-
-        assert answer == "recovered"
-        assert len(payloads) == 2
-        assert payloads[0] == payloads[1]
-
-    asyncio.run(scenario())
-
-
-def test_provider_rejects_excessive_empty_response_retries(tmp_path: Path):
-    config_dir = tmp_path / "invalid-empty-retry"
-    _write_model_config(
-        config_dir,
-        "openai",
-        EmptyResponseRetries=3,
-    )
-
-    providers = ProviderRegistry(config_dir)
-
-    assert "agent.ai.json" in providers.load_errors
-    assert "EmptyResponseRetries" in providers.load_errors["agent.ai.json"]
 
 
 def test_openai_provider_converts_deepseek_dsml_text_to_tool_calls(tmp_path: Path):

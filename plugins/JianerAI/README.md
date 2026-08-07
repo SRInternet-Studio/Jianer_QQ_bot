@@ -41,9 +41,9 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 
 - `jianer_ai_db_path`：规范化 SQLite 数据库，默认 `jianer_ai.db`
 - `default_mode` / `ai_default_model`：默认对话模型
-- `content_moderation_enabled`：是否启用独立模型内容审核，默认开启
-- `content_moderation_model`：审核使用的 `aiconfig` 模型代码，默认 `deepseek`；当前项目
-  固定由 DeepSeek 独立审核，不跟随用户切换的主对话模型
+- `content_moderation_enabled`：是否启用独立模型内容审核；未配置时默认关闭
+- `content_moderation_model`：审核使用的 `aiconfig` 模型代码；审核开启时必须显式配置，
+  可选择任意已经加载的模型代码，且不跟随用户切换的主对话模型
 - `content_moderation_timeout_seconds`：单次审核超时，范围 1–120 秒，默认 30 秒；
   超时、提供商失败或非法审核结果都会按 fail closed 拒绝本轮，不会绕过审核
 - `memory_mode`：记忆提炼模型
@@ -74,12 +74,12 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `agent_browser_max_pages`：会话页面上限，默认且最大为 16
 - `agent_browser_idle_seconds`：空闲页面回收时间，默认 900 秒
 
-每次 AI 对话会先安全解析引用和附件，再把当前请求、最近最多 8 条且合计最多
-6000 字的短期上下文、从当前人设本地提取的最小风格标签（角色 ID/名称、自称、语气、
-思考倾向与语气词）以及解析后的图片、语音或视频字节交给 `content_moderation_model`；完整
-人设模板不会发送给审核模型。附件只有在审核模型所用协议支持对应格式时才能送审；不支持、
-解析失败或无法送达时会按 fail closed 拒绝本轮，不会跳过审核。审核发生在主模型和任何
-Agent 工具之前。审核器只接受严格 JSON，
+当审核开启时，每次 AI 对话会先安全解析引用和附件，再把当前请求、最近最多 8 条且合计最多
+6000 字的短期上下文、当前完整人设模板以及解析后的图片、语音或视频字节
+交给 `content_moderation_model`。完整人设只供审核模型在 `refuse` 时模仿身份、自称、称呼方式、
+情感立场、句式节奏和口癖，不能参与安全分类，也不能覆盖审核规则。附件只有在审核模型所用
+协议支持对应格式时才能送审；不支持、解析失败或无法送达时会按 fail closed 拒绝本轮，
+不会跳过审核。审核发生在主模型和任何 Agent 工具之前。审核器只接受严格 JSON，
 会区分医学教育、新闻法律讨论、风险预防等正当语境与露骨色情、未成年人性内容、性剥削、
 自残伤人、武器、违法犯罪、恶意网络行为、仇恨骚扰、隐私侵害和极端主义支持等请求。
 
@@ -90,14 +90,14 @@ Agent 工具之前。审核器只接受严格 JSON，
 的 AI 回复后缀，避免审核后的安全文本被二次改写。若关闭
 `content_moderation_enabled`，以上前置保障不会生效。
 
-当前项目的默认主回答模型为 `grok`。为避免把完整角色模板中的敏感身体设定重复发送给
-Grok 并触发兼容端点空响应，Grok 主回答使用同一份本地最小风格投影，而不是完整模板正文；
-角色 ID/名称、自称、语气、思考倾向、语气词、机器人名称和本轮可用工具名仍会保留。其他
-模型仍沿用完整人设模板。DeepSeek 审核配置建议使用 `OpenAI Chat Completions`、
-`Temperature: 0` 和 `ToolsEnabled: false`，当前本地 `aiconfig/deepseek.ai.json` 已按此设置。
-模型配置还可使用 `EmptyResponseRetries: 0|1|2`；只有一次提供商响应同时没有文本和工具调用时
-才会重试同一请求，不会重新执行 Agent 工具。当前本地 Grok 配置设为 1，用于吸收兼容端点
-偶发的空响应。
+当前项目的默认主回答模型为 `grok`。示例配置选择 DeepSeek 作为旁路门禁；也可以把
+`content_moderation_model` 改成其他已加载模型，或把 `content_moderation_enabled` 设为
+`false` 完全关闭审核。审核关闭时不会构造或验证审核模型。审核返回 `allow` 后，
+发送给 Grok、Gemini 或其他主模型的消息、历史、完整人设、系统提示、附件、工具声明和提供商
+协议均保持接入审核前的原样，审核结果及任何额外安全提示都不会进入主模型请求。只有
+`refuse` 或审核故障时才会在主模型之前终止本轮。如果选择 DeepSeek 审核，配置建议使用
+`OpenAI Chat Completions`、`Temperature: 0` 和 `ToolsEnabled: false`，当前本地
+`aiconfig/deepseek.ai.json` 已按此设置。
 
 网页搜索使用 `ddgs` 文本搜索接口。宿主可通过 `DDGS_BACKEND` 环境变量选择
 `auto`、`bing`、`brave`、`duckduckgo`、`google`、`grokipedia`、`mojeek`、
@@ -203,6 +203,8 @@ transcription 接口，默认模型为
 语气、价值观和思考方式的 `memory_text` 分开；修改时还必须使用相同 scope 下
 `list_my_memories` 返回的 ID。`read_recent_chat`（默认 20，最大 100）和
 `search_current_chat` 只能读取当前会话 90 天内的客观聊天，不能传入 QQ 号、群号或表名。
+后台记忆巩固和回复后记忆审查同样使用当前 preset 渲染出的完整人设模板，不生成或使用
+其他版本的人设。
 两个写工具属于
 `ToolRisk.MUTATING`；默认只放行这两个内置写工具，其他插件
 注册的写工具必须通过 `agent_allowed_tools` 显式点名。插件仍不向模型开放 shell、本地文件

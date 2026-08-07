@@ -28,6 +28,7 @@ from plugins.JianerAI.providers import (
     ProviderResponse,
     ProviderToolCall,
     ToolResultTurn,
+    UnknownModelError,
 )
 from plugins.JianerAI.service import JianerAIService, RuntimeOptions
 from plugins.JianerAI.speech import SpeechArtifact, SpeechOptions
@@ -327,73 +328,213 @@ def test_ai_dialogue_logs_prompt_answer_scope_and_model(tmp_path: Path):
     asyncio.run(scenario())
 
 
-def test_runtime_options_enable_agent_by_default() -> None:
+def test_runtime_options_enable_agent_and_disable_moderation_by_default() -> None:
     options = RuntimeOptions.from_runtime(
         {"config": SimpleNamespace(others={}, black_list=[])}
     )
 
     assert options.agent_enabled_default is True
     assert options.default_model == "grok"
+    assert options.content_moderation_enabled is False
+    assert options.content_moderation_model is None
+
+
+def test_runtime_options_accept_an_explicit_moderation_model() -> None:
+    options = RuntimeOptions.from_runtime(
+        {
+            "config": SimpleNamespace(
+                others={
+                    "content_moderation_enabled": True,
+                    "content_moderation_model": "review-model",
+                },
+                black_list=[],
+            )
+        }
+    )
+
     assert options.content_moderation_enabled is True
-    assert options.content_moderation_model == "deepseek"
+    assert options.content_moderation_model == "review-model"
+
+
+def test_runtime_options_require_a_model_when_moderation_is_enabled() -> None:
+    with pytest.raises(ValueError, match="content_moderation_model"):
+        RuntimeOptions.from_runtime(
+            {
+                "config": SimpleNamespace(
+                    others={"content_moderation_enabled": True},
+                    black_list=[],
+                )
+            }
+        )
+
+
+def test_disabled_moderation_does_not_validate_or_construct_its_model(
+    tmp_path: Path,
+) -> None:
+    service, _, _ = _service(
+        tmp_path,
+        moderation_enabled=False,
+        moderation_model="model-that-is-not-loaded",
+    )
+
+    assert service.moderator is None
+    asyncio.run(service.shutdown())
+
+
+def test_enabled_moderation_validates_the_selected_model(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(UnknownModelError):
+        _service(
+            tmp_path,
+            moderation_enabled=True,
+            moderation_model="model-that-is-not-loaded",
+        )
 
 
 def test_safe_request_is_moderated_before_main_model(tmp_path: Path):
+    class PayloadCaptureProvider:
+        def __init__(self):
+            self.models = {
+                "model-a": "模型 A",
+                "model-b": "审核模型",
+            }
+            self.moderation_calls = []
+            self.requests = []
+
+        def list_models(self):
+            return dict(self.models)
+
+        def get(self, key):
+            if key not in self.models:
+                from plugins.JianerAI.providers import UnknownModelError
+
+                raise UnknownModelError(key)
+            return SimpleNamespace(
+                key=key,
+                friendly_name=self.models[key],
+                model=key,
+            )
+
+        def supports_tools(self, key):
+            return True
+
+        async def chat(
+            self,
+            key,
+            message,
+            *,
+            history=(),
+            system_prompt="",
+            attachments=(),
+        ):
+            self.moderation_calls.append(
+                {
+                    "key": key,
+                    "message": message,
+                    "history": tuple(history),
+                    "system_prompt": system_prompt,
+                    "attachments": tuple(attachments),
+                }
+            )
+            return (
+                '{"decision":"allow","categories":[],'
+                '"reason":"普通科普","refusal":""}'
+            )
+
+        async def complete_request(self, key, request):
+            self.requests.append((key, request))
+            return ProviderResponse(
+                text="这是安全的主模型回答。",
+                tool_calls=(),
+                turn=AssistantTurn(text="这是安全的主模型回答。"),
+            )
+
+    async def scenario():
+        control_root = tmp_path / "without-moderation"
+        reviewed_root = tmp_path / "with-moderation"
+        control_root.mkdir()
+        reviewed_root.mkdir()
+        control_provider = PayloadCaptureProvider()
+        reviewed_provider = PayloadCaptureProvider()
+        control_service, _, _ = _service(
+            control_root,
+            moderation_enabled=False,
+            provider=control_provider,
+        )
+        reviewed_service, _, _ = _service(
+            reviewed_root,
+            moderation_enabled=True,
+            moderation_model="model-b",
+            provider=reviewed_provider,
+        )
+        control_actions = FakeActions()
+        reviewed_actions = FakeActions()
+
+        assert await control_service.handle_fallback(
+            _event("请解释光合作用", group_id=None),
+            control_actions,
+        )
+        assert await reviewed_service.handle_fallback(
+            _event("请解释光合作用", group_id=None),
+            reviewed_actions,
+        )
+
+        assert len(reviewed_provider.moderation_calls) == 1
+        review_call = reviewed_provider.moderation_calls[0]
+        assert review_call["key"] == "model-b"
+        review_payload = json.loads(review_call["message"])
+        assert review_payload["current_request"]["text"] == "请解释光合作用"
+        persona_template = review_payload["persona_template"]
+        assert "你是简儿，正在和user-42交流。" in persona_template
+        assert "工具：无" in persona_template
+        assert "persona_id" not in persona_template
+        assert review_call["history"] == ()
+
+        assert len(control_provider.requests) == 1
+        assert len(reviewed_provider.requests) == 1
+        assert reviewed_provider.requests[0] == control_provider.requests[0]
+        _, main_request = reviewed_provider.requests[0]
+        assert "当前请求已经经过独立的前置审核" not in (
+            main_request.system_prompt
+        )
+        assert "这是安全的主模型回答。" in str(
+            reviewed_actions.sent[-1][1]
+        )
+        await control_service.shutdown()
+        await reviewed_service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_grok_main_model_keeps_complete_persona_after_moderation(tmp_path: Path):
     async def scenario():
         provider = ModerationProviders(
-            "这是安全的主模型回答。",
+            "Grok 的安全回答。",
             '{"decision":"allow","categories":[],"reason":"普通科普",'
             '"refusal":""}',
         )
         service, _, _ = _service(
             tmp_path,
             moderation_enabled=True,
-            moderation_model="model-b",
             provider=provider,
         )
+        provider.models["grok"] = "Grok"
         actions = FakeActions()
         event = _event("请解释光合作用", group_id=None)
-
-        assert await service.handle_fallback(event, actions) is True
-
-        assert provider.moderation_calls == 1
-        assert [call["key"] for call in provider.calls] == [
-            "model-b",
-            "model-a",
-        ]
-        review_payload = json.loads(provider.calls[0]["message"])
-        assert review_payload["current_request"]["text"] == "请解释光合作用"
-        persona_style = json.loads(review_payload["persona"])
-        assert persona_style["persona_id"] == "Normal"
-        assert persona_style["self_reference"] == "我"
-        assert provider.calls[0]["history"] == ()
-        assert "回答仍须保持安全、合法" in provider.calls[1]["system_prompt"]
-        assert "这是安全的主模型回答。" in str(actions.sent[-1][1])
-        await service.shutdown()
-
-    asyncio.run(scenario())
-
-
-def test_grok_main_model_uses_compact_safe_persona_projection(tmp_path: Path):
-    async def scenario():
-        service, providers, _ = _service(
-            tmp_path,
-            answer="Grok 的安全回答。",
-        )
-        providers.models["grok"] = "Grok"
-        actions = FakeActions()
-        event = _event("请解释光合作用", group_id=None)
+        assert await service.switch_persona(event, actions, "测试角色")
         key = await service._conversation_key(event, actions)
         service._models[key] = "grok"
+        actions.sent.clear()
 
         assert await service.handle_fallback(event, actions) is True
 
-        assert providers.calls[-1]["key"] == "grok"
-        system_prompt = providers.calls[-1]["system_prompt"]
-        assert "persona_style" in system_prompt
-        assert '"persona_id":"Normal"' in system_prompt
-        assert "完整角色模板" in system_prompt
-        assert "你在扮演测试角色" not in system_prompt
+        assert provider.calls[-1]["key"] == "grok"
+        system_prompt = provider.calls[-1]["system_prompt"]
+        assert "你在扮演测试角色。" in system_prompt
+        assert "当前请求已经经过独立的前置审核" not in system_prompt
+        review_payload = json.loads(provider.calls[0]["message"])
+        assert review_payload["persona_template"] == "你在扮演测试角色。"
         assert "Grok 的安全回答。" in str(actions.sent[-1][1])
         await service.shutdown()
 
@@ -1047,8 +1188,12 @@ def test_memory_generation_uses_canonical_preset_across_sessions(
             providers.calls[-1]["message"]
         )
         assert "群内背景都不要输出" in providers.calls[-1]["message"]
-        assert '"persona_id":"Normal"' in providers.calls[-1]["message"]
-        assert "严格使用输入中风格标签规定的第一人称称谓" in (
+        assert "当前完整人设模板" in providers.calls[-1]["message"]
+        assert "你是简儿，正在和qq:42交流。" in (
+            providers.calls[-1]["message"]
+        )
+        assert "工具：无" in providers.calls[-1]["message"]
+        assert "严格按照输入中的完整人设模板" in (
             providers.calls[-1]["system_prompt"]
         )
         memories = service.memory.list_memories(
@@ -1063,6 +1208,53 @@ def test_memory_generation_uses_canonical_preset_across_sessions(
             )
             is None
         )
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_memory_generation_receives_the_complete_long_persona_template(
+    tmp_path: Path,
+):
+    async def scenario():
+        service, providers, _ = _service(
+            tmp_path,
+            answer='{"memories":[{"content":"我记得你喜欢蓝色。","weight":0.8}]}',
+        )
+        long_template = (
+            "完整人设开头：你正在和{self.event_user}交流。\n"
+            + ("这是不可省略的完整角色设定。" * 600)
+            + "\n完整人设结尾：用户ID是{self.event_user_id}，口癖是哼哼。"
+        )
+        service.presets.upsert(
+            key="LongPersona",
+            name="长人设",
+            info="完整长人设",
+            template=long_template,
+        )
+        actions = FakeActions()
+        event = _event("我长期喜欢蓝色", group_id=None)
+        assert await service.switch_persona(event, actions, "LongPersona")
+        await service.observe(event, actions)
+        key = await service._conversation_key(event, actions)
+        canonical = service._canonical_identity(event, actions)
+
+        created = await service._generate_memories_now(
+            canonical,
+            key,
+            force=True,
+        )
+
+        assert created == 1
+        rendered = service._render_persona_template(
+            key.preset,
+            event_user=canonical,
+            canonical=canonical,
+        )
+        assert len(rendered) > 6000
+        assert rendered in providers.calls[-1]["message"]
+        assert "完整人设开头" in providers.calls[-1]["message"]
+        assert "完整人设结尾" in providers.calls[-1]["message"]
         await service.shutdown()
 
     asyncio.run(scenario())
@@ -1141,6 +1333,23 @@ def test_successful_reply_records_outgoing_and_reviews_memory_exactly_once(
         )
         actions = FakeActions()
         event = _at_event("请记住，我长期喜欢蓝莓蛋糕")
+        long_template = (
+            "完整审查人设开头：你正在和{self.event_user}交流。\n"
+            + ("这是回复后记忆审查不可省略的完整角色设定。" * 450)
+            + "\n完整审查人设结尾：用户ID是{self.event_user_id}，口癖是哼。"
+        )
+        service.presets.upsert(
+            key="ReviewPersona",
+            name="审查长人设",
+            info="完整审查长人设",
+            template=long_template,
+        )
+        assert await service.switch_persona(
+            event,
+            actions,
+            "ReviewPersona",
+        )
+        actions.sent.clear()
         await service.observe(event, actions)
         assert await service.handle_fallback(event, actions)
         while service._background_tasks:
@@ -1183,6 +1392,16 @@ def test_successful_reply_records_outgoing_and_reviews_memory_exactly_once(
         assert len(episodes) == 1
         assert episodes[0].review_state == "completed"
         assert provider.review_calls == 1
+        review_payload = json.loads(provider.calls[-1]["message"])
+        rendered = service._render_persona_template(
+            key.preset,
+            event_user="user-42",
+            canonical="qq:42",
+        )
+        assert len(rendered) > 6000
+        assert review_payload["persona_template"] == rendered
+        assert "完整审查人设开头" in review_payload["persona_template"]
+        assert "完整审查人设结尾" in review_payload["persona_template"]
         service._schedule_memory_review(key.preset, event.message_id)
         await asyncio.sleep(0.05)
         assert provider.review_calls == 1

@@ -64,13 +64,13 @@ def test_content_moderator_allows_safe_request_with_bounded_context_and_media():
                 model="review-model",
                 max_context_messages=2,
                 max_context_characters=40,
-                max_persona_characters=30,
             ),
         )
         attachment = MediaAttachment(data=b"png", mime="image/png")
+        persona = "你是一个温柔、耐心并且会自然说话的角色。" * 3
         decision = await moderator.review_request(
             "请解释这张医学示意图",
-            persona="你是一个温柔、耐心并且会自然说话的角色。" * 3,
+            persona=persona,
             history=(
                 {"role": "user", "content": "最早的消息不应被发送"},
                 {"role": "assistant", "content": "上一轮回答"},
@@ -91,7 +91,7 @@ def test_content_moderator_allows_safe_request_with_bounded_context_and_media():
         )
         payload = json.loads(str(call["message"]))
         assert payload["task"] == "review_current_user_request"
-        assert len(payload["persona"]) <= 30
+        assert payload["persona_template"] == persona
         assert len(payload["recent_context"]) <= 2
         assert "最早的消息不应被发送" not in str(payload)
         assert payload["current_request"]["attachments"] == [
@@ -130,7 +130,39 @@ def test_content_moderator_returns_persona_refusal_for_disallowed_request():
             "这种内容本姑娘可不写呀，换成含蓄的恋爱故事怎么样？"
         )
         payload = json.loads(str(provider.calls[0]["message"]))
-        assert "本姑娘" in payload["persona"]
+        assert "本姑娘" in payload["persona_template"]
+        system_prompt = " ".join(
+            str(provider.calls[0]["system_prompt"]).split()
+        )
+        assert "not like a generic safety assistant" in system_prompt
+        assert "persona's identity" in system_prompt
+        assert "preferred first-person reference" in system_prompt
+        assert "at least two distinctive markers" in system_prompt
+
+    asyncio.run(scenario())
+
+
+def test_content_moderator_preserves_a_long_persona_template_by_default():
+    async def scenario():
+        provider = FakeProvider(
+            '{"decision":"allow","categories":[],"reason":"",'
+            '"refusal":""}'
+        )
+        moderator = ContentModerator(
+            provider,
+            options=ModerationOptions(model="review-model"),
+        )
+        persona = "角色开头：自称本姑娘。" + ("人设正文" * 5000) + "结尾口癖：哼哼。"
+
+        decision = await moderator.review_request(
+            "请解释光合作用",
+            persona=persona,
+        )
+
+        assert decision.allowed is True
+        payload = json.loads(str(provider.calls[0]["message"]))
+        assert payload["persona_template"] == persona
+        assert len(payload["persona_template"]) > 16000
 
     asyncio.run(scenario())
 
