@@ -112,7 +112,7 @@ def _web_search(
 
 
 def _configured_backend() -> str:
-    backend = str(os.environ.get("DDGS_BACKEND") or "auto").strip().casefold()
+    backend = str(os.environ.get("DDGS_BACKEND") or "yandex").strip().casefold()
     if backend not in _ALLOWED_BACKENDS:
         raise ValueError("DDGS_BACKEND is not an allowed search backend")
     return backend

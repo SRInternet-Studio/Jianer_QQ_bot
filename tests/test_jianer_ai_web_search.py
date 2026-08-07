@@ -219,11 +219,12 @@ def test_web_search_empty_results_and_builtin_registration(monkeypatch):
         assert result.ok is True
         assert _decoded(result)["data"] == {
             "query": "no result query",
-            "backend": "auto",
+            "backend": "yandex",
             "result_count": 0,
             "results": [],
         }
         _, kwargs = fake.instances[0].calls[0]
+        assert kwargs["backend"] == "yandex"
         assert kwargs["max_results"] == 5
         assert kwargs["timelimit"] is None
 

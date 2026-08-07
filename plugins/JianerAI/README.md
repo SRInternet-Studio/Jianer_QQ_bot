@@ -15,8 +15,10 @@
 
 模型、角色和 TTS 按完整会话键
 `(protocol, self_id, conversation_kind, conversation_id, preset)` 保存。群会话由
-群成员共享；角色 preset 同时隔离短期上下文和长期记忆。长期记忆按 canonical
-用户与 preset 跨私聊、群聊共享。
+群成员共享；角色 preset 同时隔离短期上下文和长期记忆。每个人设使用独立的物理
+SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期记忆，以及该人设在每个
+会话中“用户说了什么、自己如何回答”的对话片段。个人记忆可随同一 canonical 用户跨
+私聊和群聊使用；群记忆与对话片段不会跨群或跨人设读取。
 
 ## 常用命令
 
@@ -39,13 +41,23 @@
 
 - `jianer_ai_db_path`：规范化 SQLite 数据库，默认 `jianer_ai.db`
 - `default_mode` / `ai_default_model`：默认对话模型
+- `content_moderation_enabled`：是否启用独立模型内容审核，默认开启
+- `content_moderation_model`：审核使用的 `aiconfig` 模型代码，默认 `deepseek`；当前项目
+  固定由 DeepSeek 独立审核，不跟随用户切换的主对话模型
+- `content_moderation_timeout_seconds`：单次审核超时，范围 1–120 秒，默认 30 秒；
+  超时、提供商失败或非法审核结果都会按 fail closed 拒绝本轮，不会绕过审核
 - `memory_mode`：记忆提炼模型
 - `memory_enabled_default`
 - `memory_interval_seconds_default`
 - `memory_scheduler_tick_seconds`
 - `memory_min_new_rows_to_generate`
 - `memory_topk`
-- `memory_cleanup_keep_days`（最少 1 天，生产默认 30 天）
+- `memory_cleanup_keep_days`：原始聊天保留天数（最少 1 天，默认 90 天）；长期记忆、
+  证据摘要、episode 和删除墓碑不受此项清理
+- `memory_review_external_context_enabled`：是否允许把当前会话最近最多 50 条、合计
+  最多 8000 字的聊天原文发送给 `memory_mode` 用作回复后记忆审查；默认开启，关闭后
+  仍保存客观聊天和 episode，但不创建待审查任务。主模型使用近期上下文属于部署时单独
+  确认的数据发送边界
 - `max_message_length`：单次回复最多分段数
 - `ai_reply_chunk_chars`：单段目标字符数
 - `TTS`：音色、语速、音量与音高
@@ -53,7 +65,8 @@
 - `agent_max_parallel_calls`：只读工具并发上限，默认 4
 - `agent_total_timeout_seconds`：完整 Agent 轮次总超时，默认 180 秒
 - `agent_allowed_tools`：允许暴露给模型的工具名称数组或逗号分隔字符串；未配置时
-  允许全部内置工具，显式空数组则不暴露工具
+  允许全部内置工具，显式空数组则不暴露工具；配置白名单时，记忆写入还需显式加入
+  `create_my_memory` 和/或 `update_my_memory`
 - `agent_browser_enabled`：启用 `web_browser`，默认 `true`
 - `agent_browser_headless`：使用无界面 Chromium，默认 `true`
 - `agent_browser_profile_dir`：共享持久 Profile，默认 `data/jianer_browser/profile`
@@ -61,9 +74,35 @@
 - `agent_browser_max_pages`：会话页面上限，默认且最大为 16
 - `agent_browser_idle_seconds`：空闲页面回收时间，默认 900 秒
 
+每次 AI 对话会先安全解析引用和附件，再把当前请求、最近最多 8 条且合计最多
+6000 字的短期上下文、从当前人设本地提取的最小风格标签（角色 ID/名称、自称、语气、
+思考倾向与语气词）以及解析后的图片、语音或视频字节交给 `content_moderation_model`；完整
+人设模板不会发送给审核模型。附件只有在审核模型所用协议支持对应格式时才能送审；不支持、
+解析失败或无法送达时会按 fail closed 拒绝本轮，不会跳过审核。审核发生在主模型和任何
+Agent 工具之前。审核器只接受严格 JSON，
+会区分医学教育、新闻法律讨论、风险预防等正当语境与露骨色情、未成年人性内容、性剥削、
+自残伤人、武器、违法犯罪、恶意网络行为、仇恨骚扰、隐私侵害和极端主义支持等请求。
+
+命中违规时，审核模型必须按当前人设生成一段简短、自然、不复述违规细节的拒绝，并在合适时
+提出安全替代方向。该请求不会进入主模型、工具调用、短期历史或回复后记忆审查；若消息已由
+观察器写入客观聊天记录，其正文会替换为 `[内容已由安全审核隐藏]`。审核日志只记录模型、
+分类代码、耗时和字符/附件数量，不记录审核理由或原始违规内容。拒绝文本不会再套用用户可配置
+的 AI 回复后缀，避免审核后的安全文本被二次改写。若关闭
+`content_moderation_enabled`，以上前置保障不会生效。
+
+当前项目的默认主回答模型为 `grok`。为避免把完整角色模板中的敏感身体设定重复发送给
+Grok 并触发兼容端点空响应，Grok 主回答使用同一份本地最小风格投影，而不是完整模板正文；
+角色 ID/名称、自称、语气、思考倾向、语气词、机器人名称和本轮可用工具名仍会保留。其他
+模型仍沿用完整人设模板。DeepSeek 审核配置建议使用 `OpenAI Chat Completions`、
+`Temperature: 0` 和 `ToolsEnabled: false`，当前本地 `aiconfig/deepseek.ai.json` 已按此设置。
+模型配置还可使用 `EmptyResponseRetries: 0|1|2`；只有一次提供商响应同时没有文本和工具调用时
+才会重试同一请求，不会重新执行 Agent 工具。当前本地 Grok 配置设为 1，用于吸收兼容端点
+偶发的空响应。
+
 网页搜索使用 `ddgs` 文本搜索接口。宿主可通过 `DDGS_BACKEND` 环境变量选择
 `auto`、`bing`、`brave`、`duckduckgo`、`google`、`grokipedia`、`mojeek`、
-`wikipedia`、`yahoo` 或 `yandex`，默认 `auto`。区域固定为 `cn-zh`，安全搜索
+`wikipedia`、`yahoo` 或 `yandex`，默认 `yandex`；如需多引擎回退可显式设置为
+`auto`。区域固定为 `cn-zh`，安全搜索
 固定为 `moderate`；模型不能指定代理、请求头、任意后端或待抓取 URL。若配置了
 `agent_allowed_tools` 白名单，需要显式加入 `web_search`。
 
@@ -154,10 +193,20 @@ transcription 接口，默认模型为
 ## Agent 工具
 
 内置工具包括当前时间、安全算术、当前发言人资料、当前会话资料、当前 canonical
-用户 + preset 的长期记忆、只返回标题/URL/摘要的 `web_search`、只读的
+用户 + preset 的长期记忆读取、创建与修改、只返回标题/URL/摘要的 `web_search`、只读的
 `github_repository`、通用制图 `render_information_card`，以及可查看和操作网页的高权限
-`web_browser`。首版不向模型
-开放 shell、本地文件系统、原始 WebSocket、文件上传下载、消息管理或记忆删除能力。外部工具结果作为不可信数据处理；工具
+`web_browser`。主对话 Agent 只在用户明确要求“记住”或明确纠正既有记忆时直接使用写
+记忆工具；普通对话在回复成功发送后，由独立 `memory_mode` 异步审查一次，不增加用户等待
+时间。`list_my_memories`、`create_my_memory` 和 `update_my_memory` 都接受
+`scope=person|group`：person 只能操作当前 canonical 用户，group 只能在群聊中操作当前群；
+两者始终锁定当前 preset。新式写入参数将中性的 `canonical_fact` 与符合当前人设第一人称
+语气、价值观和思考方式的 `memory_text` 分开；修改时还必须使用相同 scope 下
+`list_my_memories` 返回的 ID。`read_recent_chat`（默认 20，最大 100）和
+`search_current_chat` 只能读取当前会话 90 天内的客观聊天，不能传入 QQ 号、群号或表名。
+两个写工具属于
+`ToolRisk.MUTATING`；默认只放行这两个内置写工具，其他插件
+注册的写工具必须通过 `agent_allowed_tools` 显式点名。插件仍不向模型开放 shell、本地文件
+系统、原始 WebSocket、文件上传下载、消息管理或记忆删除能力。外部工具结果作为不可信数据处理；工具
 中间结果不会写入短期历史、TTS 或长期记忆，只有最终 AI 文本会进入原有回复链。
 调用搜索、GitHub 或网页工具本身不代表用户要求查看来源；默认回答不展示来源或 URL，只有用户在
 当前请求中明确要求来源、出处、引用、链接或参考资料时，才附上实际使用的完整 URL。
@@ -239,11 +288,30 @@ v1 接口，不包含已标记弃用的三个城市天气 v7 接口，也不包�
 - OneBot/Milky QQ 身份自动归一到 `qq:<id>`。
 - 飞书绑定以宿主 JSON 为权威源，通过持久 outbox 幂等调用插件
   `authorize()` / `merge_identity()`；AI 合并失败不回滚非 AI 绑定。
-- 群原始转录物理存储一次，默认保留 30 天。
-- 删除记忆会写入 canonical 用户 + preset + 内容/证据指纹墓碑；后台提炼和并发
-  写入都必须经过 suppression 与 generation barrier 检查。
-- `migration.py` 提供可演练的 plan、dry-run、stage、verify、switch 与 rollback
-  API，用于从旧 `jianer_memory.db` 切换。
+- schema v5 的全局表只保存注册、身份、设置、任务和审计信息，按 `sys_`、`cfg_`、
+  `job_`、`audit_` 前缀分组，不保存集中式记忆正文或聊天正文。
+- `sys_persona_partitions` 为每个人设登记五张稳定、可读的物理表。例如 XingYu 的首个人设
+  使用 `mem_p0001_xingyu_people`、`mem_p0001_xingyu_groups`、
+  `mem_p0001_xingyu_evidence`、`mem_p0001_xingyu_episodes` 和
+  `mem_p0001_xingyu_deleted`。修改人设显示名不会重命名这些表。
+- people 表按 canonical 人员统一保存该人设对一个人的长期记忆，不绑定单一群；groups 表只
+  保存该人设对当前群整体的长期记忆；`memory_text` 是人设化主观回忆，
+  `canonical_fact` 只用于去重、冲突和更新判断。evidence 表保留来源摘要，deleted 表保留
+  墓碑并防止后台重新生成已删除内容。
+- 每个群、每个私聊各有一张独立客观聊天表，例如 `chat_g000042_2822554898` 或
+  `chat_u000017_qq2822554898`。同一个群原文只存一份，所有可见入站消息在 fallback/命令
+  匹配前记录；JianerAI 成功发出的消息也记录。不同人设读取同一份客观原文，再分别形成
+  自己风格的长期记忆。
+- 原始聊天默认滚动保存 90 天，每张表每轮最多清理 1000 行。回复前和审查时只读取当前
+  会话最近 50 条、最多 8000 字；任何工具或模型上下文都不能跨会话或跨人设泄漏。
+- 每次回复成功发送后先写出站聊天和 episode，再创建持久 `job_memory_reviews` 任务。
+  独立审查器只允许 `create`、`update` 或 `no-op`，每轮最多三项；任务以 exchange key
+  幂等，失败按指数退避，进程重启后继续。发送失败不会创建 episode 或审查任务。
+- v4 数据库不会在普通启动时静默升级；启动会抛出明确的迁移要求。只有显式调用
+  `JianerMemoryStore(..., initialize=False).migrate_to_v5()` 才会先用 SQLite Backup API
+  完整备份、校验并迁移，全部验证通过后删除 `memory_facts`、`memory_evidence`、
+  `memory_suppressions`、`raw_transcript_messages` 及旧 `persona_<64位哈希>_*` 表；不创建
+  同名兼容视图，也不再双写旧表。
 
 ## 生命周期与媒体
 

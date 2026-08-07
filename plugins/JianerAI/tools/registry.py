@@ -26,8 +26,14 @@ class ToolRegistry:
         self,
         *,
         allowed_risks: frozenset[ToolRisk] = frozenset({ToolRisk.READ_ONLY}),
+        allowed_mutating_tools: frozenset[str] | None = None,
     ) -> None:
         self._allowed_risks = frozenset(allowed_risks)
+        self._allowed_mutating_tools = (
+            None
+            if allowed_mutating_tools is None
+            else frozenset(str(name) for name in allowed_mutating_tools)
+        )
         self._tools: dict[str, tuple[str, ToolSpec]] = {}
         self._active_tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
@@ -61,6 +67,12 @@ class ToolRegistry:
         output: list[ToolSpec] = []
         for _, spec in sorted(self._tools.values(), key=lambda item: item[1].name):
             if spec.risk not in self._allowed_risks:
+                continue
+            if (
+                spec.risk is ToolRisk.MUTATING
+                and self._allowed_mutating_tools is not None
+                and spec.name not in self._allowed_mutating_tools
+            ):
                 continue
             if spec.supported_protocols and protocol not in spec.supported_protocols:
                 continue

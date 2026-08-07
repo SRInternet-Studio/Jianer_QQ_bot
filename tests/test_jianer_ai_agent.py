@@ -11,7 +11,11 @@ import pytest
 from jianer.adapters import ConversationKey, ConversationKind
 
 from plugins.JianerAI.agent import AgentOptions, AgentRunner
-from plugins.JianerAI.memory import JianerMemoryStore, SCHEMA_VERSION
+from plugins.JianerAI.memory import (
+    JianerMemoryStore,
+    MemoryMigrationRequiredError,
+    SCHEMA_VERSION,
+)
 from plugins.JianerAI.providers import (
     AssistantTurn,
     ProviderRegistry,
@@ -22,6 +26,7 @@ from plugins.JianerAI.providers import (
     ProviderRequestError,
 )
 from plugins.JianerAI.tools import (
+    BUILTIN_MUTATING_TOOL_NAMES,
     ToolCall,
     ToolContext,
     ToolRegistry,
@@ -34,11 +39,32 @@ from plugins.JianerAI.tools import (
 class FakeMemory:
     def __init__(self):
         self.calls = []
+        self.write_calls = []
 
     def list_memories(self, **kwargs):
         self.calls.append(kwargs)
         return (
             SimpleNamespace(fact_id=7, content="用户喜欢蓝色", weight=0.8),
+        )
+
+    def create_memory(self, **kwargs):
+        self.write_calls.append(("create", kwargs))
+        return SimpleNamespace(
+            fact_id=8,
+            content=kwargs["content"],
+            weight=1.0,
+            outcome="inserted",
+        )
+
+    def update_memory(self, **kwargs):
+        self.write_calls.append(("update", kwargs))
+        if str(kwargs["memory_id"]) == "404":
+            return None
+        return SimpleNamespace(
+            fact_id=int(kwargs["memory_id"]),
+            content=kwargs["content"],
+            weight=1.0,
+            outcome="updated",
         )
 
 
@@ -149,6 +175,405 @@ def test_builtin_tools_are_current_context_scoped_across_adapters():
 
     for protocol in ("onebot", "milky", "feishu"):
         asyncio.run(scenario(protocol))
+
+
+def test_builtin_memory_writes_are_explicitly_admitted_and_context_scoped():
+    async def scenario(protocol):
+        registry = ToolRegistry(
+            allowed_risks=frozenset(
+                {ToolRisk.READ_ONLY, ToolRisk.MUTATING}
+            ),
+            allowed_mutating_tools=BUILTIN_MUTATING_TOOL_NAMES,
+        )
+        register_builtin_tools(registry)
+        context, _, memory = _context(protocol)
+
+        created = await registry.execute(
+            ToolCall(
+                "create",
+                "create_my_memory",
+                {"content": "用户喜欢蓝莓蛋糕"},
+            ),
+            context,
+        )
+        updated = await registry.execute(
+            ToolCall(
+                "update",
+                "update_my_memory",
+                {"memory_id": "8", "content": "用户喜欢草莓蛋糕"},
+            ),
+            context,
+        )
+        missing = await registry.execute(
+            ToolCall(
+                "missing",
+                "update_my_memory",
+                {"memory_id": "404", "content": "不存在"},
+            ),
+            context,
+        )
+        invalid = await registry.execute(
+            ToolCall(
+                "invalid",
+                "update_my_memory",
+                {"memory_id": "not-an-id", "content": "无效"},
+            ),
+            context,
+        )
+
+        assert _decode(created)["data"] == {
+            "preset": "Normal",
+            "scope": "person",
+            "status": "inserted",
+            "memory": {
+                "id": "8",
+                "content": "用户喜欢蓝莓蛋糕",
+                "weight": 1.0,
+            },
+        }
+        assert _decode(updated)["data"]["memory"] == {
+            "id": "8",
+            "content": "用户喜欢草莓蛋糕",
+            "weight": 1.0,
+        }
+        assert missing.error_code == "memory_not_found"
+        assert invalid.error_code == "invalid_memory_id"
+        assert memory.write_calls == [
+            (
+                "create",
+                {
+                    "canonical_user_id": "qq:user-42",
+                    "preset": "Normal",
+                    "content": "用户喜欢蓝莓蛋糕",
+                },
+            ),
+            (
+                "update",
+                {
+                    "canonical_user_id": "qq:user-42",
+                    "preset": "Normal",
+                    "memory_id": "8",
+                    "content": "用户喜欢草莓蛋糕",
+                },
+            ),
+            (
+                "update",
+                {
+                    "canonical_user_id": "qq:user-42",
+                    "preset": "Normal",
+                    "memory_id": "404",
+                    "content": "不存在",
+                },
+            ),
+        ]
+
+    for protocol in ("onebot", "milky", "feishu"):
+        asyncio.run(scenario(protocol))
+
+
+def test_builtin_memory_tools_route_group_scope_to_current_group_only(
+    tmp_path: Path,
+):
+    async def scenario():
+        store = JianerMemoryStore(tmp_path / "group-tools.db")
+        canonical = store.resolve_identity("onebot", "bot-1", "user-42")
+        base_context, actions, _ = _context("onebot")
+        context = ToolContext(
+            event=base_context.event,
+            actions=actions,
+            conversation=base_context.conversation,
+            canonical_user_id=canonical,
+            runtime={},
+            memory=store,
+        )
+        registry = ToolRegistry(
+            allowed_risks=frozenset(
+                {ToolRisk.READ_ONLY, ToolRisk.MUTATING}
+            ),
+            allowed_mutating_tools=BUILTIN_MUTATING_TOOL_NAMES,
+        )
+        register_builtin_tools(registry)
+
+        created = await registry.execute(
+            ToolCall(
+                "create-group",
+                "create_my_memory",
+                {
+                    "scope": "group",
+                    "content": "我记得这个群周五一起看电影呀。",
+                },
+            ),
+            context,
+        )
+        created_data = _decode(created)["data"]
+        memory_id = created_data["memory"]["id"]
+        assert created_data["scope"] == "group"
+
+        listed = await registry.execute(
+            ToolCall(
+                "list-group",
+                "list_my_memories",
+                {"scope": "group", "limit": 5},
+            ),
+            context,
+        )
+        assert _decode(listed)["data"]["memories"] == [
+            {
+                "id": memory_id,
+                "scope": "group",
+                "content": "我记得这个群周五一起看电影呀。",
+                "weight": 1.0,
+                "canonical_fact": "我记得这个群周五一起看电影呀。",
+                "confidence": 1.0,
+                "source_count": 1,
+            }
+        ]
+
+        updated = await registry.execute(
+            ToolCall(
+                "update-group",
+                "update_my_memory",
+                {
+                    "scope": "group",
+                    "memory_id": memory_id,
+                    "content": "我记得这个群改成周六一起看电影啦。",
+                },
+            ),
+            context,
+        )
+        assert _decode(updated)["data"]["memory"]["content"] == (
+            "我记得这个群改成周六一起看电影啦。"
+        )
+        assert store.list_group_memories(
+            preset="Normal",
+            protocol="onebot",
+            self_id="bot-1",
+            group_id="another-group",
+        ) == ()
+
+        private_context = ToolContext(
+            event=SimpleNamespace(
+                protocol="onebot",
+                self_id="bot-1",
+                user_id="user-42",
+            ),
+            actions=actions,
+            conversation=ConversationKey(
+                protocol="onebot",
+                self_id="bot-1",
+                kind=ConversationKind.PRIVATE,
+                conversation_id="user-42",
+                preset="Normal",
+            ),
+            canonical_user_id=canonical,
+            runtime={},
+            memory=store,
+        )
+        denied = await registry.execute(
+            ToolCall(
+                "private-group",
+                "create_my_memory",
+                {"scope": "group", "content": "不能写入"},
+            ),
+            private_context,
+        )
+        assert denied.error_code == "group_memory_requires_group_chat"
+
+    asyncio.run(scenario())
+
+
+def test_builtin_memory_tools_preserve_canonical_and_persona_styled_text(
+    tmp_path: Path,
+):
+    async def scenario():
+        store = JianerMemoryStore(tmp_path / "styled-memory-tools.db")
+        canonical = store.resolve_identity("onebot", "bot-1", "user-42")
+        base_context, actions, _ = _context("onebot")
+        context = ToolContext(
+            event=base_context.event,
+            actions=actions,
+            conversation=base_context.conversation,
+            canonical_user_id=canonical,
+            runtime={},
+            memory=store,
+        )
+        registry = ToolRegistry(
+            allowed_risks=frozenset(
+                {ToolRisk.READ_ONLY, ToolRisk.MUTATING}
+            ),
+            allowed_mutating_tools=BUILTIN_MUTATING_TOOL_NAMES,
+        )
+        register_builtin_tools(registry, include_web_browser=False)
+
+        created = await registry.execute(
+            ToolCall(
+                "styled-create",
+                "create_my_memory",
+                {
+                    "canonical_fact": "用户长期喜欢蓝莓蛋糕",
+                    "memory_text": "我会好好记着，你一直喜欢蓝莓蛋糕。",
+                    "importance": 0.75,
+                    "confidence": 0.9,
+                },
+            ),
+            context,
+        )
+        memory_id = _decode(created)["data"]["memory"]["id"]
+        listed = await registry.execute(
+            ToolCall(
+                "styled-list",
+                "list_my_memories",
+                {"scope": "person", "limit": 5},
+            ),
+            context,
+        )
+        first = _decode(listed)["data"]["memories"][0]
+        assert first["id"] == memory_id
+        assert first["canonical_fact"] == "用户长期喜欢蓝莓蛋糕"
+        assert first["content"] == "我会好好记着，你一直喜欢蓝莓蛋糕。"
+        assert first["confidence"] == pytest.approx(0.9)
+        assert first["source_count"] == 1
+
+        updated = await registry.execute(
+            ToolCall(
+                "styled-update",
+                "update_my_memory",
+                {
+                    "memory_id": memory_id,
+                    "canonical_fact": "用户长期喜欢草莓蛋糕",
+                    "memory_text": "我已经改好啦，你现在一直更喜欢草莓蛋糕。",
+                    "importance": 0.8,
+                    "confidence": 0.95,
+                },
+            ),
+            context,
+        )
+        assert _decode(updated)["data"]["memory"]["id"] == memory_id
+        records = store.list_memories(
+            canonical_user_id=canonical,
+            preset="Normal",
+        )
+        assert len(records) == 1
+        assert records[0].canonical_fact == "用户长期喜欢草莓蛋糕"
+        assert records[0].content == "我已经改好啦，你现在一直更喜欢草莓蛋糕。"
+        assert records[0].confidence == pytest.approx(0.95)
+        assert records[0].source_count == 2
+        await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_recent_chat_tools_are_locked_to_the_current_conversation(
+    tmp_path: Path,
+):
+    async def scenario():
+        store = JianerMemoryStore(tmp_path / "chat-tools.db")
+        canonical = store.resolve_identity("onebot", "bot-1", "user-42")
+        store.record_transcript(
+            protocol="onebot",
+            self_id="bot-1",
+            conversation_kind="group",
+            conversation_id="group-100",
+            message_id="current-1",
+            sender_canonical_id=canonical,
+            sender_name="当前用户",
+            content="当前群正在聊蓝莓蛋糕",
+            preset="Normal",
+        )
+        store.record_transcript(
+            protocol="onebot",
+            self_id="bot-1",
+            conversation_kind="group",
+            conversation_id="group-200",
+            message_id="other-1",
+            sender_canonical_id=canonical,
+            sender_name="另一个群的用户",
+            content="另一个群的秘密内容",
+            preset="Normal",
+        )
+        base_context, actions, _ = _context("onebot")
+        context = ToolContext(
+            event=base_context.event,
+            actions=actions,
+            conversation=base_context.conversation,
+            canonical_user_id=canonical,
+            runtime={},
+            memory=store,
+        )
+        registry = ToolRegistry()
+        register_builtin_tools(registry, include_web_browser=False)
+
+        recent = await registry.execute(
+            ToolCall("recent", "read_recent_chat", {"limit": 100}),
+            context,
+        )
+        recent_data = _decode(recent)["data"]
+        assert recent_data["scope"] == "current_chat"
+        assert [item["text"] for item in recent_data["messages"]] == [
+            "当前群正在聊蓝莓蛋糕"
+        ]
+        searched = await registry.execute(
+            ToolCall(
+                "search",
+                "search_current_chat",
+                {"query": "蓝莓", "limit": 10},
+            ),
+            context,
+        )
+        assert [
+            item["text"]
+            for item in _decode(searched)["data"]["messages"]
+        ] == ["当前群正在聊蓝莓蛋糕"]
+        escaped = await registry.execute(
+            ToolCall(
+                "escape",
+                "read_recent_chat",
+                {"conversation_id": "group-200"},
+            ),
+            context,
+        )
+        assert escaped.error_code == "invalid_arguments"
+        await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_mutating_tool_admission_does_not_open_other_plugin_writes():
+    context, _, _ = _context()
+    default_registry = ToolRegistry()
+    register_builtin_tools(default_registry)
+    default_names = {item.name for item in default_registry.available(context)}
+    assert BUILTIN_MUTATING_TOOL_NAMES.isdisjoint(default_names)
+
+    registry = ToolRegistry(
+        allowed_risks=frozenset({ToolRisk.READ_ONLY, ToolRisk.MUTATING}),
+        allowed_mutating_tools=BUILTIN_MUTATING_TOOL_NAMES,
+    )
+    register_builtin_tools(registry)
+    registry.register(
+        ToolSpec(
+            name="unlisted_plugin_write",
+            description="must remain unavailable",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+            handler=lambda *_: "should not run",
+            risk=ToolRisk.MUTATING,
+        )
+    )
+    names = {item.name for item in registry.available(context)}
+    assert BUILTIN_MUTATING_TOOL_NAMES.issubset(names)
+    assert "unlisted_plugin_write" not in names
+    denied = asyncio.run(
+        registry.execute(
+            ToolCall("write", "unlisted_plugin_write", {}),
+            context,
+        )
+    )
+    assert denied.error_code == "tool_not_allowed"
 
 
 def test_tool_registry_validates_schema_risk_timeout_and_calculator():
@@ -375,6 +800,99 @@ def test_agent_runner_executes_native_tool_loop_and_keeps_structured_turns():
     asyncio.run(scenario())
 
 
+def test_agent_runner_can_create_then_update_current_scoped_memory(
+    tmp_path: Path,
+):
+    class MemorySequenceProvider(SequenceProvider):
+        async def complete_request(self, model, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                call = ProviderToolCall(
+                    "create-memory",
+                    "create_my_memory",
+                    {"content": "用户喜欢蓝莓蛋糕"},
+                )
+                return ProviderResponse(
+                    "",
+                    (call,),
+                    AssistantTurn(tool_calls=(call,)),
+                )
+            if len(self.requests) == 2:
+                created = json.loads(request.turns[-1].content)
+                call = ProviderToolCall(
+                    "update-memory",
+                    "update_my_memory",
+                    {
+                        "memory_id": created["data"]["memory"]["id"],
+                        "content": "用户喜欢草莓蛋糕",
+                    },
+                )
+                return ProviderResponse(
+                    "",
+                    (call,),
+                    AssistantTurn(tool_calls=(call,)),
+                )
+            return ProviderResponse(
+                "已经更新记忆。",
+                (),
+                AssistantTurn(text="已经更新记忆。"),
+            )
+
+    async def scenario():
+        provider = MemorySequenceProvider()
+        registry = ToolRegistry(
+            allowed_risks=frozenset(
+                {ToolRisk.READ_ONLY, ToolRisk.MUTATING}
+            ),
+            allowed_mutating_tools=BUILTIN_MUTATING_TOOL_NAMES,
+        )
+        register_builtin_tools(
+            registry,
+            include_web_browser=False,
+            project_root=tmp_path,
+        )
+        base_context, actions, _ = _context()
+        store = JianerMemoryStore(tmp_path / "memory-tools.db")
+        canonical = store.resolve_identity("onebot", "bot-1", "user-42")
+        context = ToolContext(
+            event=base_context.event,
+            actions=actions,
+            conversation=base_context.conversation,
+            canonical_user_id=canonical,
+            runtime={},
+            memory=store,
+        )
+
+        answer = await AgentRunner(provider, registry).run(
+            model="model-a",
+            message="请先记住我喜欢蓝莓蛋糕，然后改成草莓蛋糕",
+            history=(),
+            system_prompt="test",
+            attachments=(),
+            context=context,
+            enabled=True,
+        )
+
+        assert answer == "已经更新记忆。"
+        assert len(provider.requests) == 3
+        records = store.list_memories(
+            canonical_user_id=canonical,
+            preset="Normal",
+        )
+        assert len(records) == 1
+        assert records[0].content == "用户喜欢草莓蛋糕"
+        assert {
+            item["content_snapshot"]
+            for item in store.list_suppressions(
+                canonical_user_id=canonical,
+                preset="Normal",
+            )
+        } == {"用户喜欢蓝莓蛋糕"}
+        await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_agent_tool_logs_redact_browser_fill_values():
     secret = "browser-password-123"
 
@@ -519,19 +1037,23 @@ def test_agent_runner_executes_more_than_eight_tool_calls_and_preserves_order():
     asyncio.run(scenario())
 
 
-def _write_model_config(root: Path, provider: str) -> None:
+def _write_model_config(
+    root: Path,
+    provider: str,
+    **overrides,
+) -> None:
     root.mkdir(parents=True, exist_ok=True)
+    config = {
+        "FriendlyName": "Agent",
+        "Model": "test-model",
+        "ResponseType": provider,
+        "ApiKey": "test-secret",
+        "BaseUrl": "https://provider.invalid/v1",
+        "ToolsEnabled": "auto",
+    }
+    config.update(overrides)
     (root / "agent.ai.json").write_text(
-        json.dumps(
-            {
-                "FriendlyName": "Agent",
-                "Model": "test-model",
-                "ResponseType": provider,
-                "ApiKey": "test-secret",
-                "BaseUrl": "https://provider.invalid/v1",
-                "ToolsEnabled": "auto",
-            }
-        ),
+        json.dumps(config),
         encoding="utf-8",
     )
 
@@ -539,7 +1061,11 @@ def _write_model_config(root: Path, provider: str) -> None:
 def test_openai_provider_builds_and_replays_native_function_calls(tmp_path: Path):
     async def scenario():
         config_dir = tmp_path / "openai"
-        _write_model_config(config_dir, "openai")
+        _write_model_config(
+            config_dir,
+            "openai",
+            EmptyResponseRetries=1,
+        )
         payloads = []
 
         async def transport(provider, config, payload):
@@ -581,6 +1107,7 @@ def test_openai_provider_builds_and_replays_native_function_calls(tmp_path: Path
         )
 
         assert answer == "64"
+        assert len(payloads) == 2
         assert payloads[0]["stream"] is False
         declaration = payloads[0]["tools"][0]["function"]
         assert declaration["name"] == "calculate_expression"
@@ -589,6 +1116,48 @@ def test_openai_provider_builds_and_replays_native_function_calls(tmp_path: Path
         assert payloads[1]["messages"][-1]["tool_call_id"] == "openai-call-1"
 
     asyncio.run(scenario())
+
+
+def test_provider_retries_configured_empty_response_once(tmp_path: Path):
+    async def scenario():
+        config_dir = tmp_path / "empty-retry"
+        _write_model_config(
+            config_dir,
+            "openai",
+            EmptyResponseRetries=1,
+        )
+        payloads = []
+
+        async def transport(provider, config, payload):
+            payloads.append(payload)
+            if len(payloads) == 1:
+                return {"choices": [{"message": {"content": None}}]}
+            return {"choices": [{"message": {"content": "recovered"}}]}
+
+        providers = ProviderRegistry(config_dir, transport=transport)
+        assert providers.get("agent").empty_response_retries == 1
+
+        answer = await providers.chat("agent", "hello")
+
+        assert answer == "recovered"
+        assert len(payloads) == 2
+        assert payloads[0] == payloads[1]
+
+    asyncio.run(scenario())
+
+
+def test_provider_rejects_excessive_empty_response_retries(tmp_path: Path):
+    config_dir = tmp_path / "invalid-empty-retry"
+    _write_model_config(
+        config_dir,
+        "openai",
+        EmptyResponseRetries=3,
+    )
+
+    providers = ProviderRegistry(config_dir)
+
+    assert "agent.ai.json" in providers.load_errors
+    assert "EmptyResponseRetries" in providers.load_errors["agent.ai.json"]
 
 
 def test_openai_provider_converts_deepseek_dsml_text_to_tool_calls(tmp_path: Path):
@@ -828,6 +1397,11 @@ def test_schema_v2_session_settings_migrate_agent_override_idempotently(tmp_path
             """
         )
 
+    with pytest.raises(MemoryMigrationRequiredError):
+        JianerMemoryStore(path)
+    migration_store = JianerMemoryStore(path, initialize=False)
+    backup = migration_store.migrate_to_v5()
+    assert backup is not None and backup.is_file()
     store = JianerMemoryStore(path)
     settings = store.get_session_settings(
         protocol="onebot",
@@ -853,10 +1427,12 @@ def test_schema_v2_session_settings_migrate_agent_override_idempotently(tmp_path
     JianerMemoryStore(path)
     with sqlite3.connect(path) as conn:
         version = conn.execute(
-            "SELECT version FROM schema_meta WHERE schema_name='jianer_ai_memory'"
+                "SELECT version FROM sys_schema "
+                "WHERE schema_name='jianer_ai_memory'"
         ).fetchone()[0]
         columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(session_settings)")
+            row[1]
+            for row in conn.execute("PRAGMA table_info(cfg_session_settings)")
         }
-    assert version == SCHEMA_VERSION == 3
+    assert version == SCHEMA_VERSION == 5
     assert "agent_enabled" in columns

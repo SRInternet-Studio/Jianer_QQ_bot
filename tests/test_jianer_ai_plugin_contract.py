@@ -51,6 +51,7 @@ plugin_state.configure(
         others={
             "jianer_ai_db_path": os.environ["JIANER_AGENT_TEST_DB"],
             "agent_enabled_default": True,
+            "default_mode": "example",
         },
         black_list=[],
     ),

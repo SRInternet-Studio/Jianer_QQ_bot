@@ -6,5 +6,6 @@
   "BaseUrl": "https://rinkoai.com/v1",
   "Temperature": 0.7,
   "MaxTokens": 2000,
+  "EmptyResponseRetries": 0,
   "ToolsEnabled": "auto"
 }

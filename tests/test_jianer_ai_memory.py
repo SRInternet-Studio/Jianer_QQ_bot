@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -9,9 +12,13 @@ from plugins.JianerAI.memory import (
     GeneratedMemory,
     IdentityAuthorizationError,
     JianerMemoryStore,
+    MemoryConflictError,
     MemoryEvidence,
+    MemoryMigrationRequiredError,
+    MemoryStoreError,
     authorize,
     merge_identity,
+    persona_partition_id,
 )
 from plugins.JianerAI.migration import LegacyMemoryMigrator
 
@@ -64,6 +71,469 @@ def _record(
         timestamp=timestamp,
         preset=preset,
     )
+
+
+def test_fresh_v5_has_only_prefixed_control_and_physical_content_tables(
+    tmp_path: Path,
+):
+    store = _store(tmp_path)
+    canonical = store.resolve_identity("onebot", "bot-1", "42")
+    store.create_memory(
+        canonical_user_id=canonical,
+        preset="XingYu",
+        canonical_fact="用户喜欢蓝莓蛋糕",
+        content="我记得你一直很喜欢蓝莓蛋糕。",
+    )
+    _record(
+        store,
+        kind="group",
+        conversation_id="2822554898",
+        message_id="g-1",
+        preset="XingYu",
+    )
+    _record(
+        store,
+        kind="private",
+        conversation_id="42",
+        message_id="u-1",
+        preset="XingYu",
+    )
+    partition = store.ensure_persona_partition("XingYu")
+
+    with sqlite3.connect(store.db_path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    forbidden = {
+        "memory_facts",
+        "memory_evidence",
+        "memory_suppressions",
+        "raw_transcript_messages",
+        "persona_memory_partitions",
+        "canonical_identities",
+        "identity_aliases",
+        "conversations",
+        "session_settings",
+        "memory_preferences",
+    }
+    assert not (forbidden & tables)
+    assert {
+        "sys_schema",
+        "sys_personas",
+        "sys_persona_partitions",
+        "sys_chat_partitions",
+        "sys_identities",
+        "sys_identity_aliases",
+        "sys_conversations",
+        "cfg_conversation_settings",
+        "cfg_memory_settings",
+        "cfg_session_settings",
+        "job_memory_reviews",
+        "audit_memory_actions",
+        "audit_migrations",
+    }.issubset(tables)
+    assert {
+        partition.people_table,
+        partition.groups_table,
+        partition.evidence_table,
+        partition.episodes_table,
+        partition.suppressions_table,
+    }.issubset(tables)
+    assert partition.people_table == "mem_p0001_xingyu_people"
+    chat_tables = {item.table_name for item in store.list_chat_partitions()}
+    assert "chat_g000001_2822554898" in chat_tables
+    assert "chat_u000002_qq42" in chat_tables
+
+
+def test_non_numeric_conversation_ids_are_hashed_in_chat_table_names(
+    tmp_path: Path,
+):
+    store = _store(tmp_path)
+    external_id = "oc_sensitive-looking-feishu-chat-id"
+    store.record_transcript(
+        protocol="feishu",
+        self_id="app-1",
+        conversation_kind="private",
+        conversation_id=external_id,
+        message_id="fs-1",
+        sender_protocol="feishu",
+        sender_self_id="app-1",
+        sender_external_id="ou-user",
+        content="hello",
+        preset="XingYu",
+    )
+    partition = store.list_chat_partitions()[0]
+    expected_hash = hashlib.sha256(external_id.encode("utf-8")).hexdigest()[:8]
+    assert partition.table_name == f"chat_u000001_feishu_{expected_hash}"
+    assert external_id not in partition.table_name
+
+
+def test_partition_numbers_do_not_skip_after_repeated_existing_writes(
+    tmp_path: Path,
+):
+    store = _store(tmp_path)
+    canonical = store.resolve_identity("onebot", "bot-1", "42")
+    for index in range(8):
+        store.create_memory(
+            canonical_user_id=canonical,
+            preset="XingYu",
+            canonical_fact=f"稳定事实 {index}",
+            content=f"我记得稳定事实 {index}。",
+        )
+        store.record_transcript(
+            protocol="onebot",
+            self_id="bot-1",
+            conversation_kind="group",
+            conversation_id="100",
+            message_id=f"g-{index}",
+            sender_canonical_id=canonical,
+            content=f"message {index}",
+            preset="XingYu",
+        )
+    second_persona = store.ensure_persona_partition("AnotherRole")
+    store.record_transcript(
+        protocol="onebot",
+        self_id="bot-1",
+        conversation_kind="private",
+        conversation_id="42",
+        message_id="u-1",
+        sender_canonical_id=canonical,
+        content="private message",
+        preset="AnotherRole",
+    )
+    assert second_persona.people_table == "mem_p0002_anotherrole_people"
+    assert [
+        item.table_name for item in store.list_chat_partitions()
+    ] == ["chat_g000001_100", "chat_u000002_qq42"]
+
+
+def test_explicit_v4_to_v5_migration_deduplicates_mirror_and_drops_old_tables(
+    tmp_path: Path,
+):
+    path = tmp_path / "v4.db"
+    now = int(time.time())
+    legacy_id = persona_partition_id("XingYu")
+    prefix = f"persona_{legacy_id}"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            f"""
+            PRAGMA foreign_keys=OFF;
+            CREATE TABLE canonical_identities (
+                canonical_id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                merged_into TEXT
+            );
+            CREATE TABLE conversations (
+                conversation_pk INTEGER PRIMARY KEY AUTOINCREMENT,
+                protocol TEXT NOT NULL,
+                self_id TEXT NOT NULL,
+                conversation_kind TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                UNIQUE(protocol, self_id, conversation_kind, conversation_id)
+            );
+            CREATE TABLE memory_facts (
+                fact_id INTEGER PRIMARY KEY,
+                canonical_id TEXT NOT NULL,
+                preset_key TEXT NOT NULL,
+                fact_fingerprint TEXT NOT NULL,
+                content TEXT NOT NULL,
+                weight REAL NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_confirmed_at INTEGER NOT NULL
+            );
+            CREATE TABLE memory_evidence (
+                evidence_id INTEGER PRIMARY KEY,
+                fact_id INTEGER NOT NULL,
+                conversation_pk INTEGER,
+                transcript_id INTEGER,
+                content TEXT NOT NULL,
+                observed_at INTEGER NOT NULL,
+                evidence_fingerprint TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+            CREATE TABLE memory_suppressions (
+                canonical_id TEXT NOT NULL,
+                preset_key TEXT NOT NULL,
+                suppression_kind TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                content_snapshot TEXT NOT NULL,
+                source_fact_id TEXT,
+                reason TEXT NOT NULL,
+                deleted_at INTEGER NOT NULL
+            );
+            CREATE TABLE raw_transcript_messages (
+                transcript_id INTEGER PRIMARY KEY,
+                conversation_pk INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                external_message_id TEXT NOT NULL,
+                sender_canonical_id TEXT,
+                sender_protocol TEXT NOT NULL,
+                sender_self_id TEXT NOT NULL,
+                sender_external_id TEXT NOT NULL,
+                preset_key TEXT NOT NULL,
+                content TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL,
+                message_type TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE persona_memory_partitions (
+                preset_key TEXT PRIMARY KEY,
+                partition_id TEXT NOT NULL,
+                people_table TEXT NOT NULL,
+                groups_table TEXT NOT NULL,
+                episodes_table TEXT NOT NULL,
+                suppressions_table TEXT NOT NULL
+            );
+            CREATE TABLE {prefix}_people (
+                memory_id INTEGER PRIMARY KEY,
+                canonical_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                weight REAL NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_confirmed_at INTEGER NOT NULL,
+                origin TEXT NOT NULL
+            );
+            CREATE TABLE {prefix}_groups (
+                memory_id INTEGER PRIMARY KEY,
+                group_key TEXT NOT NULL,
+                content TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                weight REAL NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_confirmed_at INTEGER NOT NULL,
+                last_writer_canonical_id TEXT
+            );
+            CREATE TABLE {prefix}_episodes (
+                episode_id INTEGER PRIMARY KEY,
+                conversation_pk INTEGER NOT NULL,
+                exchange_key TEXT NOT NULL,
+                speaker_canonical_id TEXT NOT NULL,
+                user_content TEXT NOT NULL,
+                assistant_content TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE {prefix}_suppressions (
+                scope TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                suppression_kind TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                content_snapshot TEXT NOT NULL,
+                source_memory_id TEXT,
+                reason TEXT NOT NULL,
+                deleted_at INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO canonical_identities VALUES(?, ?, ?, NULL)",
+            ("qq:42", now, now),
+        )
+        conn.execute(
+            "INSERT INTO conversations VALUES(1, 'onebot', 'bot-1', "
+            "'group', '2822554898', ?, ?)",
+            (now, now),
+        )
+        fact = "用户长期喜欢蓝莓蛋糕"
+        fingerprint = "legacy-semantic-hash"
+        conn.execute(
+            "INSERT INTO memory_facts VALUES(1, 'qq:42', 'XingYu', ?, ?, "
+            "0.8, ?, ?, ?)",
+            (fingerprint, fact, now, now, now),
+        )
+        conn.execute(
+            f"INSERT INTO {prefix}_people VALUES(1, 'qq:42', ?, ?, 0.8, "
+            "?, ?, ?, 'mirror')",
+            (fact, fingerprint, now, now, now),
+        )
+        conn.execute(
+            "INSERT INTO memory_evidence VALUES(1, 1, 1, 1, ?, ?, ?, '{}')",
+            ("用户明确说过", now, "evidence-hash"),
+        )
+        conn.execute(
+            "INSERT INTO memory_suppressions VALUES('qq:42', 'XingYu', "
+            "'fact', 'deleted-hash', '旧记忆', '9', 'user_deleted', ?)",
+            (now,),
+        )
+        conn.execute(
+            "INSERT INTO raw_transcript_messages VALUES(1, 1, 'id:m1', "
+            "'m1', 'qq:42', 'onebot', 'bot-1', '42', 'XingYu', ?, ?, "
+            "'text', 'payload-hash', ?)",
+            ("最近的群消息", now, now),
+        )
+        conn.execute(
+            "INSERT INTO persona_memory_partitions VALUES(?, ?, ?, ?, ?, ?)",
+            (
+                "XingYu",
+                legacy_id,
+                f"{prefix}_people",
+                f"{prefix}_groups",
+                f"{prefix}_episodes",
+                f"{prefix}_suppressions",
+            ),
+        )
+
+    store = JianerMemoryStore(path, initialize=False)
+    backup = store.migrate_to_v5()
+    assert backup is not None and backup.is_file()
+    migrated = JianerMemoryStore(path)
+    records = migrated.list_memories(
+        canonical_user_id="qq:42",
+        preset="XingYu",
+    )
+    assert len(records) == 1
+    assert records[0].content == "用户长期喜欢蓝莓蛋糕"
+    assert len(records[0].evidence) == 1
+    assert len(
+        migrated.list_suppressions(
+            canonical_user_id="qq:42",
+            preset="XingYu",
+        )
+    ) == 1
+    assert migrated.count_transcripts(conversation_id="2822554898") == 1
+    assert migrated.quick_check() == ("ok",)
+    assert migrated.foreign_key_check() == ()
+    with sqlite3.connect(path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        audit = conn.execute(
+            "SELECT status, counts_json, verification_json "
+            "FROM audit_migrations WHERE migration_key='schema-v5'"
+        ).fetchone()
+    assert "memory_facts" not in tables
+    assert "memory_evidence" not in tables
+    assert "memory_suppressions" not in tables
+    assert "raw_transcript_messages" not in tables
+    assert f"{prefix}_people" not in tables
+    assert audit[0] == "completed"
+    counts = json.loads(audit[1])
+    verification = json.loads(audit[2])
+    assert counts["source"]["people_unique"] == 1
+    assert counts["source"]["recent_chat_unique"] == 1
+    assert counts["target"]["people"] == 1
+    assert counts["target"]["chat"] == 1
+    assert verification["issues"] == []
+    assert verification["comparisons"]["recent_chat"]["equal"] is True
+    with sqlite3.connect(backup) as conn:
+        backup_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert "memory_facts" in backup_tables
+    assert "raw_transcript_messages" in backup_tables
+
+
+def test_v5_migration_refuses_legacy_foreign_key_corruption(tmp_path: Path):
+    path = tmp_path / "foreign-key-corrupt-v4.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            PRAGMA foreign_keys=OFF;
+            CREATE TABLE schema_meta (
+                schema_name TEXT PRIMARY KEY,
+                version INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO schema_meta VALUES('jianer_ai_memory', 4, 1);
+            CREATE TABLE canonical_identities (
+                canonical_id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                merged_into TEXT
+            );
+            CREATE TABLE memory_facts (
+                fact_id INTEGER PRIMARY KEY,
+                canonical_id TEXT NOT NULL REFERENCES canonical_identities(canonical_id),
+                preset_key TEXT NOT NULL,
+                fact_fingerprint TEXT NOT NULL,
+                content TEXT NOT NULL,
+                weight REAL NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_confirmed_at INTEGER NOT NULL
+            );
+            INSERT INTO memory_facts VALUES(
+                1, 'qq:missing', 'XingYu', 'hash', 'orphan', 1.0, 1, 1, 1
+            );
+            """
+        )
+    with pytest.raises(MemoryStoreError, match="foreign_key_check"):
+        JianerMemoryStore(path, initialize=False).migrate_to_v5()
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memory_facts"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT version FROM schema_meta"
+        ).fetchone()[0] == 4
+
+
+def test_failed_v5_staging_keeps_backup_and_failure_audit(
+    tmp_path: Path,
+    monkeypatch,
+):
+    path = tmp_path / "failed-stage-v4.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_meta (
+                schema_name TEXT PRIMARY KEY,
+                version INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO schema_meta VALUES('jianer_ai_memory', 4, 1);
+            """
+        )
+    original_check = JianerMemoryStore.foreign_key_check
+
+    def force_staged_failure(store):
+        if ".v5-staging-" in store.db_path.name:
+            return (("forced-staging-error",),)
+        return original_check(store)
+
+    monkeypatch.setattr(
+        JianerMemoryStore,
+        "foreign_key_check",
+        force_staged_failure,
+    )
+    with pytest.raises(MemoryStoreError, match="staged v5"):
+        JianerMemoryStore(path, initialize=False).migrate_to_v5()
+
+    backups = tuple(tmp_path.glob("failed-stage-v4.db.v4-backup-*"))
+    staging = tuple(tmp_path.glob("failed-stage-v4.db.v5-staging-*"))
+    assert len(backups) == 1
+    assert len(staging) == 1
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == 4
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='sys_schema'"
+        ).fetchone()[0] == 0
+    with sqlite3.connect(staging[0]) as conn:
+        audit = conn.execute(
+            "SELECT status, backup_path, error FROM audit_migrations "
+            "WHERE migration_key='schema-v5'"
+        ).fetchone()
+    assert audit[0] == "failed"
+    assert Path(audit[1]) == backups[0]
+    assert "forced-staging-error" in audit[2]
 
 
 def _create_legacy_database(path: Path) -> None:
@@ -295,13 +765,13 @@ def test_group_transcript_is_stored_once_across_presets(tmp_path: Path):
     assert store.count_transcripts(preset="role-a") == 0
 
 
-def test_group_retention_is_30_days_and_does_not_delete_private(
+def test_chat_retention_is_90_days_for_group_and_private(
     tmp_path: Path,
 ):
     store = _store(tmp_path)
     now = 2_000_000_000
-    old = now - (31 * 86400)
-    fresh = now - (29 * 86400)
+    old = now - (91 * 86400)
+    fresh = now - (89 * 86400)
     _record(
         store,
         kind="group",
@@ -324,9 +794,9 @@ def test_group_retention_is_30_days_and_does_not_delete_private(
         timestamp=old,
     )
 
-    assert store.purge_transcripts(now=now) == 1
+    assert store.purge_transcripts(now=now) == 2
     assert store.count_transcripts(conversation_kind="group") == 1
-    assert store.count_transcripts(conversation_kind="private") == 1
+    assert store.count_transcripts(conversation_kind="private") == 0
 
 
 def test_session_defaults_and_preset_settings_are_isolated(tmp_path: Path):
@@ -553,6 +1023,312 @@ def test_long_memory_shares_across_conversations_but_not_presets(
     assert [item.content for item in role_items] == ["用户喜欢爵士乐"]
 
 
+def test_persona_memory_is_physically_partitioned_by_people_groups_and_episodes(
+    tmp_path: Path,
+):
+    store = _store(tmp_path)
+    alice = store.resolve_identity("onebot", "bot-1", "42")
+    bob = store.resolve_identity("onebot", "bot-1", "84")
+
+    role_a = store.ensure_persona_partition("role-a")
+    role_b = store.ensure_persona_partition("role-b")
+    assert role_a.partition_id != role_b.partition_id
+    assert role_a.people_table != role_b.people_table
+    assert role_a.groups_table != role_b.groups_table
+    assert role_a.episodes_table != role_b.episodes_table
+    assert "role-a" not in role_a.people_table
+
+    store.create_memory(
+        canonical_user_id=alice,
+        preset="role-a",
+        content="我总会记得她偏爱蓝莓蛋糕呀。",
+    )
+    store.create_memory(
+        canonical_user_id=alice,
+        preset="role-b",
+        content="我已理性记录：她偏爱蓝莓蛋糕。",
+    )
+    store.create_group_memory(
+        preset="role-a",
+        protocol="onebot",
+        self_id="bot-1",
+        group_id="group-100",
+        canonical_user_id=alice,
+        content="我记得这个群每周五会一起看电影呀。",
+    )
+    store.create_group_memory(
+        preset="role-a",
+        protocol="onebot",
+        self_id="bot-1",
+        group_id="group-200",
+        canonical_user_id=bob,
+        content="我记得另一个群周末会讨论音乐。",
+    )
+    store.record_conversation_episode(
+        preset="role-a",
+        protocol="onebot",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-100",
+        speaker_canonical_id=alice,
+        exchange_id="message-1",
+        user_content="周五的电影改成星际穿越吧",
+        assistant_content="好呀，我会记得我们周五看星际穿越。",
+        occurred_at=1_800_000_000,
+    )
+    store.record_conversation_episode(
+        preset="role-b",
+        protocol="onebot",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-100",
+        speaker_canonical_id=alice,
+        exchange_id="message-1",
+        user_content="这是另一个人设的讨论",
+        assistant_content="该片段只属于 role-b。",
+        occurred_at=1_800_000_001,
+    )
+    store.record_conversation_episode(
+        preset="role-a",
+        protocol="onebot",
+        self_id="bot-1",
+        conversation_kind="private",
+        conversation_id="42",
+        speaker_canonical_id=alice,
+        exchange_id="private-message-1",
+        user_content="私聊里我们谈过我的旅行计划",
+        assistant_content="我会记住你的旅行计划呀。",
+        occurred_at=1_800_000_002,
+    )
+
+    assert [
+        item.content
+        for item in store.list_memories(
+            canonical_user_id=alice,
+            preset="role-a",
+        )
+    ] == ["我总会记得她偏爱蓝莓蛋糕呀。"]
+    assert store.list_memories(
+        canonical_user_id=bob,
+        preset="role-a",
+    ) == ()
+    assert [
+        item.content
+        for item in store.list_group_memories(
+            preset="role-a",
+            protocol="onebot",
+            self_id="bot-1",
+            group_id="group-100",
+        )
+    ] == ["我记得这个群每周五会一起看电影呀。"]
+    assert [
+        item.content
+        for item in store.list_group_memories(
+            preset="role-a",
+            protocol="onebot",
+            self_id="bot-1",
+            group_id="group-200",
+        )
+    ] == ["我记得另一个群周末会讨论音乐。"]
+    episodes = store.query_conversation_episodes(
+        preset="role-a",
+        protocol="onebot",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-100",
+        query="星际穿越",
+    )
+    assert [(item.user_content, item.assistant_content) for item in episodes] == [
+        (
+            "周五的电影改成星际穿越吧",
+            "好呀，我会记得我们周五看星际穿越。",
+        )
+    ]
+    private_episodes = store.query_conversation_episodes(
+        preset="role-a",
+        protocol="milky",
+        self_id="bot-2",
+        conversation_kind="private",
+        conversation_id="42",
+        speaker_canonical_id=alice,
+        query="旅行计划",
+    )
+    assert [item.user_content for item in private_episodes] == [
+        "私聊里我们谈过我的旅行计划"
+    ]
+
+    with sqlite3.connect(store.db_path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert {
+            role_a.people_table,
+            role_a.groups_table,
+            role_a.episodes_table,
+            role_a.suppressions_table,
+            role_b.people_table,
+            role_b.groups_table,
+            role_b.episodes_table,
+            role_b.suppressions_table,
+        }.issubset(tables)
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {role_a.people_table}"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {role_a.groups_table}"
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {role_a.episodes_table}"
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {role_b.episodes_table}"
+        ).fetchone()[0] == 1
+    assert store.foreign_key_check() == ()
+
+
+def test_v5_memories_persist_in_readable_persona_physical_tables(
+    tmp_path: Path,
+):
+    path = tmp_path / "v3-memory.db"
+    store = JianerMemoryStore(path)
+    canonical = store.resolve_identity("onebot", "bot", "42")
+    created = store.create_memory(
+        canonical_user_id=canonical,
+        preset="role-a",
+        content="我记得这个旧版本偏好。",
+    )
+    partition = store.ensure_persona_partition("role-a")
+
+    with sqlite3.connect(path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert partition.evidence_table in tables
+        assert partition.people_table.startswith("mem_p0001_role_a_")
+        assert "memory_facts" not in tables
+        assert "memory_evidence" not in tables
+        assert "memory_suppressions" not in tables
+        assert "raw_transcript_messages" not in tables
+
+    migrated = JianerMemoryStore(path)
+    migrated_partition = migrated.list_persona_partitions()[0]
+    assert migrated_partition.preset == "role-a"
+    records = migrated.list_memories(
+        canonical_user_id=canonical,
+        preset="role-a",
+    )
+    assert [(item.fact_id, item.content) for item in records] == [
+        (created.fact_id, "我记得这个旧版本偏好。")
+    ]
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {migrated_partition.people_table}"
+        ).fetchone()[0] == 1
+
+
+def test_direct_memory_create_and_update_are_scoped_and_barrier_safe(
+    tmp_path: Path,
+):
+    store = _store(tmp_path)
+    canonical = store.resolve_identity("onebot", "bot", "42")
+    other = store.resolve_identity("onebot", "bot", "84")
+    stale_create = store.begin_generation(
+        canonical_user_id=canonical,
+        preset="role-a",
+    )
+
+    created = store.create_memory(
+        canonical_user_id=canonical,
+        preset="role-a",
+        content="用户喜欢蓝莓蛋糕",
+    )
+    assert created.outcome == "inserted"
+    assert created.content == "用户喜欢蓝莓蛋糕"
+    assert created.weight == 1.0
+    confirmed = store.create_memory(
+        canonical_user_id=canonical,
+        preset="role-a",
+        content=" 用户喜欢蓝莓蛋糕 ",
+    )
+    assert confirmed.fact_id == created.fact_id
+    assert confirmed.outcome == "updated"
+    assert store.insert_generated_memories(
+        stale_create,
+        ("旧提炼结果不应写入",),
+    ).stale_generation is True
+
+    assert store.update_memory(
+        canonical_user_id=other,
+        preset="role-a",
+        memory_id=created.memory_id,
+        content="不允许修改别人的记忆",
+    ) is None
+    assert store.update_memory(
+        canonical_user_id=canonical,
+        preset="other-role",
+        memory_id=created.memory_id,
+        content="不允许跨角色修改记忆",
+    ) is None
+
+    stale_update = store.begin_generation(
+        canonical_user_id=canonical,
+        preset="role-a",
+    )
+    updated = store.update_memory(
+        canonical_user_id=canonical,
+        preset="role-a",
+        memory_id=created.memory_id,
+        content="用户喜欢草莓蛋糕",
+    )
+    assert updated is not None
+    assert updated.fact_id == created.fact_id
+    assert updated.outcome == "updated"
+    assert store.insert_generated_memories(
+        stale_update,
+        ("另一个旧提炼结果不应写入",),
+    ).stale_generation is True
+    records = store.list_memories(
+        canonical_user_id=canonical,
+        preset="role-a",
+    )
+    assert [(item.fact_id, item.content) for item in records] == [
+        (created.fact_id, "用户喜欢草莓蛋糕")
+    ]
+    assert {
+        (item["suppression_kind"], item["content_snapshot"])
+        for item in store.list_suppressions(
+            canonical_user_id=canonical,
+            preset="role-a",
+        )
+    } == {("fact", "用户喜欢蓝莓蛋糕")}
+
+    duplicate = store.create_memory(
+        canonical_user_id=canonical,
+        preset="role-a",
+        content="用户喜欢爵士乐",
+    )
+    with pytest.raises(MemoryConflictError):
+        store.update_memory(
+            canonical_user_id=canonical,
+            preset="role-a",
+            memory_id=updated.memory_id,
+            content="用户喜欢爵士乐",
+        )
+    assert {
+        item.fact_id for item in store.list_memories(
+            canonical_user_id=canonical,
+            preset="role-a",
+        )
+    } == {updated.fact_id, duplicate.fact_id}
+    assert store.foreign_key_check() == ()
+
+
 def test_deleted_memory_cannot_return_from_inflight_or_fresh_generation(
     tmp_path: Path,
 ):
@@ -685,10 +1461,10 @@ def test_feishu_merge_requires_authorization_and_is_idempotent(
     conn = sqlite3.connect(store.db_path)
     try:
         assert conn.execute(
-            "SELECT COUNT(*) FROM identity_authorizations"
+                "SELECT COUNT(*) FROM sys_identity_authorizations"
         ).fetchone()[0] == 1
         assert conn.execute(
-            "SELECT COUNT(*) FROM identity_merge_ledger"
+                "SELECT COUNT(*) FROM audit_identity_merges"
         ).fetchone()[0] == 1
     finally:
         conn.close()
@@ -752,7 +1528,7 @@ def test_feishu_rebind_never_merges_two_qq_identities(tmp_path: Path):
             for row in conn.execute(
                 """
                 SELECT target_canonical_id
-                FROM identity_authorizations
+                    FROM sys_identity_authorizations
                 WHERE source_protocol='feishu'
                   AND source_self_id='app-1'
                   AND source_external_id='ou-user'
@@ -764,7 +1540,7 @@ def test_feishu_rebind_never_merges_two_qq_identities(tmp_path: Path):
         outcome = conn.execute(
             """
             SELECT outcome
-            FROM identity_merge_ledger
+                FROM audit_identity_merges
             WHERE target_external_id='77'
             """
         ).fetchone()[0]
@@ -897,7 +1673,7 @@ def test_migration_dry_run_is_complete_and_does_not_touch_target(
     assert target.exists() is False
 
 
-def test_existing_normalized_schema_backfills_transcript_preset(
+def test_normal_startup_refuses_legacy_content_until_explicit_migration(
     tmp_path: Path,
 ):
     database = tmp_path / "pre-preset-schema.db"
@@ -955,22 +1731,8 @@ def test_existing_normalized_schema_backfills_transcript_preset(
     finally:
         conn.close()
 
-    JianerMemoryStore(database)
-    conn = sqlite3.connect(database)
-    try:
-        columns = {
-            row[1]
-            for row in conn.execute(
-                "PRAGMA table_info(raw_transcript_messages)"
-            )
-        }
-        preset = conn.execute(
-            "SELECT preset_key FROM raw_transcript_messages"
-        ).fetchone()[0]
-    finally:
-        conn.close()
-    assert "preset_key" in columns
-    assert preset == "default"
+    with pytest.raises(MemoryMigrationRequiredError):
+        JianerMemoryStore(database)
 
 
 def test_legacy_migration_assigns_unknown_raw_preset_to_default(
@@ -989,12 +1751,24 @@ def test_legacy_migration_assigns_unknown_raw_preset_to_default(
         presets = {
             row[0]
             for row in conn.execute(
-                "SELECT DISTINCT preset_key FROM raw_transcript_messages"
+                """
+                SELECT DISTINCT p.preset_key
+                FROM sys_chat_message_index i
+                JOIN sys_personas p
+                  ON p.persona_id = i.active_persona_id
+                """
+            )
+        }
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
     finally:
         conn.close()
     assert presets == {"default"}
+    assert "raw_transcript_messages" not in tables
 
 
 def test_migration_apply_and_rollback_restore_preexisting_target(
@@ -1034,7 +1808,7 @@ def test_migration_apply_and_rollback_restore_preexisting_target(
         assert conn.execute(
             """
             SELECT status
-            FROM migration_ledger
+                FROM audit_legacy_migrations
             WHERE migration_id='migration-for-rollback'
             """
         ).fetchone()[0] == "rolled_back"

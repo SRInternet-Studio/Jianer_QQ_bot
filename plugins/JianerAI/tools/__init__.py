@@ -1,4 +1,7 @@
-from plugins.JianerAI.tools.builtin import register_builtin_tools
+from plugins.JianerAI.tools.builtin import (
+    BUILTIN_MUTATING_TOOL_NAMES,
+    register_builtin_tools,
+)
 from plugins.JianerAI.tools.contracts import (
     ToolCall,
     ToolContext,
@@ -29,6 +32,7 @@ from plugins.JianerAI.tools.web_browser import (
 )
 
 __all__ = [
+    "BUILTIN_MUTATING_TOOL_NAMES",
     "ToolCall",
     "ToolContext",
     "ToolExecutionError",

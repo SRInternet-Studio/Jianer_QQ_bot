@@ -407,7 +407,7 @@ class LegacyMemoryMigrator:
             row = conn.execute(
                 """
                 SELECT version
-                FROM schema_meta
+                FROM sys_schema
                 WHERE schema_name='jianer_ai_memory'
                 """
             ).fetchone()
@@ -472,7 +472,7 @@ class LegacyMemoryMigrator:
             row = conn.execute(
                 """
                 SELECT *
-                FROM migration_ledger
+                FROM audit_legacy_migrations
                 WHERE migration_id = ?
                 """,
                 (migration_id_s,),
@@ -495,7 +495,7 @@ class LegacyMemoryMigrator:
             with store._transaction(conn):
                 conn.execute(
                     """
-                    INSERT INTO migration_ledger(
+                    INSERT INTO audit_legacy_migrations(
                         migration_id,
                         source_path,
                         source_sha256,
@@ -536,24 +536,60 @@ class LegacyMemoryMigrator:
         foreign_keys = store.foreign_key_check()
         conn = store._connect()
         try:
-            counts = {
-                table: int(
+            counts = {}
+            for table in (
+                "sys_identities",
+                "sys_identity_aliases",
+                "sys_conversations",
+                "cfg_session_settings",
+                "audit_migration_quarantine",
+            ):
+                counts[table] = int(
                     conn.execute(
                         f"SELECT COUNT(*) FROM {_quote_identifier(table)}"
                     ).fetchone()[0]
                 )
-                for table in (
-                    "canonical_identities",
-                    "identity_aliases",
-                    "conversations",
-                    "raw_transcript_messages",
-                    "session_settings",
-                    "memory_facts",
-                    "memory_evidence",
-                    "memory_suppressions",
-                    "migration_quarantine",
+            counts["raw_transcript_messages"] = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM sys_chat_message_index"
+                ).fetchone()[0]
+            )
+            counts["memory_facts"] = 0
+            counts["memory_evidence"] = 0
+            counts["memory_suppressions"] = 0
+            partitions = conn.execute(
+                """
+                SELECT people_table, evidence_table, suppressions_table
+                FROM sys_persona_partitions
+                """
+            ).fetchall()
+            for partition in partitions:
+                counts["memory_facts"] += int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM "
+                        + _quote_identifier(str(partition["people_table"]))
+                    ).fetchone()[0]
                 )
-            }
+                counts["memory_evidence"] += int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM "
+                        + _quote_identifier(str(partition["evidence_table"]))
+                    ).fetchone()[0]
+                )
+                counts["memory_suppressions"] += int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM "
+                        + _quote_identifier(
+                            str(partition["suppressions_table"])
+                        )
+                    ).fetchone()[0]
+                )
+            counts["persona_partitions"] = len(partitions)
+            counts["chat_partitions"] = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM sys_chat_partitions"
+                ).fetchone()[0]
+            )
         finally:
             conn.close()
         return {
@@ -577,7 +613,7 @@ class LegacyMemoryMigrator:
     ) -> bool:
         cursor = conn.execute(
             """
-            INSERT INTO migration_quarantine(
+            INSERT INTO audit_migration_quarantine(
                 migration_id,
                 item_type,
                 source_table,
@@ -715,7 +751,7 @@ class LegacyMemoryMigrator:
             )
             target_conn.execute(
                 """
-                UPDATE session_settings
+                UPDATE cfg_session_settings
                 SET memory_enabled = ?,
                     memory_interval_seconds = ?,
                     updated_at = ?
@@ -854,7 +890,7 @@ class LegacyMemoryMigrator:
             existing = target_conn.execute(
                 """
                 SELECT status, source_sha256, counts_json, verification_json
-                FROM migration_ledger
+                FROM audit_legacy_migrations
                 WHERE migration_id = ?
                 """,
                 (migration_id_s,),
@@ -894,7 +930,7 @@ class LegacyMemoryMigrator:
             with target_store._transaction(target_conn):
                 target_conn.execute(
                     """
-                    INSERT INTO migration_ledger(
+                    INSERT INTO audit_legacy_migrations(
                         migration_id,
                         source_path,
                         source_sha256,
@@ -1014,7 +1050,7 @@ class LegacyMemoryMigrator:
                 )
                 target_conn.execute(
                     """
-                    UPDATE migration_ledger
+                    UPDATE audit_legacy_migrations
                     SET counts_json = ?
                     WHERE migration_id = ?
                     """,
@@ -1039,7 +1075,7 @@ class LegacyMemoryMigrator:
             with target_store._transaction(target_conn):
                 target_conn.execute(
                     """
-                    UPDATE migration_ledger
+                    UPDATE audit_legacy_migrations
                     SET status='completed',
                         completed_at=?,
                         verification_json=?,
@@ -1091,7 +1127,7 @@ class LegacyMemoryMigrator:
                 with store._transaction(conn):
                     conn.execute(
                         """
-                        INSERT INTO migration_ledger(
+                        INSERT INTO audit_legacy_migrations(
                             migration_id,
                             source_path,
                             source_sha256,

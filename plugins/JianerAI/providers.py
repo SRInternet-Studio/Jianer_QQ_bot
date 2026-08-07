@@ -129,6 +129,7 @@ class ModelConfig:
     top_p: float = 1.0
     personality: str = ""
     empty_response_text: str = "模型没有返回任何内容"
+    empty_response_retries: int = 0
     max_history_messages: int = 20
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT
     endpoint_style: str = ""
@@ -152,6 +153,10 @@ class ModelConfig:
             raise ModelConfigError(f"model config {key!r} is missing an API key")
         if self.max_tokens <= 0:
             raise ModelConfigError(f"model config {key!r} has an invalid MaxTokens")
+        if not 0 <= self.empty_response_retries <= 2:
+            raise ModelConfigError(
+                f"model config {key!r} has invalid EmptyResponseRetries"
+            )
         if self.max_history_messages < 0:
             raise ModelConfigError(
                 f"model config {key!r} has an invalid max_history_messages"
@@ -406,33 +411,50 @@ class ProviderRegistry:
             )
         if config.provider == "openai_chat_completions":
             request = await self._prepare_openai_chat_request(request)
-            payload = _build_openai_payload(config, request)
-            response = await self._request("openai", config, payload)
-            result = await _extract_openai_response(response)
-            if not result.tool_calls:
-                textual_calls = _parse_dsml_tool_calls(result.text)
-                if textual_calls:
-                    turn = AssistantTurn(tool_calls=textual_calls)
-                    result = ProviderResponse("", textual_calls, turn)
-                elif _looks_like_dsml_tool_call(result.text):
-                    raise ProviderRequestError(
-                        "provider returned malformed textual tool calls"
-                    )
         elif config.provider == "openai_responses":
-            result = await self._complete_responses(config, request)
-        elif config.provider == "google_generate_content":
-            payload = _build_gemini_payload(config, request)
-            response = await self._request("gemini", config, payload)
-            result = _extract_gemini_response(response)
-            if not result.text and not result.tool_calls:
-                raise _gemini_empty_response_error(response)
-        elif config.provider == "anthropic_messages":
-            payload = _build_anthropic_payload(config, request)
-            response = await self._request("anthropic", config, payload)
-            result = _extract_anthropic_response(response)
-        else:  # ModelConfig validation keeps this branch unreachable.
-            raise ModelConfigError(f"unsupported provider: {config.provider}")
-        normalized_text = str(result.text or "").rstrip()
+            request = await self._prepare_responses_request(config, request)
+        for attempt in range(config.empty_response_retries + 1):
+            try:
+                if config.provider == "openai_chat_completions":
+                    payload = _build_openai_payload(config, request)
+                    response = await self._request("openai", config, payload)
+                    result = await _extract_openai_response(response)
+                    if not result.tool_calls:
+                        textual_calls = _parse_dsml_tool_calls(result.text)
+                        if textual_calls:
+                            turn = AssistantTurn(tool_calls=textual_calls)
+                            result = ProviderResponse("", textual_calls, turn)
+                        elif _looks_like_dsml_tool_call(result.text):
+                            raise ProviderRequestError(
+                                "provider returned malformed textual tool calls"
+                            )
+                elif config.provider == "openai_responses":
+                    payload = _build_responses_payload(config, request)
+                    response = await self._request("responses", config, payload)
+                    result = _extract_responses_response(response)
+                elif config.provider == "google_generate_content":
+                    payload = _build_gemini_payload(config, request)
+                    response = await self._request("gemini", config, payload)
+                    result = _extract_gemini_response(response)
+                    if not result.text and not result.tool_calls:
+                        raise _gemini_empty_response_error(response)
+                elif config.provider == "anthropic_messages":
+                    payload = _build_anthropic_payload(config, request)
+                    response = await self._request("anthropic", config, payload)
+                    result = _extract_anthropic_response(response)
+                else:  # Validation keeps this branch unreachable.
+                    raise ModelConfigError(
+                        f"unsupported provider: {config.provider}"
+                    )
+            except EmptyProviderResponseError:
+                if attempt < config.empty_response_retries:
+                    continue
+                raise
+            normalized_text = str(result.text or "").rstrip()
+            if normalized_text or result.tool_calls:
+                break
+            if attempt < config.empty_response_retries:
+                continue
         if not normalized_text and not result.tool_calls:
             normalized_text = config.empty_response_text
             if not normalized_text:
@@ -445,19 +467,6 @@ class ProviderRegistry:
             )
             return ProviderResponse(normalized_text, result.tool_calls, turn)
         return result
-
-    async def _complete_responses(
-        self,
-        config: ModelConfig,
-        request: ChatRequest,
-    ) -> ProviderResponse:
-        prepared_request = await self._prepare_responses_request(
-            config,
-            request,
-        )
-        payload = _build_responses_payload(config, prepared_request)
-        response = await self._request("responses", config, payload)
-        return _extract_responses_response(response)
 
     async def _prepare_openai_chat_request(
         self,
@@ -664,6 +673,7 @@ def load_model_config(path: str | Path) -> ModelConfig:
             empty_response_text=raw.get(
                 "if_return_none", "模型没有返回任何内容"
             ),
+            empty_response_retries=int(raw.get("EmptyResponseRetries", 0)),
             max_history_messages=int(raw.get("max_history_messages", 20)),
             request_timeout_seconds=float(
                 raw.get("RequestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT)

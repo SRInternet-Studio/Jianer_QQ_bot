@@ -6,9 +6,12 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from jianer import common as Manager, segments as Segments
 from jianer.adapters import (
     Capability,
+    ConversationKey,
     ConversationKind,
     MediaKind,
     MediaRequest,
@@ -29,6 +32,7 @@ from plugins.JianerAI.providers import (
 from plugins.JianerAI.service import JianerAIService, RuntimeOptions
 from plugins.JianerAI.speech import SpeechArtifact, SpeechOptions
 from plugins.JianerAI.suffix import SuffixStore
+from plugins.JianerAI.tools import ToolRisk, ToolSpec
 
 
 class FakeProviders:
@@ -66,6 +70,86 @@ class FakeProviders:
             }
         )
         return self.answer
+
+
+class MemoryReviewProviders(FakeProviders):
+    def __init__(self, answer: str, review_answer: str | Exception):
+        super().__init__(answer)
+        self.review_answer = review_answer
+        self.review_calls = 0
+
+    async def chat(
+        self,
+        key,
+        message,
+        *,
+        history=(),
+        system_prompt="",
+        attachments=(),
+    ):
+        if "独立长期记忆审查器" in system_prompt:
+            self.review_calls += 1
+            self.calls.append(
+                {
+                    "key": key,
+                    "message": message,
+                    "history": tuple(history),
+                    "system_prompt": system_prompt,
+                    "attachments": tuple(attachments),
+                }
+            )
+            if isinstance(self.review_answer, Exception):
+                raise self.review_answer
+            return self.review_answer
+        return await super().chat(
+            key,
+            message,
+            history=history,
+            system_prompt=system_prompt,
+            attachments=attachments,
+        )
+
+
+class ModerationProviders(FakeProviders):
+    def __init__(
+        self,
+        answer: str,
+        moderation_answer: str | Exception,
+    ):
+        super().__init__(answer)
+        self.moderation_answer = moderation_answer
+        self.moderation_calls = 0
+
+    async def chat(
+        self,
+        key,
+        message,
+        *,
+        history=(),
+        system_prompt="",
+        attachments=(),
+    ):
+        if "JianerAI content safety moderator" in system_prompt:
+            self.moderation_calls += 1
+            self.calls.append(
+                {
+                    "key": key,
+                    "message": message,
+                    "history": tuple(history),
+                    "system_prompt": system_prompt,
+                    "attachments": tuple(attachments),
+                }
+            )
+            if isinstance(self.moderation_answer, Exception):
+                raise self.moderation_answer
+            return self.moderation_answer
+        return await super().chat(
+            key,
+            message,
+            history=history,
+            system_prompt=system_prompt,
+            attachments=attachments,
+        )
 
 
 class FakeSpeech:
@@ -121,7 +205,7 @@ class RecordingLogger:
 
 def _preset_store(tmp_path: Path) -> PresetStore:
     preset_dir = tmp_path / "prerequisites"
-    preset_dir.mkdir()
+    preset_dir.mkdir(exist_ok=True)
     (preset_dir / "Normal.txt").write_text(
         (
             "你是{self.bot_name}，正在和{self.event_user}交流。\n"
@@ -166,8 +250,12 @@ def _service(
     answer="模型回答。",
     blocked_group_ids=(),
     logger=None,
+    memory_review_enabled=False,
+    moderation_enabled=False,
+    moderation_model="model-b",
+    provider=None,
 ):
-    providers = FakeProviders(answer)
+    providers = provider or FakeProviders(answer)
     speech = FakeSpeech(tmp_path)
     options = RuntimeOptions(
         project_root=tmp_path,
@@ -182,13 +270,22 @@ def _service(
         memory_scheduler_tick_seconds=3600,
         memory_min_new_rows=2,
         memory_topk=6,
-        transcript_retention_days=30,
+        transcript_retention_days=90,
         tts_options=SpeechOptions(),
         blocked_group_ids=frozenset(str(item) for item in blocked_group_ids),
+        content_moderation_enabled=moderation_enabled,
+        content_moderation_model=moderation_model,
     )
     service = JianerAIService(
         options,
         runtime={
+            "config": SimpleNamespace(
+                others={
+                    "memory_review_external_context_enabled": (
+                        memory_review_enabled
+                    )
+                }
+            ),
             "root_users": ["1"],
             "super_users": [],
             "manage_users": [],
@@ -236,6 +333,197 @@ def test_runtime_options_enable_agent_by_default() -> None:
     )
 
     assert options.agent_enabled_default is True
+    assert options.default_model == "grok"
+    assert options.content_moderation_enabled is True
+    assert options.content_moderation_model == "deepseek"
+
+
+def test_safe_request_is_moderated_before_main_model(tmp_path: Path):
+    async def scenario():
+        provider = ModerationProviders(
+            "这是安全的主模型回答。",
+            '{"decision":"allow","categories":[],"reason":"普通科普",'
+            '"refusal":""}',
+        )
+        service, _, _ = _service(
+            tmp_path,
+            moderation_enabled=True,
+            moderation_model="model-b",
+            provider=provider,
+        )
+        actions = FakeActions()
+        event = _event("请解释光合作用", group_id=None)
+
+        assert await service.handle_fallback(event, actions) is True
+
+        assert provider.moderation_calls == 1
+        assert [call["key"] for call in provider.calls] == [
+            "model-b",
+            "model-a",
+        ]
+        review_payload = json.loads(provider.calls[0]["message"])
+        assert review_payload["current_request"]["text"] == "请解释光合作用"
+        persona_style = json.loads(review_payload["persona"])
+        assert persona_style["persona_id"] == "Normal"
+        assert persona_style["self_reference"] == "我"
+        assert provider.calls[0]["history"] == ()
+        assert "回答仍须保持安全、合法" in provider.calls[1]["system_prompt"]
+        assert "这是安全的主模型回答。" in str(actions.sent[-1][1])
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_grok_main_model_uses_compact_safe_persona_projection(tmp_path: Path):
+    async def scenario():
+        service, providers, _ = _service(
+            tmp_path,
+            answer="Grok 的安全回答。",
+        )
+        providers.models["grok"] = "Grok"
+        actions = FakeActions()
+        event = _event("请解释光合作用", group_id=None)
+        key = await service._conversation_key(event, actions)
+        service._models[key] = "grok"
+
+        assert await service.handle_fallback(event, actions) is True
+
+        assert providers.calls[-1]["key"] == "grok"
+        system_prompt = providers.calls[-1]["system_prompt"]
+        assert "persona_style" in system_prompt
+        assert '"persona_id":"Normal"' in system_prompt
+        assert "完整角色模板" in system_prompt
+        assert "你在扮演测试角色" not in system_prompt
+        assert "Grok 的安全回答。" in str(actions.sent[-1][1])
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_disallowed_request_gets_persona_refusal_without_main_model_or_history(
+    tmp_path: Path,
+):
+    async def scenario():
+        provider = ModerationProviders(
+            "主模型绝不应收到这条请求。",
+            json.dumps(
+                {
+                    "decision": "refuse",
+                    "categories": ["sexual_explicit"],
+                    "reason": "请求生成露骨色情内容",
+                    "refusal": "这种内容我就不写啦，我们换成含蓄的恋爱故事吧。",
+                },
+                ensure_ascii=False,
+            ),
+        )
+        service, _, _ = _service(
+            tmp_path,
+            moderation_enabled=True,
+            moderation_model="model-b",
+            provider=provider,
+        )
+        actions = FakeActions()
+        event = _event("请生成露骨色情内容", group_id=None)
+        service.suffixes.set_for_identity("qq:42", "[UNTRUSTED_SUFFIX]")
+        await service.observe(event, actions)
+
+        assert await service.handle_fallback(event, actions) is True
+
+        assert provider.moderation_calls == 1
+        assert len(provider.calls) == 1
+        assert provider.calls[0]["key"] == "model-b"
+        assert "这种内容我就不写啦" in str(actions.sent[-1][1])
+        assert "UNTRUSTED_SUFFIX" not in str(actions.sent[-1][1])
+        key = await service._conversation_key(event, actions)
+        assert service._histories.get(key, []) == []
+        assert service.memory.query_conversation_episodes(
+            preset=key.preset,
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+        ) == ()
+        messages = service.memory.query_recent_chat(
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+            limit=10,
+        )
+        assert [item.content for item in messages] == [
+            "[内容已由安全审核隐藏]"
+        ]
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_invalid_moderation_response_fails_closed(tmp_path: Path):
+    async def scenario():
+        provider = ModerationProviders(
+            "主模型绝不应在审核故障时运行。",
+            "not-json",
+        )
+        service, _, _ = _service(
+            tmp_path,
+            moderation_enabled=True,
+            provider=provider,
+        )
+        actions = FakeActions()
+
+        assert await service.handle_fallback(
+            _event("普通问题", group_id=None),
+            actions,
+        )
+
+        assert provider.moderation_calls == 1
+        assert len(provider.calls) == 1
+        assert "没法完成必要的安全检查" in str(actions.sent[-1][1])
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_service_admits_only_the_builtin_scoped_memory_writes(tmp_path: Path):
+    service, _, _ = _service(tmp_path)
+    event = _event("请记住我喜欢蓝莓", group_id=None)
+    actions = FakeActions()
+    context = service._tool_context(
+        event,
+        actions,
+        ConversationKey(
+            protocol="onebot",
+            self_id="bot-1",
+            kind=ConversationKind.PRIVATE,
+            conversation_id="42",
+            preset="Normal",
+        ),
+        "qq:42",
+    )
+    assert {spec.name for spec in service.tools.available(context)} >= {
+        "create_my_memory",
+        "update_my_memory",
+    }
+
+    registration = service.register_tool(
+        ToolSpec(
+            name="unlisted_plugin_write",
+            description="must require central admission",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+            handler=lambda *_: None,
+            risk=ToolRisk.MUTATING,
+        )
+    )
+    assert "unlisted_plugin_write" not in {
+        spec.name for spec in service.tools.available(context)
+    }
+    assert service.unregister_tool(registration) is True
+    asyncio.run(service.shutdown())
 
 
 def _event(
@@ -314,13 +602,31 @@ def test_sensitive_tool_values_are_removed_from_history_transcript_and_reply(
         )
         assert secret not in histories
         assert "[REDACTED]" in histories
-        with sqlite3.connect(service.options.database_path) as conn:
-            rows = conn.execute(
-                "SELECT content FROM raw_transcript_messages"
-            ).fetchall()
-        transcript = "\n".join(str(row[0]) for row in rows)
+        key = await service._conversation_key(event, actions)
+        rows = service.memory.query_recent_chat(
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+            limit=100,
+        )
+        transcript = "\n".join(item.content for item in rows)
         assert secret not in transcript
         assert "[REDACTED]" in transcript
+        episodes = service.memory.query_conversation_episodes(
+            preset=key.preset,
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+            query="代填密码",
+        )
+        episode_text = "\n".join(
+            f"{item.user_content}\n{item.assistant_content}"
+            for item in episodes
+        )
+        assert secret not in episode_text
+        assert "[REDACTED]" in episode_text
         assert not any(
             lock.locked()
             for lock in service._memory_generation_locks.values()
@@ -737,6 +1043,14 @@ def test_memory_generation_uses_canonical_preset_across_sessions(
         assert created == 1
         assert "群聊事实" in providers.calls[-1]["message"]
         assert "私聊事实" in providers.calls[-1]["message"]
+        assert "content 必须写成当前人设自己的第一人称主观回忆" in (
+            providers.calls[-1]["message"]
+        )
+        assert "群内背景都不要输出" in providers.calls[-1]["message"]
+        assert '"persona_id":"Normal"' in providers.calls[-1]["message"]
+        assert "严格使用输入中风格标签规定的第一人称称谓" in (
+            providers.calls[-1]["system_prompt"]
+        )
         memories = service.memory.list_memories(
             canonical_user_id=canonical,
             preset=key.preset,
@@ -749,6 +1063,594 @@ def test_memory_generation_uses_canonical_preset_across_sessions(
             )
             is None
         )
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_successful_dialogue_persists_and_reinjects_persona_episode(
+    tmp_path: Path,
+):
+    async def scenario():
+        service, providers, _ = _service(
+            tmp_path,
+            answer="好呀，我记得我们聊过这本书。",
+        )
+        actions = FakeActions()
+        first = _event("我刚读完《银河系漫游指南》", group_id=None)
+        assert await service.handle_fallback(first, actions)
+        key = await service._conversation_key(first, actions)
+        episodes = service.memory.query_conversation_episodes(
+            preset=key.preset,
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+            query="银河系漫游指南",
+        )
+        assert [(item.user_content, item.assistant_content) for item in episodes] == [
+            (
+                "我刚读完《银河系漫游指南》",
+                "好呀，我记得我们聊过这本书。",
+            )
+        ]
+
+        with service._state_lock:
+            service._histories.clear()
+        providers.answer = "当然记得。"
+        second = _event("我们上次聊的是哪本书？", group_id=None)
+        assert await service.handle_fallback(second, actions)
+        prompt = providers.calls[-1]["system_prompt"]
+        assert "当前人设在这个会话里聊过的相关片段" in prompt
+        assert "我刚读完《银河系漫游指南》" in prompt
+        assert "好呀，我记得我们聊过这本书。" in prompt
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_successful_reply_records_outgoing_and_reviews_memory_exactly_once(
+    tmp_path: Path,
+):
+    async def scenario():
+        provider = MemoryReviewProviders(
+            "我会记住的。",
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [
+                        {
+                            "operation": "create",
+                            "scope": "person",
+                            "memory_id": None,
+                            "canonical_fact": "用户长期喜欢蓝莓蛋糕",
+                            "memory_text": "我记得你一直很喜欢蓝莓蛋糕。",
+                            "importance": 0.8,
+                            "confidence": 0.95,
+                            "reason": "用户明确表达了长期偏好",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        service, _, _ = _service(
+            tmp_path,
+            memory_review_enabled=True,
+            provider=provider,
+        )
+        actions = FakeActions()
+        event = _at_event("请记住，我长期喜欢蓝莓蛋糕")
+        await service.observe(event, actions)
+        assert await service.handle_fallback(event, actions)
+        while service._background_tasks:
+            await asyncio.gather(
+                *tuple(service._background_tasks),
+                return_exceptions=True,
+            )
+            await asyncio.sleep(0)
+
+        key = await service._conversation_key(event, actions)
+        messages = service.memory.query_recent_chat(
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+            limit=10,
+        )
+        assert [item.direction for item in messages] == [
+            "incoming",
+            "outgoing",
+        ]
+        assert messages[-1].content == "我会记住的。"
+        records = service.memory.list_memories(
+            canonical_user_id="qq:42",
+            preset=key.preset,
+        )
+        assert len(records) == 1
+        assert records[0].canonical_fact == "用户长期喜欢蓝莓蛋糕"
+        assert records[0].content == "我记得你一直很喜欢蓝莓蛋糕。"
+        assert records[0].source_count == 1
+        assert len(records[0].evidence) == 1
+        episodes = service.memory.query_conversation_episodes(
+            preset=key.preset,
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+            query="蓝莓蛋糕",
+        )
+        assert len(episodes) == 1
+        assert episodes[0].review_state == "completed"
+        assert provider.review_calls == 1
+        service._schedule_memory_review(key.preset, event.message_id)
+        await asyncio.sleep(0.05)
+        assert provider.review_calls == 1
+        with sqlite3.connect(service.options.database_path) as conn:
+            assert conn.execute(
+                "SELECT status FROM job_memory_reviews"
+            ).fetchone()[0] == "completed"
+            assert conn.execute(
+                "SELECT operation FROM audit_memory_actions"
+            ).fetchone()[0] == "create"
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_send_failure_does_not_create_episode_or_review_job(tmp_path: Path):
+    class FailingActions(FakeActions):
+        async def send(self, message, **target):
+            raise RuntimeError("send failed")
+
+    async def scenario():
+        provider = MemoryReviewProviders(
+            "不会发送成功。",
+            '{"decision":"no-op","actions":[]}',
+        )
+        service, _, _ = _service(
+            tmp_path,
+            memory_review_enabled=True,
+            provider=provider,
+        )
+        actions = FailingActions()
+        event = _at_event("这条回复会发送失败")
+        await service.observe(event, actions)
+        with pytest.raises(RuntimeError, match="send failed"):
+            await service.handle_fallback(event, actions)
+        key = await service._conversation_key(event, actions)
+        assert service.memory.query_conversation_episodes(
+            preset=key.preset,
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+        ) == ()
+        with sqlite3.connect(service.options.database_path) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM job_memory_reviews"
+            ).fetchone()[0] == 0
+        assert provider.review_calls == 0
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_memory_review_updates_an_existing_person_memory(tmp_path: Path):
+    async def scenario():
+        service, _, _ = _service(tmp_path)
+        canonical = service.memory.resolve_identity(
+            "onebot", "bot-1", "42"
+        )
+        existing = service.memory.create_scoped_memory(
+            scope="person",
+            canonical_user_id=canonical,
+            preset="Normal",
+            canonical_fact="用户长期喜欢蓝莓蛋糕",
+            content="我记得你一直喜欢蓝莓蛋糕。",
+            importance=0.7,
+            confidence=0.8,
+        )
+        await service.shutdown()
+
+        provider = MemoryReviewProviders(
+            "原来如此。",
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [
+                        {
+                            "operation": "update",
+                            "scope": "person",
+                            "memory_id": str(existing.fact_id),
+                            "canonical_fact": "用户长期喜欢草莓蛋糕",
+                            "memory_text": "我记得你现在一直更喜欢草莓蛋糕。",
+                            "importance": 0.85,
+                            "confidence": 0.95,
+                            "reason": "用户明确纠正了长期偏好",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        service, _, _ = _service(
+            tmp_path,
+            memory_review_enabled=True,
+            provider=provider,
+        )
+        actions = FakeActions()
+        event = _at_event("纠正一下，我现在长期更喜欢草莓蛋糕")
+        await service.observe(event, actions)
+        assert await service.handle_fallback(event, actions)
+        while service._background_tasks:
+            await asyncio.gather(
+                *tuple(service._background_tasks),
+                return_exceptions=True,
+            )
+            await asyncio.sleep(0)
+
+        records = service.memory.list_memories(
+            canonical_user_id=canonical,
+            preset="Normal",
+        )
+        assert len(records) == 1
+        assert records[0].fact_id == existing.fact_id
+        assert records[0].canonical_fact == "用户长期喜欢草莓蛋糕"
+        assert records[0].content == "我记得你现在一直更喜欢草莓蛋糕。"
+        assert records[0].source_count == 1
+        with sqlite3.connect(service.options.database_path) as conn:
+            assert conn.execute(
+                "SELECT operation FROM audit_memory_actions"
+            ).fetchone()[0] == "update"
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_failed_memory_review_recovers_after_service_restart(tmp_path: Path):
+    async def scenario():
+        failing_provider = MemoryReviewProviders(
+            "我先回答你。",
+            RuntimeError("temporary reviewer outage"),
+        )
+        service, _, _ = _service(
+            tmp_path,
+            memory_review_enabled=True,
+            provider=failing_provider,
+        )
+        actions = FakeActions()
+        event = _at_event("今天只是随便聊聊")
+        await service.observe(event, actions)
+        assert await service.handle_fallback(event, actions)
+        while service._background_tasks:
+            await asyncio.gather(
+                *tuple(service._background_tasks),
+                return_exceptions=True,
+            )
+            await asyncio.sleep(0)
+        with sqlite3.connect(service.options.database_path) as conn:
+            failed = conn.execute(
+                "SELECT status, attempt_count, next_retry_at, last_error "
+                "FROM job_memory_reviews"
+            ).fetchone()
+        assert failed[0] == "failed"
+        assert failed[1] == 1
+        assert failed[2] > 0
+        assert "temporary reviewer outage" in failed[3]
+        assert failing_provider.review_calls == 1
+        await service.shutdown()
+
+        # Simulate that the durable exponential-backoff deadline elapsed while
+        # the process was offline, then construct a fresh service instance.
+        with sqlite3.connect(tmp_path / "memory.db") as conn:
+            conn.execute(
+                "UPDATE job_memory_reviews SET next_retry_at = 0"
+            )
+        recovered_provider = MemoryReviewProviders(
+            "不会再次生成主回复。",
+            '{"decision":"no-op","actions":[]}',
+        )
+        recovered, _, _ = _service(
+            tmp_path,
+            memory_review_enabled=True,
+            provider=recovered_provider,
+        )
+        await recovered._ensure_started()
+        while recovered._background_tasks:
+            await asyncio.gather(
+                *tuple(recovered._background_tasks),
+                return_exceptions=True,
+            )
+            await asyncio.sleep(0)
+        with sqlite3.connect(recovered.options.database_path) as conn:
+            completed = conn.execute(
+                "SELECT status, attempt_count, last_error "
+                "FROM job_memory_reviews"
+            ).fetchone()
+            operation = conn.execute(
+                "SELECT operation FROM audit_memory_actions"
+            ).fetchone()[0]
+        assert completed == ("completed", 2, None)
+        assert operation == "no-op"
+        assert recovered_provider.review_calls == 1
+        assert recovered_provider.calls[0]["history"] == ()
+        await recovered.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_memory_review_cannot_recreate_a_user_deleted_memory(tmp_path: Path):
+    async def scenario():
+        service, _, _ = _service(tmp_path)
+        canonical = service.memory.resolve_identity(
+            "onebot", "bot-1", "42"
+        )
+        original = service.memory.create_scoped_memory(
+            scope="person",
+            canonical_user_id=canonical,
+            preset="Normal",
+            canonical_fact="用户长期喜欢蓝莓蛋糕",
+            content="我记得你一直喜欢蓝莓蛋糕。",
+        )
+        assert original is not None
+        assert service.memory.delete_memory(
+            canonical_user_id=canonical,
+            preset="Normal",
+            memory_id=original.fact_id,
+        )
+        await service.shutdown()
+
+        provider = MemoryReviewProviders(
+            "聊点别的吧。",
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [
+                        {
+                            "operation": "create",
+                            "scope": "person",
+                            "memory_id": None,
+                            "canonical_fact": "用户长期喜欢蓝莓蛋糕",
+                            "memory_text": "我记得你一直喜欢蓝莓蛋糕。",
+                            "importance": 0.8,
+                            "confidence": 0.9,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        service, _, _ = _service(
+            tmp_path,
+            memory_review_enabled=True,
+            provider=provider,
+        )
+        actions = FakeActions()
+        event = _at_event("今天又提到一次蓝莓蛋糕")
+        await service.observe(event, actions)
+        assert await service.handle_fallback(event, actions)
+        while service._background_tasks:
+            await asyncio.gather(
+                *tuple(service._background_tasks),
+                return_exceptions=True,
+            )
+            await asyncio.sleep(0)
+
+        assert service.memory.list_memories(
+            canonical_user_id=canonical,
+            preset="Normal",
+        ) == ()
+        assert len(
+            service.memory.list_suppressions(
+                canonical_user_id=canonical,
+                preset="Normal",
+            )
+        ) == 1
+        with sqlite3.connect(service.options.database_path) as conn:
+            audit = conn.execute(
+                "SELECT status, error_code FROM audit_memory_actions"
+            ).fetchone()
+            job_status = conn.execute(
+                "SELECT status FROM job_memory_reviews"
+            ).fetchone()[0]
+        assert audit == ("suppressed", "deleted_tombstone")
+        assert job_status == "completed"
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_disabling_external_review_context_does_not_leave_pending_jobs(
+    tmp_path: Path,
+):
+    async def scenario():
+        service, provider, _ = _service(
+            tmp_path,
+            memory_review_enabled=False,
+        )
+        actions = FakeActions()
+        event = _at_event("这轮不允许发送历史给审查模型")
+        await service.observe(event, actions)
+        assert await service.handle_fallback(event, actions)
+        key = await service._conversation_key(event, actions)
+        episodes = service.memory.query_conversation_episodes(
+            preset=key.preset,
+            protocol=key.protocol,
+            self_id=key.self_id,
+            conversation_kind=key.kind.value,
+            conversation_id=key.conversation_id,
+        )
+        assert len(episodes) == 1
+        assert episodes[0].review_state == "completed"
+        with sqlite3.connect(service.options.database_path) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM job_memory_reviews"
+            ).fetchone()[0] == 0
+        assert len(provider.calls) == 1
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_memory_review_parser_rejects_invalid_scope_ids_and_sensitive_data():
+    parse = JianerAIService._parse_memory_review_actions
+    allowed = {"person": {"7"}, "group": {"9"}}
+    assert parse(
+        '{"decision":"no-op","actions":[]}',
+        allowed_ids=allowed,
+        group_allowed=True,
+    ) == ()
+    with pytest.raises(ValueError, match="raw JSON"):
+        parse(
+            '```json\n{"decision":"no-op","actions":[]}\n```',
+            allowed_ids=allowed,
+            group_allowed=True,
+        )
+    with pytest.raises(ValueError, match="one to three"):
+        parse(
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [
+                        {
+                            "operation": "create",
+                            "scope": "person",
+                            "canonical_fact": f"稳定事实 {index}",
+                            "memory_text": f"我记得稳定事实 {index}。",
+                        }
+                        for index in range(4)
+                    ],
+                }
+            ),
+            allowed_ids=allowed,
+            group_allowed=True,
+        )
+    with pytest.raises(ValueError, match="invented"):
+        parse(
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [
+                        {
+                            "operation": "update",
+                            "scope": "person",
+                            "memory_id": "404",
+                            "canonical_fact": "用户喜欢蛋糕",
+                            "memory_text": "我记得你喜欢蛋糕。",
+                        }
+                    ],
+                }
+            ),
+            allowed_ids=allowed,
+            group_allowed=True,
+        )
+    with pytest.raises(ValueError, match="private"):
+        parse(
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [
+                        {
+                            "operation": "create",
+                            "scope": "group",
+                            "canonical_fact": "群约定周五见",
+                            "memory_text": "我记得大家约好周五见。",
+                        }
+                    ],
+                }
+            ),
+            allowed_ids=allowed,
+            group_allowed=False,
+        )
+    with pytest.raises(ValueError, match="sensitive"):
+        parse(
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [
+                        {
+                            "operation": "create",
+                            "scope": "person",
+                            "canonical_fact": "用户 token 是 sk-abcdefghijk12345",
+                            "memory_text": "我记得你的 token。",
+                        }
+                    ],
+                }
+            ),
+            allowed_ids=allowed,
+            group_allowed=True,
+        )
+    with pytest.raises(ValueError, match="sensitive"):
+        parse(
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [
+                        {
+                            "operation": "create",
+                            "scope": "person",
+                            "canonical_fact": "用户密码是 123456",
+                            "memory_text": "我记得你的密码。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            allowed_ids=allowed,
+            group_allowed=True,
+        )
+
+
+def test_group_prompt_reads_only_current_persona_and_current_group_memory(
+    tmp_path: Path,
+):
+    async def scenario():
+        service, providers, _ = _service(tmp_path)
+        actions = FakeActions()
+        canonical = service.memory.resolve_identity("onebot", "bot-1", "42")
+        service.memory.create_group_memory(
+            preset="Normal",
+            protocol="onebot",
+            self_id="bot-1",
+            group_id="100",
+            canonical_user_id=canonical,
+            content="我记得这个群约好每周五看电影呀。",
+        )
+        service.memory.create_group_memory(
+            preset="Normal",
+            protocol="onebot",
+            self_id="bot-1",
+            group_id="200",
+            canonical_user_id=canonical,
+            content="我记得另一个群只在周日聊天。",
+        )
+        service.memory.create_group_memory(
+            preset="role",
+            protocol="onebot",
+            self_id="bot-1",
+            group_id="100",
+            canonical_user_id=canonical,
+            content="这是另一个人设对同群的记忆。",
+        )
+
+        await service.observe(
+            _event("这个群刚刚在聊草莓蛋糕", group_id="100"),
+            actions,
+        )
+        await service.observe(
+            _event("另一个群刚刚在聊机密项目", group_id="200"),
+            actions,
+        )
+        event = _at_event("我们什么时候看电影？", group_id="100")
+        assert await service.handle_fallback(event, actions)
+        prompt = providers.calls[-1]["system_prompt"]
+        assert "[scope=group memory_id=" in prompt
+        assert "我记得这个群约好每周五看电影呀。" in prompt
+        assert "我记得另一个群只在周日聊天。" not in prompt
+        assert "这是另一个人设对同群的记忆。" not in prompt
+        assert "这个群刚刚在聊草莓蛋糕" in prompt
+        assert "另一个群刚刚在聊机密项目" not in prompt
         await service.shutdown()
 
     asyncio.run(scenario())
@@ -888,6 +1790,14 @@ def test_admin_snapshot_updates_are_visible_after_plugin_setup(tmp_path: Path):
             item.name == "新角色"
             for item in service.presets.list_presets()
         )
+        created = next(
+            item
+            for item in service.presets.list_presets()
+            if item.name == "新角色"
+        )
+        assert created.key in {
+            item.preset for item in service.memory.list_persona_partitions()
+        }
         await service.shutdown()
 
     asyncio.run(scenario())
@@ -977,6 +1887,11 @@ def test_service_agent_keeps_tool_turns_out_of_history_suffix_and_tts(
         assert "用户明确要求来源时" in system_prompt
         assert "所有最终回答必须使用纯文本" in system_prompt
         assert "不得使用 Markdown 或 HTML" in system_prompt
+        assert "用户在当前消息中明确要求记住某件事" in system_prompt
+        assert "普通对话不要为了后台整理而主动调用写记忆工具" in system_prompt
+        assert "回复成功后系统会另行执行独立记忆审查" in system_prompt
+        assert "read_recent_chat" in system_prompt
+        assert "search_current_chat" in system_prompt
         assert isinstance(providers.requests[1].turns[0], AssistantTurn)
         tool_result = providers.requests[1].turns[1]
         assert isinstance(tool_result, ToolResultTurn)
