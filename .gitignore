@@ -251,8 +251,8 @@ prerequisites/ffmpeg.exe
 prerequisites/ffmpeg.zip
 config.json
 config12.json
-aiconfig/gemini.ai.json
-aiconfig/deepseek.ai.json
+aiconfig/*.ai.json
+!aiconfig/example.ai.json
 jianer_memory.db
 jianer_memory.db-shm
 jianer_memory.db-wal
@@ -267,3 +267,4 @@ restart.temp
 suffix_config.json
 prerequisites/current.json
 .pytest_tmp_*/
+plugins/MaimaiDX/
