@@ -69,7 +69,7 @@ HELP_MODE_FILE = "help_mode_settings.json"
 
 logger = Logger.Logger()
 logger.set_level(config.log_level)
-version_name = "JianerQQ机器人 版本 NEXT4Preview2"
+version_name = "JianerQQ机器人 版本 NEXT5"
 
 stop_working = False
 Wait_for_add_in = False

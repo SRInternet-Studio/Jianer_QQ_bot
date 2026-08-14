@@ -5,8 +5,16 @@
 import datetime
 import os
 import time
+from importlib import metadata
 
 from Tools.capture_screenshot import capture_screenshot
+
+
+def _jianercore_version() -> str:
+    try:
+        return metadata.version("jianer-bot")
+    except metadata.PackageNotFoundError:
+        return "Unknown"
 
 
 async def cmd_about(actions, Manager, Segments, event, bot_name, bot_name_en, ONE_SLOGAN, version_name):
@@ -25,6 +33,7 @@ async def cmd_about(actions, Manager, Segments, event, bot_name, bot_name_en, ON
     html_content = html_content.replace("{{app_name}}", str(framework.get("app_name", "Unknown")))
     html_content = html_content.replace("{{protocol_version}}", str(framework.get("protocol_version", "")))
     html_content = html_content.replace("{{app_version}}", str(framework.get("app_version", "")))
+    html_content = html_content.replace("{{jianercore_version}}", _jianercore_version())
     html_content = html_content.replace("{{year}}", str(datetime.datetime.now().year))
 
     temp_html_path = os.path.abspath(os.path.join("static", f"about_temp_{int(time.time())}.html"))
