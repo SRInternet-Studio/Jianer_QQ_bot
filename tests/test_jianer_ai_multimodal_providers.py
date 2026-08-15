@@ -487,6 +487,79 @@ def test_google_sdk_prefers_lossless_raw_http_response_body() -> None:
     assert extracted.tool_calls[0].arguments == {}
 
 
+def test_gemini_extractor_excludes_thought_text_from_final_answer() -> None:
+    content = {
+        "role": "model",
+        "parts": [
+            {
+                "text": "private thought summary",
+                "thought": True,
+                "thoughtSignature": "EjQ=",
+            },
+            {"text": "visible answer with explicit flag", "thought": False},
+            {"text": "visible final answer"},
+        ],
+    }
+
+    extracted = _extract_gemini_response(
+        {"candidates": [{"content": content}]}
+    )
+
+    assert extracted.text == (
+        "visible answer with explicit flag\nvisible final answer"
+    )
+    assert extracted.turn.text == extracted.text
+    assert extracted.turn.provider_content == content
+
+
+def test_google_thought_only_response_is_not_returned_as_answer(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        config_dir = tmp_path / "google-thought-only"
+        _write_config(
+            config_dir,
+            "google",
+            "Google GenerateContent",
+            Model="gemini-3.1-pro",
+        )
+
+        async def transport(provider, config, payload):
+            assert provider == "gemini"
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [
+                                {
+                                    "text": "private thought summary",
+                                    "thought": True,
+                                }
+                            ],
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "thoughtsTokenCount": 42,
+                    "totalTokenCount": 42,
+                },
+            }
+
+        registry = ProviderRegistry(config_dir, transport=transport)
+        with pytest.raises(
+            EmptyProviderResponseError,
+            match=r"finish_reason=STOP.*thoughts_tokens=42",
+        ):
+            await registry.complete_request(
+                "google",
+                ChatRequest(message="query"),
+            )
+
+    asyncio.run(scenario())
+
+
 def test_google_sdk_tool_signature_round_trips_as_base64() -> None:
     from google.genai import types
 
@@ -505,12 +578,17 @@ def test_google_sdk_tool_signature_round_trips_as_base64() -> None:
                         "role": "model",
                         "parts": [
                             {
+                                "text": "private thought summary",
+                                "thought": True,
+                                "thoughtSignature": "EjQ=",
+                            },
+                            {
                                 "functionCall": {
                                     "id": "call-1",
                                     "name": "multiply",
                                     "args": {"a": 6, "b": 7},
                                 },
-                                "thoughtSignature": "EjQ=",
+                                "thoughtSignature": "Vng=",
                             }
                         ],
                     }
@@ -535,7 +613,11 @@ def test_google_sdk_tool_signature_round_trips_as_base64() -> None:
 
     replay_contents = _google_sdk_contents(replay_payload, types)
 
+    assert first.text == ""
+    assert replay_contents[1].parts[0].thought is True
+    assert replay_contents[1].parts[0].text == "private thought summary"
     assert replay_contents[1].parts[0].thought_signature == b"\x12\x34"
+    assert replay_contents[1].parts[1].thought_signature == b"\x56\x78"
     assert replay_contents[2].parts[0].function_response.response == {
         "result": 42
     }

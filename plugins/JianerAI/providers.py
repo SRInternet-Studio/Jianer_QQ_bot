@@ -1773,7 +1773,9 @@ def _extract_gemini_response(response: Any) -> ProviderResponse:
     texts = [
         str(part["text"])
         for part in parts
-        if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        if isinstance(part, Mapping)
+        and isinstance(part.get("text"), str)
+        and part.get("thought") is not True
     ]
     calls: list[ProviderToolCall] = []
     for index, part in enumerate(parts):
