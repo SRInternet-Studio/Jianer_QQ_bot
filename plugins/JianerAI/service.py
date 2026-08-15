@@ -562,12 +562,15 @@ class JianerAIService:
         self._tts_enabled: dict[ConversationKey, bool] = {}
         self._agent_enabled: dict[ConversationKey, bool | None] = {}
         self._histories: dict[ConversationKey, list[dict[str, str]]] = {}
+        self._history_revisions: dict[ConversationKey, int] = {}
         self._session_locks: dict[ConversationKey, asyncio.Lock] = {}
+        self._dialogue_locks: dict[
+            tuple[ConversationKey, str], asyncio.Lock
+        ] = {}
         self._memory_generation_locks: dict[
             tuple[str, str], asyncio.Lock
         ] = {}
         self._state_lock = threading.RLock()
-        self._generation_count = 0
         self._maintenance_task: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._memory_review_keys: set[tuple[str, str]] = set()
@@ -619,7 +622,13 @@ class JianerAIService:
         except Exception:
             self._log_exception("JianerAI transcript capture failed")
 
-    async def handle_fallback(self, event: Any, actions: Any) -> bool:
+    async def handle_fallback(
+        self,
+        event: Any,
+        actions: Any,
+        *,
+        background_dialogue: bool = False,
+    ) -> bool:
         if self._closed or not self._is_message_event(event):
             return False
         await self._ensure_started()
@@ -676,12 +685,74 @@ class JianerAIService:
             conversation_id=base.conversation_id,
             preset=preset_key,
         )
-        lock = self._session_locks.setdefault(key, asyncio.Lock())
+        canonical = await asyncio.to_thread(
+            self._canonical_identity, event, actions
+        )
+        dialogue = self._run_dialogue(
+            event,
+            actions,
+            key,
+            prompt,
+            canonical,
+        )
+        if background_dialogue:
+            task = asyncio.create_task(
+                dialogue,
+                name="jianer-ai-dialogue",
+            )
+            self._track_background_task(
+                task,
+                failure_message="JianerAI background dialogue failed",
+            )
+        else:
+            await dialogue
+        return True
+
+    async def _run_dialogue(
+        self,
+        event: Any,
+        actions: Any,
+        key: ConversationKey,
+        prompt: str,
+        canonical: str,
+    ) -> None:
+        dialogue_scope = (key, canonical)
+        with self._state_lock:
+            lock = self._dialogue_locks.setdefault(
+                dialogue_scope,
+                asyncio.Lock(),
+            )
         async with lock:
             if self._closed:
-                return False
-            await self._generate_and_send(event, actions, key, prompt)
-        return True
+                return
+            await self._generate_and_send(
+                event,
+                actions,
+                key,
+                prompt,
+                canonical=canonical,
+            )
+
+    def _track_background_task(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        failure_message: str,
+    ) -> None:
+        self._background_tasks.add(task)
+
+        def completed(background: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(background)
+            if background.cancelled():
+                return
+            try:
+                background.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                self._log_exception(failure_message)
+
+        task.add_done_callback(completed)
 
     async def reject_blocked_group(self, event: Any, actions: Any) -> bool:
         """Reject JianerAI commands and fallback in configured group locations."""
@@ -750,7 +821,7 @@ class JianerAIService:
         async with lock:
             with self._state_lock:
                 self._models[key] = normalized
-                self._histories.pop(key, None)
+                self._clear_history_locked(key)
             await self._persist_session(key)
         await self._send_text(
             event,
@@ -881,12 +952,19 @@ class JianerAIService:
                     for key in collection
                     if key.preset == preset.key
                 }
+                retired_dialogues = {
+                    scope
+                    for scope in self._dialogue_locks
+                    if scope[0].preset == preset.key
+                }
                 for key in retired_keys:
-                    self._histories.pop(key, None)
+                    self._clear_history_locked(key)
                     self._models.pop(key, None)
                     self._tts_enabled.pop(key, None)
                     self._agent_enabled.pop(key, None)
                     self._session_locks.pop(key, None)
+                for scope in retired_dialogues:
+                    self._dialogue_locks.pop(scope, None)
             for base in affected_bases:
                 await self._persist_active_preset(base, default_preset.key)
         await self._send_text(
@@ -1076,7 +1154,7 @@ class JianerAIService:
         lock = self._session_locks.setdefault(key, asyncio.Lock())
         async with lock:
             with self._state_lock:
-                self._histories.pop(key, None)
+                self._clear_history_locked(key)
         await self._send_text(
             event,
             actions,
@@ -1265,10 +1343,15 @@ class JianerAIService:
         actions: Any,
         key: ConversationKey,
         prompt: str,
+        *,
+        canonical: str | None = None,
     ) -> None:
-        canonical = await asyncio.to_thread(
-            self._canonical_identity, event, actions
-        )
+        if canonical is None:
+            canonical = await asyncio.to_thread(
+                self._canonical_identity, event, actions
+            )
+        with self._state_lock:
+            history_revision = self._history_revisions.get(key, 0)
         model = self._model_for(key)
         agent_enabled = self._agent_for(key)
         sensitive_values: set[str] = set()
@@ -1392,7 +1475,6 @@ class JianerAIService:
                 asyncio.Lock(),
             )
         await memory_guard.acquire()
-        self._set_generating(True)
         dialogue_started_at = time.perf_counter()
         dialogue_context = {
             "model": model,
@@ -1484,7 +1566,6 @@ class JianerAIService:
             )
             return
         finally:
-            self._set_generating(False)
             try:
                 if sensitive_values:
                     await self._redact_sensitive_state(
@@ -1582,15 +1663,16 @@ class JianerAIService:
                 )
 
         with self._state_lock:
-            history_list = self._histories.setdefault(key, [])
-            history_list.extend(
-                (
-                    {"role": "user", "content": final_prompt},
-                    {"role": "assistant", "content": answer},
+            if self._history_revisions.get(key, 0) == history_revision:
+                history_list = self._histories.setdefault(key, [])
+                history_list.extend(
+                    (
+                        {"role": "user", "content": final_prompt},
+                        {"role": "assistant", "content": answer},
+                    )
                 )
-            )
-            if len(history_list) > _MAX_HISTORY_MESSAGES:
-                del history_list[:-_MAX_HISTORY_MESSAGES]
+                if len(history_list) > _MAX_HISTORY_MESSAGES:
+                    del history_list[:-_MAX_HISTORY_MESSAGES]
 
         if episode is not None and review_enabled:
             self._schedule_memory_review(key.preset, exchange_key)
@@ -2282,6 +2364,12 @@ class JianerAIService:
         with self._state_lock:
             self._models[key] = selected
         return selected
+
+    def _clear_history_locked(self, key: ConversationKey) -> None:
+        self._histories.pop(key, None)
+        self._history_revisions[key] = (
+            self._history_revisions.get(key, 0) + 1
+        )
 
     def _tts_for(self, key: ConversationKey) -> bool:
         with self._state_lock:
@@ -3595,20 +3683,6 @@ class JianerAIService:
                 raise
             except Exception:
                 self._log_exception("JianerAI maintenance loop failed")
-
-    def _set_generating(self, value: bool) -> None:
-        with self._state_lock:
-            if value:
-                self._generation_count += 1
-            else:
-                self._generation_count = max(0, self._generation_count - 1)
-            generating = self._generation_count > 0
-        try:
-            from bot import plugin_state
-
-            plugin_state.set_generating(generating)
-        except Exception:
-            pass
 
     def _is_admin(self, event: Any) -> bool:
         user_id = str(getattr(event, "user_id", ""))

@@ -68,7 +68,11 @@ async def on_message_fallback(event: Any, actions: Any) -> bool:
     service = _service
     if service is None:
         return False
-    return await service.handle_fallback(event, actions)
+    return await service.handle_fallback(
+        event,
+        actions,
+        background_dialogue=True,
+    )
 
 
 def authorize(

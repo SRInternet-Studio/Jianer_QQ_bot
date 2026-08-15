@@ -30,17 +30,18 @@ class FakeActions:
         return SimpleNamespace(data=SimpleNamespace(message_id="sent-1"))
 
 
-def event(text):
+def event(text, *, user_id="user-1", mentioned=False):
     return SimpleNamespace(
         protocol="onebot",
         self_id="bot-1",
-        user_id="user-1",
+        user_id=user_id,
         group_id="group-1",
         conversation_id="group-1",
-        message_id="message-1",
+        message_id=f"message-{user_id}-{text}",
         msg_str=text,
         message=[],
         sender={"nickname": "tester"},
+        is_mentioned=mentioned,
         time=1_900_000_000,
     )
 
@@ -113,6 +114,60 @@ async def scenario():
         message_text="~definitely-not-an-agent-command",
     ) is False
     assert untouched.sent == []
+
+    class BlockingAgent:
+        def __init__(self):
+            self.release = asyncio.Event()
+            self.two_started = asyncio.Event()
+            self.started = []
+
+        async def run(self, **kwargs):
+            self.started.append(kwargs["context"].canonical_user_id)
+            if len(self.started) >= 2:
+                self.two_started.set()
+            await self.release.wait()
+            return "background reply"
+
+    blocking_agent = BlockingAgent()
+    service.agent = blocking_agent
+    first_event = event("first", user_id="user-1", mentioned=True)
+    second_event = event("second", user_id="user-2", mentioned=True)
+    first_actions = FakeActions()
+    second_actions = FakeActions()
+
+    assert await asyncio.wait_for(
+        plugin_state.dispatch_fallback(first_event, first_actions),
+        timeout=1,
+    ) is True
+    assert await asyncio.wait_for(
+        plugin_state.dispatch_fallback(second_event, second_actions),
+        timeout=1,
+    ) is True
+    await asyncio.wait_for(blocking_agent.two_started.wait(), timeout=2)
+    assert len(set(blocking_agent.started)) == 2
+    assert plugin_state.is_generating() is False
+
+    logout_actions = FakeActions()
+    assert await asyncio.wait_for(
+        plugin_state.dispatch_plugins(
+            event("~注销", user_id="user-3"),
+            logout_actions,
+            message_text="~注销",
+        ),
+        timeout=1,
+    ) is True
+    assert logout_actions.sent
+
+    blocking_agent.release.set()
+    dialogues = tuple(service._background_tasks)
+    await asyncio.wait_for(
+        asyncio.gather(*dialogues),
+        timeout=15,
+    )
+    assert first_actions.sent
+    assert second_actions.sent
+    key = await service._conversation_key(first_event, first_actions)
+    assert service._histories.get(key) in (None, [])
 
     assert module.unregister_tool(registration) is True
     report = await plugin_state.shutdown_plugins()
