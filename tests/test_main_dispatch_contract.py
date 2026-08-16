@@ -32,6 +32,9 @@ def test_message_pipeline_runs_normal_plugins_before_host_side_effects():
         "@Listener.reg",
     )
     normal_index = group_branch.index("if not plugin_dispatched:")
+    feishu_help_index = group_branch.index(
+        'if feishu_mention_like and order in {"帮助", "用户帮助"}:'
+    )
     mention_fallback_index = group_branch.index(
         "if qq_mentioned_me or feishu_mention_like:"
     )
@@ -39,13 +42,16 @@ def test_message_pipeline_runs_normal_plugins_before_host_side_effects():
     ping_index = group_branch.index("await _bot_group_commands.cmd_ping(")
     emoji_index = group_branch.index("if has_emoji(host_message)")
     fallback_index = group_branch.rindex("await execute_plugin_fallback(")
-    assert normal_index < mention_fallback_index < nickname_index
+    assert normal_index < feishu_help_index < mention_fallback_index < nickname_index
     assert nickname_index < ping_index < fallback_index
     assert normal_index < emoji_index < fallback_index
 
     mention_block = group_branch[mention_fallback_index:nickname_index]
     assert "await execute_plugin_fallback(" in mention_block
     assert "send_help_visual(" not in mention_block
+    feishu_help_block = group_branch[feishu_help_index:mention_fallback_index]
+    assert "send_help_visual(" in feishu_help_block
+    assert "return" in feishu_help_block
     assert "QQ 群聊只接受前缀触发 AI" not in group_branch
 
     compliment_index = group_branch.index(

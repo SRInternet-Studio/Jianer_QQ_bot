@@ -436,21 +436,49 @@ def test_like_alias_private_target_quote_and_runcommand_guards(
 
     quote = plugin_state.get_plugin_module("jianerbot-plugin-advanced-quote")
 
+    quote_response = SimpleNamespace(
+        message=[Segments.Text("quoted text")],
+        sender=SimpleNamespace(
+            user_id="ou-feishu-user",
+            nickname="Feishu User",
+            card="",
+        ),
+    )
+
     async def quote_message(message_id):
         assert message_id == "quoted"
-        return SimpleNamespace(data={"message": []})
+        return SimpleNamespace(data=quote_response)
 
-    async def render_quote(user_message, actions, image_url, manager, segments):
+    async def render_quote(
+        user_message,
+        actions,
+        image_url,
+        manager,
+        segments,
+        *,
+        content,
+    ):
         assert isinstance(user_message[0], Segments.Reply)
+        assert content.data is quote_response
         return Segments.Image("file:///quote.png")
 
-    monkeypatch.setattr(quote, "gen_message", lambda _: [])
     monkeypatch.setattr(quote.Quote, "handle", render_quote)
     quoted_actions = FakeActions()
     quoted_actions.get_msg = quote_message
     quoted_event = _event("~名人名言", message=[Segments.Reply("quoted")])
     assert _dispatch(quoted_event, quoted_actions) is True
     assert len(quoted_actions.sent) == 1
+    assert quoted_actions.sent[0][0] == {"group_id": 100}
+
+    async def broken_quote(*args, **kwargs):
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(quote.Quote, "handle", broken_quote)
+    failed_actions = FakeActions()
+    failed_actions.get_msg = quote_message
+    assert _dispatch(quoted_event, failed_actions) is True
+    assert failed_actions.sent[-1][0] == {"group_id": 100}
+    assert "名人名言生成失败" in str(failed_actions.sent[-1][1])
 
     run_actions = FakeActions()
     assert _dispatch(_event("~runcommand echo hello"), run_actions) is True

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>{render_id}</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { width: 1280px; height: 640px; margin: 0; overflow: hidden; }
+        body {
+            color: #f8fafc;
+            background: #05070b;
+            font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+        }
+        .card { display: grid; grid-template-columns: 640px 640px; width: 100%; height: 100%; }
+        .portrait { position: relative; overflow: hidden; background: #111827; }
+        .portrait img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .portrait::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent 55%, #05070b 100%);
+        }
+        .content {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 72px 72px 64px 48px;
+            background:
+                radial-gradient(circle at 90% 10%, rgba(79, 70, 229, .18), transparent 38%),
+                #05070b;
+        }
+        .mark { color: #818cf8; font-family: Georgia, serif; font-size: 92px; line-height: .6; }
+        .quote {
+            min-height: 280px;
+            display: flex;
+            align-items: center;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-size: 44px;
+            font-weight: 650;
+            line-height: 1.38;
+            letter-spacing: .02em;
+        }
+        .name {
+            margin-top: 28px;
+            color: #a5b4fc;
+            font-size: 28px;
+            font-style: italic;
+            text-align: right;
+        }
+    </style>
+</head>
+<body>
+    <main class="card">
+        <section class="portrait"><img src="{ava_url}" alt=""></section>
+        <section class="content">
+            <div class="mark">“</div>
+            <div class="quote">{quote}</div>
+            <div class="name">—— {name}</div>
+        </section>
+    </main>
+</body>
+</html>

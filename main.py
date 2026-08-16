@@ -474,8 +474,11 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
             ):
                 return
         feishu_mode = str(config.protocol).lower() == "feishu"
-        feishu_mentioned = bool(getattr(event, "is_mentioned", False))
-        feishu_mention_like = feishu_mentioned or (feishu_mode and raw_user_message.startswith("@"))
+        feishu_mention_like = _bot_protocol.restore_feishu_mention_flag(
+            config,
+            event,
+            raw_user_message,
+        )
         # QQ 协议：检测是否 @ 了机器人本身（通过 Segments.At）
         qq_mentioned_me = False
         if not feishu_mode:
@@ -509,7 +512,28 @@ async def _handler_impl(event: Events.Event, actions: Listener.Actions) -> None:
             ):
                 return
 
-        # 群聊中明确 At 机器人时，普通命令优先，未匹配则只进入 AI fallback。
+        # 飞书的文本 mention 也应先保留宿主帮助命令，再进入 AI fallback。
+        if feishu_mention_like and order in {"帮助", "用户帮助"}:
+            if order == "帮助" and str(event.user_id) in ADMINS:
+                content = _bot_help_view.build_admin_help(
+                    config,
+                    bot_name,
+                    reminder,
+                    str(event.user_id) in SUPERS,
+                )
+            else:
+                content = help_message(event)
+            await send_help_visual(
+                actions=actions,
+                event=event,
+                content=content,
+                reply_message_id=(
+                    event.message_id if order == "用户帮助" else None
+                ),
+            )
+            return
+
+        # 群聊中明确 At 机器人时，插件命令优先，未匹配则进入 AI fallback。
         if qq_mentioned_me or feishu_mention_like:
             await execute_plugin_fallback(
                 event,
