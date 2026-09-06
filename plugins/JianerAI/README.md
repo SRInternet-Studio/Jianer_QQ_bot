@@ -42,6 +42,10 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `jianer_ai_db_path`：规范化 SQLite 数据库，默认 `jianer_ai.db`
 - `default_mode` / `ai_default_model`：默认对话模型
 - `content_moderation_enabled`：是否启用独立模型内容审核；未配置时默认关闭
+- `content_moderation_ai_reply_enabled`：是否在主模型生成回复后再次审核即将发送的
+  AI 回复；默认关闭。开启后复用 `content_moderation_model`，拒绝或审核故障都会阻止
+  原回复发送、写入短期历史和对话记忆，并由审核模型生成的拒绝文本代替回复。兼容旧的
+  配置别名 `content_moderation_reply_enabled`
 - `content_moderation_model`：审核使用的 `aiconfig` 模型代码；审核开启时必须显式配置，
   可选择任意已经加载的模型代码，且不跟随用户切换的主对话模型
 - `content_moderation_timeout_seconds`：单次审核超时，范围 1–120 秒，默认 30 秒；
@@ -74,7 +78,7 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `agent_browser_max_pages`：会话页面上限，默认且最大为 16
 - `agent_browser_idle_seconds`：空闲页面回收时间，默认 900 秒
 
-当审核开启时，每次 AI 对话会先安全解析引用和附件，再把当前请求、最近最多 8 条且合计最多
+当请求审核开启时，每次 AI 对话会先安全解析引用和附件，再把当前请求、最近最多 8 条且合计最多
 6000 字的短期上下文、当前完整人设模板以及解析后的图片、语音或视频字节
 交给 `content_moderation_model`。完整人设只供审核模型在 `refuse` 时模仿身份、自称、称呼方式、
 情感立场、句式节奏和口癖，不能参与安全分类，也不能覆盖审核规则。附件只有在审核模型所用
@@ -88,7 +92,12 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 观察器写入客观聊天记录，其正文会替换为 `[内容已由安全审核隐藏]`。审核日志只记录模型、
 分类代码、耗时和字符/附件数量，不记录审核理由或原始违规内容。拒绝文本不会再套用用户可配置
 的 AI 回复后缀，避免审核后的安全文本被二次改写。若关闭
-`content_moderation_enabled`，以上前置保障不会生效。
+`content_moderation_enabled`，以上前置保障不会生效。若开启
+`content_moderation_ai_reply_enabled`，主模型回复（包括配置的回复后缀）会在发送前用同一
+审核模型检查；审核模型判断不能输出时，会像拒绝用户请求一样直接使用它生成的拒绝文本，
+不会把原回复保存到短期上下文、对话片段或回复后记忆审查。关闭
+`content_moderation_enabled` 只会关闭用户请求的前置审核；回复审核是否生效由
+`content_moderation_ai_reply_enabled` 单独决定。
 
 当前项目的默认主回答模型为 `grok`。示例配置选择 DeepSeek 作为旁路门禁；也可以把
 `content_moderation_model` 改成其他已加载模型，或把 `content_moderation_enabled` 设为

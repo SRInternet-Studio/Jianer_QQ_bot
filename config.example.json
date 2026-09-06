@@ -62,6 +62,7 @@
         "deepseek_key": "",
         "default_mode": "grok",
         "content_moderation_enabled": true,
+        "content_moderation_ai_reply_enabled": false,
         "content_moderation_model": "deepseek",
         "content_moderation_timeout_seconds": 30,
         "bot_name": "简儿",

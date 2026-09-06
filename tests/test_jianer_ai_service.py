@@ -153,6 +153,39 @@ class ModerationProviders(FakeProviders):
         )
 
 
+class ReplyModerationProviders(FakeProviders):
+    def __init__(self, answer: str, reply_review: str):
+        super().__init__(answer)
+        self.reply_review = reply_review
+        self.moderation_calls = []
+
+    async def chat(
+        self,
+        key,
+        message,
+        *,
+        history=(),
+        system_prompt="",
+        attachments=(),
+    ):
+        if "JianerAI content safety moderator" in system_prompt:
+            payload = json.loads(message)
+            self.moderation_calls.append(payload)
+            if payload["task"] == "review_ai_reply":
+                return self.reply_review
+            return (
+                '{"decision":"allow","categories":[],'
+                '"reason":"安全请求","refusal":""}'
+            )
+        return await super().chat(
+            key,
+            message,
+            history=history,
+            system_prompt=system_prompt,
+            attachments=attachments,
+        )
+
+
 class FakeSpeech:
     def __init__(self, root: Path):
         self.root = root
@@ -253,6 +286,7 @@ def _service(
     logger=None,
     memory_review_enabled=False,
     moderation_enabled=False,
+    moderation_reply_enabled=False,
     moderation_model="model-b",
     provider=None,
 ):
@@ -275,6 +309,7 @@ def _service(
         tts_options=SpeechOptions(),
         blocked_group_ids=frozenset(str(item) for item in blocked_group_ids),
         content_moderation_enabled=moderation_enabled,
+        content_moderation_ai_reply_enabled=moderation_reply_enabled,
         content_moderation_model=moderation_model,
     )
     service = JianerAIService(
@@ -356,6 +391,39 @@ def test_runtime_options_accept_an_explicit_moderation_model() -> None:
     assert options.content_moderation_model == "review-model"
 
 
+def test_runtime_options_accept_ai_reply_moderation_toggle() -> None:
+    options = RuntimeOptions.from_runtime(
+        {
+            "config": SimpleNamespace(
+                others={
+                    "content_moderation_ai_reply_enabled": True,
+                    "content_moderation_model": "review-model",
+                },
+                black_list=[],
+            )
+        }
+    )
+
+    assert options.content_moderation_ai_reply_enabled is True
+    assert options.content_moderation_reply_enabled is True
+
+
+def test_runtime_options_reply_moderation_alias_is_supported() -> None:
+    options = RuntimeOptions.from_runtime(
+        {
+            "config": SimpleNamespace(
+                others={
+                    "content_moderation_reply_enabled": True,
+                    "content_moderation_model": "review-model",
+                },
+                black_list=[],
+            )
+        }
+    )
+
+    assert options.content_moderation_ai_reply_enabled is True
+
+
 def test_runtime_options_require_a_model_when_moderation_is_enabled() -> None:
     with pytest.raises(ValueError, match="content_moderation_model"):
         RuntimeOptions.from_runtime(
@@ -390,6 +458,55 @@ def test_enabled_moderation_validates_the_selected_model(
             moderation_enabled=True,
             moderation_model="model-that-is-not-loaded",
         )
+
+
+def test_ai_reply_moderation_replaces_refused_reply_without_persisting_it(
+    tmp_path: Path,
+):
+    async def scenario():
+        provider = ReplyModerationProviders(
+            "主模型生成了不应发送的内容。",
+            json.dumps(
+                {
+                    "decision": "refuse",
+                    "categories": ["violent_harm"],
+                    "reason": "候选回复不适合发送",
+                    "refusal": "这段回复我不能发出，我们换个安全方向聊吧。",
+                },
+                ensure_ascii=False,
+            ),
+        )
+        service, _, _ = _service(
+            tmp_path,
+            moderation_reply_enabled=True,
+            provider=provider,
+        )
+        actions = FakeActions()
+        event = _event("普通问题", group_id=None)
+
+        assert await service.handle_fallback(event, actions) is True
+
+        assert [item["task"] for item in provider.moderation_calls] == [
+            "review_ai_reply"
+        ]
+        review_payload = provider.moderation_calls[0]
+        assert review_payload["candidate_response"] == (
+            "主模型生成了不应发送的内容。"
+        )
+        sent_text = "".join(
+            str(getattr(segment, "text", ""))
+            for _, message in actions.sent
+            for segment in message
+            if isinstance(segment, Segments.Text)
+        )
+        assert "主模型生成了不应发送的内容。" not in sent_text
+        assert "这段回复我不能发出" in sent_text
+
+        key = await service._conversation_key(event, actions)
+        assert service._histories.get(key, []) == []
+        await service.shutdown()
+
+    asyncio.run(scenario())
 
 
 def test_safe_request_is_moderated_before_main_model(tmp_path: Path):

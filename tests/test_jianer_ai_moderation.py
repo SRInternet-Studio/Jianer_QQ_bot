@@ -142,6 +142,43 @@ def test_content_moderator_returns_persona_refusal_for_disallowed_request():
     asyncio.run(scenario())
 
 
+def test_content_moderator_reviews_ai_reply_as_candidate_response():
+    async def scenario():
+        provider = FakeProvider(
+            '{"decision":"refuse","categories":["violent_harm"],'
+            '"reason":"回复包含伤害指引","refusal":"这段回复我不能发出，我们换个安全方向聊吧。"}'
+        )
+        moderator = ContentModerator(
+            provider,
+            options=ModerationOptions(model="review-model"),
+        )
+
+        decision = await moderator.review_reply(
+            "候选回复内容",
+            user_request="请回答我的问题",
+            persona="你是一个温柔、有原则的角色。",
+            history=(
+                {"role": "user", "content": "上一轮问题"},
+                {"role": "assistant", "content": "上一轮回答"},
+            ),
+        )
+
+        assert decision.refused is True
+        call = provider.calls[0]
+        assert call["key"] == "review-model"
+        assert call["history"] == ()
+        payload = json.loads(str(call["message"]))
+        assert payload["task"] == "review_ai_reply"
+        assert payload["candidate_response"] == "候选回复内容"
+        assert payload["current_request"]["text"] == "请回答我的问题"
+        assert payload["recent_context"] == [
+            {"role": "user", "content": "上一轮问题"},
+            {"role": "assistant", "content": "上一轮回答"},
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_content_moderator_preserves_a_long_persona_template_by_default():
     async def scenario():
         provider = FakeProvider(

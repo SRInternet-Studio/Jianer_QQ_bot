@@ -251,6 +251,9 @@ class RuntimeOptions:
     tts_options: SpeechOptions
     blocked_group_ids: frozenset[str] = frozenset()
     content_moderation_enabled: bool = False
+    content_moderation_ai_reply_enabled: bool = False
+    # Backward-compatible shorter spelling accepted by direct callers.
+    content_moderation_reply_enabled: bool = False
     content_moderation_model: str | None = None
     content_moderation_timeout_seconds: float = 30.0
     max_reply_chars: int = _DEFAULT_MAX_REPLY_CHARS
@@ -270,16 +273,26 @@ class RuntimeOptions:
         moderation_model = str(
             self.content_moderation_model or ""
         ).strip()
-        if self.content_moderation_enabled and not moderation_model:
+        if (
+            self.content_moderation_enabled
+            or self.content_moderation_ai_reply_enabled
+            or self.content_moderation_reply_enabled
+        ) and not moderation_model:
             raise ValueError(
                 "content_moderation_model is required when content "
                 "moderation is enabled"
             )
+        reply_enabled = bool(
+            self.content_moderation_ai_reply_enabled
+            or self.content_moderation_reply_enabled
+        )
         object.__setattr__(
             self,
             "content_moderation_model",
             moderation_model or None,
         )
+        object.__setattr__(self, "content_moderation_ai_reply_enabled", reply_enabled)
+        object.__setattr__(self, "content_moderation_reply_enabled", reply_enabled)
 
     @classmethod
     def from_runtime(cls, runtime: Mapping[str, Any]) -> "RuntimeOptions":
@@ -382,6 +395,13 @@ class RuntimeOptions:
                 others.get("content_moderation_enabled", False),
                 default=False,
             ),
+            content_moderation_ai_reply_enabled=_runtime_bool(
+                others.get(
+                    "content_moderation_ai_reply_enabled",
+                    others.get("content_moderation_reply_enabled", False),
+                ),
+                default=False,
+            ),
             content_moderation_model=(
                 str(others.get("content_moderation_model") or "").strip()
                 or None
@@ -477,7 +497,10 @@ class JianerAIService:
             options.project_root / "aiconfig"
         )
         self.moderator = moderator
-        if options.content_moderation_enabled and self.moderator is None:
+        if (
+            options.content_moderation_enabled
+            or options.content_moderation_ai_reply_enabled
+        ) and self.moderator is None:
             moderation_model = options.content_moderation_model
             if not moderation_model:
                 raise ValueError(
@@ -1611,6 +1634,20 @@ class JianerAIService:
             self.suffixes.apply_ai_reply, answer, canonical
         )
         processed = self._plain_text_reply(processed)
+        if self.options.content_moderation_ai_reply_enabled:
+            with self._state_lock:
+                reply_moderation_history = tuple(self._histories.get(key, ()))
+            handled = await self._moderate_ai_reply_and_maybe_refuse(
+                event,
+                actions,
+                key,
+                reply=processed,
+                user_request=episode_user_content,
+                persona=self._render_persona(key.preset, event, canonical),
+                history=reply_moderation_history,
+            )
+            if handled:
+                return
         await self._send_ai_text(event, actions, processed, reply=True)
 
         # Keep the exchange ordered even when an adapter timestamp is slightly
@@ -1789,6 +1826,130 @@ class JianerAIService:
         )
         self._log_info(
             "JianerAI 内容安全审核完成 | "
+            + format_log_data(completed_context)
+        )
+        if decision.allowed:
+            return False
+
+        await self._redact_moderated_transcript(event, key)
+        await self._send_moderation_reply(
+            event,
+            actions,
+            key,
+            decision.refusal,
+        )
+        return True
+
+    async def _moderate_ai_reply_and_maybe_refuse(
+        self,
+        event: Any,
+        actions: Any,
+        key: ConversationKey,
+        *,
+        reply: str,
+        user_request: str,
+        persona: str,
+        history: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        started_at = time.perf_counter()
+        log_context = {
+            "model": self.options.content_moderation_model or "unconfigured",
+            "protocol": key.protocol,
+            "conversation_kind": key.kind.value,
+            "conversation_id": key.conversation_id,
+            "preset": key.preset,
+            "history_messages": len(history),
+            "reply_chars": len(reply),
+        }
+        self._log_info(
+            "JianerAI AI回复内容安全审核开始 | "
+            + format_log_data(log_context)
+        )
+        try:
+            moderator = self.moderator
+            if moderator is None:
+                raise ModerationError(
+                    "moderation_not_configured",
+                    "content moderation is enabled without a moderator",
+                )
+            decision = await moderator.review_reply(
+                reply,
+                user_request=user_request,
+                persona=persona,
+                history=history,
+            )
+        except ModerationError as exc:
+            failed_context = dict(log_context)
+            failed_context.update(
+                {
+                    "status": "failed_closed",
+                    "error_code": exc.code,
+                    "duration_ms": round(
+                        (time.perf_counter() - started_at) * 1000,
+                        2,
+                    ),
+                }
+            )
+            self._log_info(
+                "JianerAI AI回复内容安全审核失败 | "
+                + format_log_data(failed_context)
+            )
+            self._log_exception("JianerAI AI reply content moderation failed")
+            await self._redact_moderated_transcript(event, key)
+            await self._send_moderation_reply(
+                event,
+                actions,
+                key,
+                (
+                    f"{self.options.bot_name}现在没法完成必要的安全检查，"
+                    "这条回复就先不发送啦。稍后再试，或者换个话题吧。"
+                ),
+            )
+            return True
+        except Exception:
+            failed_context = dict(log_context)
+            failed_context.update(
+                {
+                    "status": "failed_closed",
+                    "error_code": "moderation_unexpected_error",
+                    "duration_ms": round(
+                        (time.perf_counter() - started_at) * 1000,
+                        2,
+                    ),
+                }
+            )
+            self._log_info(
+                "JianerAI AI回复内容安全审核失败 | "
+                + format_log_data(failed_context)
+            )
+            self._log_exception(
+                "JianerAI unexpected AI reply content moderation failure"
+            )
+            await self._redact_moderated_transcript(event, key)
+            await self._send_moderation_reply(
+                event,
+                actions,
+                key,
+                (
+                    f"{self.options.bot_name}现在没法完成必要的安全检查，"
+                    "这条回复就先不发送啦。稍后再试，或者换个话题吧。"
+                ),
+            )
+            return True
+
+        completed_context = dict(log_context)
+        completed_context.update(
+            {
+                "status": decision.decision,
+                "categories": list(decision.categories),
+                "duration_ms": round(
+                    (time.perf_counter() - started_at) * 1000,
+                    2,
+                ),
+            }
+        )
+        self._log_info(
+            "JianerAI AI回复内容安全审核完成 | "
             + format_log_data(completed_context)
         )
         if decision.allowed:
