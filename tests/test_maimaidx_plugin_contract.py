@@ -1,0 +1,397 @@
+import ast
+import asyncio
+from io import BytesIO
+from pathlib import Path
+from types import SimpleNamespace
+
+from PIL import Image
+from httpx import RemoteProtocolError
+from jianer import common, segments
+
+from plugins.MaimaiDX import UPSTREAM_COMMIT, __version__
+from plugins.MaimaiDX import adapter
+from plugins.MaimaiDX.config import MaimaiConfig
+from plugins.MaimaiDX.core.lxns_oauth import (
+    PendingBindingStore,
+    build_authorize_url,
+    extract_authorization_code,
+    extract_authorization_response,
+    is_binding_channel_allowed,
+)
+from plugins.MaimaiDX.message import MessageSegment
+from plugins.MaimaiDX.resources import resource_issues
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = ROOT / "plugins" / "MaimaiDX"
+
+
+class StubActions:
+    """Local command-contract stub; never used as real protocol evidence."""
+
+    protocol = "onebot"
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, message, **target):
+        self.sent.append((target, message))
+        return SimpleNamespace(data=SimpleNamespace(message_id=len(self.sent)))
+
+
+def _event(text: str = "", **overrides):
+    values = {
+        "msg_str": text,
+        "message": [],
+        "message_id": "contract-1",
+        "group_id": 123,
+        "user_id": 456,
+        "self_id": 789,
+        "protocol": "onebot",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_metadata_is_literal_and_pinned_to_requested_upstream():
+    setup_path = PLUGIN_ROOT / "setup.py"
+    tree = ast.parse(setup_path.read_text(encoding="utf-8"))
+    metadata = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__plugin_meta__"
+            for target in node.targets
+        )
+    )
+    assert isinstance(metadata.value, ast.Call)
+    assert __version__ == "3.0.13"
+    assert UPSTREAM_COMMIT == "83a1bee46fad81ad4436b6fba5863ac4d2abb976"
+    license_text = (PLUGIN_ROOT / "LICENSE.upstream").read_text(encoding="utf-8")
+    normalized_license = " ".join(license_text.split())
+    assert license_text.startswith("MIT License\n")
+    assert "Copyright (c) 2023 柚子" in license_text
+    assert "included in all copies or substantial portions" in normalized_license
+
+
+def test_qq_avatar_http_client_is_closed(monkeypatch):
+    from plugins.MaimaiDX.core.clients import http as client_http
+
+    state = {"entered": False, "exited": False}
+
+    class FakeClient:
+        async def __aenter__(self):
+            state["entered"] = True
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            state["exited"] = True
+
+        async def request(self, method, url, **kwargs):
+            return SimpleNamespace(content=b"avatar")
+
+    monkeypatch.setattr(client_http.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    assert asyncio.run(client_http.qqlogo(qqid=123)) == b"avatar"
+    assert state == {"entered": True, "exited": True}
+
+
+def test_all_command_families_are_registered():
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((PLUGIN_ROOT / "commands").glob("*.py"))
+    )
+    for command in (
+        "b50",
+        "ap50",
+        "info",
+        "ginfo",
+        "分数线",
+        "帮助maimaiDX",
+        "lxbind",
+        "数据源",
+        "主题",
+        "今日舞萌",
+        "查看排名",
+        "查歌",
+        "别名",
+        "猜歌",
+        "更新定数表",
+        "更新完成表",
+    ):
+        assert command in source
+    assert "Command(" in source
+
+
+def test_repository_command_keeps_upstream_and_port_identity():
+    source = (PLUGIN_ROOT / "commands" / "base.py").read_text(encoding="utf-8")
+    assert "https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx" in source
+    assert "v3.0.13 / 83a1bee" in source
+
+
+def test_message_compatibility_keeps_real_png_payload():
+    image = Image.new("RGB", (2, 2), "#ff00aa")
+    payload = BytesIO()
+    image.save(payload, format="PNG")
+    message = MessageSegment.image(payload)
+    assert isinstance(message, common.Message)
+    assert len(message.contents) == 1
+    segment = message.contents[0]
+    assert isinstance(segment, segments.Image)
+    assert segment.file.startswith("base64://iVBOR")
+
+
+def test_runtime_english_bot_name_drives_all_generated_image_footers():
+    config = MaimaiConfig(
+        maimaidx_path="static",
+        state_path="state",
+        maimaidx_alias_proxy=False,
+        maimaidx_alias_push=True,
+        save_in_memory=True,
+        assets_online=True,
+        bot_name="\u661f\u8bed",
+        bot_name_en="Starlight",
+    )
+    assert config.bot_name_en == "Starlight"
+
+    generated_footer_files = []
+    for path in sorted((PLUGIN_ROOT / "core" / "image").glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "Generated by" not in source:
+            continue
+        generated_footer_files.append(path.name)
+        assert "Generated by {maiconfig.bot_name_en}" in source
+        assert "Generated by {maiconfig.bot_name}" not in source
+    assert generated_footer_files
+
+
+def test_unicode_text_survives_jianercore_message_serialization():
+    text = "\u7f16\u7801\u9a8c\u6536\uff1a\u6c34\u9c7c\u67e5\u5206\u5668 / \u843d\u96ea\u67e5\u5206\u5668 / Yuri-YuzuChaN\u522b\u540d\u6570\u636e\u6e90"
+    message = MessageSegment.text(text)
+    payload = asyncio.run(message.get())
+    assert payload == [{"type": "text", "data": {"text": text}}]
+
+
+def test_adapter_targets_group_and_marks_reply():
+    actions = StubActions()
+    asyncio.run(adapter.send(_event(), actions, "ok"))
+    target, message = actions.sent[0]
+    assert target == {"group_id": 123}
+    assert isinstance(message.contents[0], segments.Reply)
+    assert isinstance(message.contents[1], segments.Text)
+    assert message.contents[1].text == "ok"
+
+
+def test_onebot_adapter_binds_the_receiver_queue(monkeypatch):
+    from jianer.LecAdapters.OneBotLib.Manager import reports as onebot_reports
+
+    original = common.reports
+    try:
+        monkeypatch.setattr(common, "reports", original)
+        adapter.prepare_response_queue(SimpleNamespace(protocol="onebot"))
+        assert common.reports is onebot_reports
+    finally:
+        common.reports = original
+
+
+def test_oauth_parser_and_pending_binding_expiry_contract():
+    code = "abc_DEF-12345678"
+    assert extract_authorization_code(code) == code
+    assert (
+        extract_authorization_code(f"https://callback.invalid/?code={code}")
+        == code
+    )
+    assert extract_authorization_code("not a code") is None
+    assert is_binding_channel_allowed(private_only=True, is_private=True)
+    assert not is_binding_channel_allowed(private_only=True, is_private=False)
+
+    clock = [10.0]
+    store = PendingBindingStore(ttl=5, clock=lambda: clock[0])
+    state = store.start(1, 2)
+    assert store.is_active(1, 2)
+    assert store.matches_state(1, 2, state)
+    assert not store.matches_state(1, 2, "wrong-state")
+    url = build_authorize_url("client", "https://callback.invalid/", state=state)
+    assert f"state={state}" in url
+    callback = extract_authorization_response(
+        f"https://callback.invalid/?code={code}&state={state}"
+    )
+    assert callback.code == code
+    assert callback.state == state
+    clock[0] = 16.0
+    assert not store.is_active(1, 2)
+    assert not store.matches_state(1, 2, state)
+
+
+def test_personal_mutations_can_force_sender_instead_of_mentioned_user(monkeypatch):
+    from plugins.MaimaiDX.commands import common as command_common
+
+    requested = []
+
+    async def fake_get_user(user_id):
+        requested.append(user_id)
+        return SimpleNamespace(qqid=user_id)
+
+    monkeypatch.setattr(command_common, "get_user", fake_get_user)
+    event = _event(message=[segments.At("999")])
+
+    mentioned = asyncio.run(command_common.resolve_user(event, None))
+    sender = asyncio.run(
+        command_common.resolve_user(event, None, allow_mention=False)
+    )
+
+    assert mentioned.user.qqid == 999
+    assert sender.user.qqid == event.user_id
+    assert requested == [999, event.user_id]
+
+
+def test_pending_oauth_rejects_missing_or_mismatched_state(monkeypatch):
+    from plugins.MaimaiDX.commands import base
+
+    code = "abc_DEF-12345678"
+    event = _event(
+        f"https://callback.invalid/?code={code}&state=wrong-state",
+        group_id=None,
+    )
+    base.pending_bindings.start(event.self_id, event.user_id)
+    actions = StubActions()
+    exchanged = False
+
+    async def should_not_exchange(*args, **kwargs):
+        nonlocal exchanged
+        exchanged = True
+        raise AssertionError("OAuth code exchange must not run for a bad state")
+
+    monkeypatch.setattr(base, "complete_lxns_binding", should_not_exchange)
+    try:
+        assert asyncio.run(base.handle_pending_oauth(event, actions)) is True
+    finally:
+        base.pending_bindings.discard(event.self_id, event.user_id)
+
+    assert exchanged is False
+    assert "state" in str(actions.sent[0][1])
+
+
+def test_pending_oauth_uses_sender_and_consumes_matching_state(monkeypatch):
+    from plugins.MaimaiDX.commands import base
+
+    event = _event("", group_id=None, message=[segments.At("999")])
+    state = base.pending_bindings.start(event.self_id, event.user_id)
+    code = "abc_DEF-12345678"
+    event.msg_str = f"https://callback.invalid/?code={code}&state={state}"
+    actions = StubActions()
+    allow_mention_values = []
+
+    async def ready(*args, **kwargs):
+        return True
+
+    async def sender_user(*args, **kwargs):
+        allow_mention_values.append(kwargs.get("allow_mention"))
+        return SimpleNamespace(qqid=event.user_id)
+
+    async def exchange(user, received_code):
+        assert user.qqid == event.user_id
+        assert received_code == code
+        return "授权完成。", True
+
+    monkeypatch.setattr(base, "require_data", ready)
+    monkeypatch.setattr(base, "require_user", sender_user)
+    monkeypatch.setattr(base, "complete_lxns_binding", exchange)
+
+    assert asyncio.run(base.handle_pending_oauth(event, actions)) is True
+    assert allow_mention_values == [False]
+    assert not base.pending_bindings.is_active(event.self_id, event.user_id)
+    assert "授权完成" in str(actions.sent[0][1])
+
+
+def test_resource_validation_never_accepts_empty_placeholder_tree(tmp_path, monkeypatch):
+    from plugins.MaimaiDX import resources
+
+    font_dir = tmp_path / "font"
+    monkeypatch.setattr(resources, "font_dir", font_dir)
+    monkeypatch.setattr(resources, "pic_dir", tmp_path / "mai" / "pic")
+    monkeypatch.setattr(resources, "cover_dir", tmp_path / "mai" / "cover")
+    monkeypatch.setattr(resources, "plate_dir", tmp_path / "mai" / "plate")
+    monkeypatch.setattr(resources, "shougou_dir", tmp_path / "mai" / "shougou")
+    monkeypatch.setattr(
+        resources, "plate_version_dir", tmp_path / "mai" / "plate_version"
+    )
+    monkeypatch.setattr(resources, "SIYUAN", font_dir / "ResourceHanRoundedCN-Bold.ttf")
+    monkeypatch.setattr(resources, "SHANGGUMONO", font_dir / "ShangguMonoSC-Regular.otf")
+    monkeypatch.setattr(resources, "TBFONT", font_dir / "Torus SemiBold.otf")
+    monkeypatch.setattr(resources, "FOTNEWRODIN", font_dir / "FOT-NewRodin Pro EB.otf")
+    issues = resource_issues()
+    assert issues
+    assert any("font" in issue for issue in issues)
+    assert any("cover" in issue for issue in issues)
+
+
+def test_divingfish_transport_failure_uses_last_real_cache(tmp_path, monkeypatch):
+    """Fault-injection unit test; this is not provider acceptance evidence."""
+
+    from plugins.MaimaiDX.core.clients.divingfish.client import DivingFishAPI
+    from plugins.MaimaiDX.core.service import diving_fish
+
+    music_file = tmp_path / "music_data.json"
+    chart_file = tmp_path / "music_chart.json"
+    music_file.write_text("[]", encoding="utf-8")
+    chart_file.write_text('{"charts": {}}', encoding="utf-8")
+    monkeypatch.setattr(diving_fish, "music_file", music_file)
+    monkeypatch.setattr(diving_fish, "chart_file", chart_file)
+    logs = {"error": [], "success": []}
+    monkeypatch.setattr(
+        diving_fish,
+        "log",
+        SimpleNamespace(
+            error=lambda message, *args, **kwargs: logs["error"].append(message),
+            success=lambda message, *args, **kwargs: logs["success"].append(message),
+        ),
+    )
+
+    async def disconnected(*args, **kwargs):
+        raise RemoteProtocolError("server disconnected")
+
+    monkeypatch.setattr(DivingFishAPI, "music_data", disconnected)
+    monkeypatch.setattr(DivingFishAPI, "chart_stats", disconnected)
+    music, stats = asyncio.run(diving_fish.get_music_list())
+    assert music == []
+    assert stats == {}
+    assert len(logs["error"]) == 2
+    assert all("本地暂存文件" in message for message in logs["error"])
+    assert logs["success"] == []
+
+
+def test_divingfish_username_query_does_not_require_a_qq_key():
+    from plugins.MaimaiDX.core.clients.divingfish.client import DivingFishAPI
+
+    username_only = DivingFishAPI(username="public-ranking-user")
+    assert username_only.json == {"username": "public-ranking-user"}
+
+    username_overrides_qq = DivingFishAPI(
+        qqid=123456,
+        username="public-ranking-user",
+    )
+    assert username_overrides_qq.json == {"username": "public-ranking-user"}
+
+
+def test_divingfish_proxy_setting_is_used_by_new_clients(monkeypatch):
+    from types import SimpleNamespace
+
+    from plugins.MaimaiDX.core.clients.divingfish import client as module
+
+    DivingFishAPI = module.DivingFishAPI
+    monkeypatch.setattr(
+        module,
+        "dfconfig",
+        SimpleNamespace(divingfish_token=None),
+    )
+
+    original = DivingFishAPI.base_url
+    try:
+        assert DivingFishAPI.set_proxy() is True
+        assert DivingFishAPI().base_url == (
+            DivingFishAPI.proxy_url + "/maimaidxprober"
+        )
+    finally:
+        DivingFishAPI.base_url = original
