@@ -47,15 +47,6 @@
             "bot_open_id": ""
         }
     },
-    "connection": {
-        "mode": "HTTPC",
-        "host": "127.0.0.1",
-        "port": 3010,
-        "listener_host": "127.0.0.1",
-        "listener_port": 5003,
-        "retries": 5,
-        "auth": ""
-    },
     "others": {
         "gemini_key": "",
         "openai_key": "",

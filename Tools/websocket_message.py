@@ -9,7 +9,7 @@ from jianer import configurator as Configurator
 
 def _websocket_url() -> str:
     config = Configurator.BotConfig.get("jianer-bot")
-    connection = config.get_connection() if hasattr(config, "get_connection") else config.connection
+    connection = config.get_connection()
     return f"ws://{connection.host}:{connection.port}"
 
 def send_log(level, message):

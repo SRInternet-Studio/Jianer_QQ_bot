@@ -6,7 +6,6 @@
 
 # import Tools functions
 from Tools.tools import * 
-print(title() + "\nWelcome to Jianer QQ Bot, Starting Kernal now...", end="\r") 
 
 # import requirements
 import faulthandler
@@ -37,7 +36,7 @@ from jianer import (
 from jianer.utils import logic as Logic
 from jianer.events import *
 
-# 业务模块（bot/）：承接从 main 抽出的工具/持久化/插件加载/帮助视图等逻辑
+# 业务模块
 from bot import utils as _bot_utils
 from bot import protocol as _bot_protocol
 from bot import feishu_bindings as _bot_feishu
