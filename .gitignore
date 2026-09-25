@@ -268,3 +268,4 @@ suffix_config.json
 prerequisites/current.json
 .pytest_tmp_*/
 plugins/MaimaiDX/
+tests/test_maimaidx_*.py
