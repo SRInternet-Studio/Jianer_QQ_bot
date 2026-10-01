@@ -179,7 +179,7 @@
 新增文件：
 
 - `core/utils/web_import_manager.py`
-- `scripts/migrate_maibot_memory.py`
+- `scripts/migrate_legacy_memory.py`
 - `web/import.html`
 
 修改文件：

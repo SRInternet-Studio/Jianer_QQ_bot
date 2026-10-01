@@ -203,7 +203,7 @@ python plugins/JianerAI/memorix/scripts/process_knowledge.py --chat-log --chat-r
 python plugins/JianerAI/memorix/scripts/import_lpmm_json.py data/jianer_ai_memorix/imports/source/lpmm/<json文件或目录>
 python plugins/JianerAI/memorix/scripts/convert_lpmm.py -i data/jianer_ai_memorix/imports/source/lpmm/<数据集> -o data/jianer_ai_memorix/imports/converted/<数据集>
 python plugins/JianerAI/memorix/scripts/migrate_chat_history.py --help
-python plugins/JianerAI/memorix/scripts/migrate_maibot_memory.py --help
+python plugins/JianerAI/memorix/scripts/migrate_legacy_memory.py --help
 python plugins/JianerAI/memorix/scripts/migrate_person_memory_points.py --help
 ```
 

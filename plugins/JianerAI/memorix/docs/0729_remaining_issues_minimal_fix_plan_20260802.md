@@ -1135,7 +1135,7 @@ finally:
 rows = conn.execute(sql).fetchall()
 ```
 
-同时还保留 `migrate_chat_history.py`、`migrate_person_memory_points.py` 和 `migrate_maibot_memory.py` 三个相近入口。
+同时还保留 `migrate_chat_history.py`、`migrate_person_memory_points.py` 和 `migrate_legacy_memory.py` 三个相近入口。
 
 ### 12.2 修改方案
 
@@ -1313,7 +1313,7 @@ generation manifest 的 checksum 只是激活时完整性基线。活动 generat
 运行时应在取得基准目录写者锁后解析并固定 `active_store_root`，本次内核生命周期内不得动态跟随 ACTIVE 变化。`runtime_lifecycle_service.py`、`dual_vector_state_service.py`、`vector_recovery_service.py`、`format_migration.py`、Web temporal backfill 以及所有离线脚本必须使用同一解析器。需要覆盖的脚本至少包括：
 
 - `release_vnext_migrate.py`
-- `migrate_maibot_memory.py`
+- `migrate_legacy_memory.py`
 - `backfill_relation_vectors.py`
 - `audit_vector_consistency.py`
 - `rebuild_episodes.py`

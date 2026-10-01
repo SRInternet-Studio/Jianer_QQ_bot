@@ -56,7 +56,7 @@ Jianer Memory 是 JianerAI 的长期记忆子系统，包含与 MaiBot 数据和
 | `memory_episode_admin` | `query/list/get/status/rebuild/process_sources` |
 | `memory_profile_admin` | `query/list/set_override/delete_override` |
 | `memory_runtime_admin` | `save/get_config/self_check/refresh_self_check/set_auto_save` |
-| `memory_import_admin` | `settings/get_guide/create_upload/create_paste/create_raw_scan/create_lpmm_openie/create_lpmm_convert/create_temporal_backfill/create_maibot_migration/list/get/chunks/cancel/retry_failed` |
+| `memory_import_admin` | `settings/get_guide/create_upload/create_paste/create_raw_scan/create_lpmm_openie/create_lpmm_convert/create_temporal_backfill/create_legacy_migration/list/get/chunks/cancel/retry_failed` |
 | `memory_tuning_admin` | `settings/get_profile/apply_profile/rollback_profile/export_profile/create_task/list_tasks/get_task/get_rounds/cancel/apply_best/get_report` |
 | `memory_v5_admin` | `status/recycle_bin/restore/reinforce/weaken/remember_forever/forget` |
 | `memory_delete_admin` | `preview/execute/restore/get_operation/list_operations/purge` |
@@ -206,7 +206,7 @@ MAIBOT_UI_REUSE_SERVICES=1 bash scripts/verify_a_memorix_webui.sh
 | `import_lpmm_json.py` | 导入 OpenIE JSON |
 | `convert_lpmm.py` | 转换 LPMM 数据 |
 | `migrate_chat_history.py` | 迁移 chat_history |
-| `migrate_maibot_memory.py` | 迁移 MaiBot 历史记忆 |
+| `migrate_legacy_memory.py` | 迁移 MaiBot 历史记忆 |
 | `migrate_person_memory_points.py` | 迁移 person memory points |
 | `backfill_temporal_metadata.py` | 回填时间元数据 |
 | `audit_vector_consistency.py` | 审计向量一致性 |

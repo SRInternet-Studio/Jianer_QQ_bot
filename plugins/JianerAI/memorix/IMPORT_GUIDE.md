@@ -66,7 +66,7 @@ python plugins/JianerAI/memorix/scripts/convert_lpmm.py \
 
 ```bash
 python plugins/JianerAI/memorix/scripts/migrate_chat_history.py --help
-python plugins/JianerAI/memorix/scripts/migrate_maibot_memory.py --help
+python plugins/JianerAI/memorix/scripts/migrate_legacy_memory.py --help
 python plugins/JianerAI/memorix/scripts/migrate_person_memory_points.py --help
 ```
 
@@ -94,7 +94,7 @@ python plugins/JianerAI/memorix/scripts/audit_vector_consistency.py --json
 - `create_lpmm_openie`
 - `create_lpmm_convert`
 - `create_temporal_backfill`
-- `create_maibot_migration`
+- `create_legacy_migration`
 - `list`
 - `get`
 - `chunks` / `get_chunks`
