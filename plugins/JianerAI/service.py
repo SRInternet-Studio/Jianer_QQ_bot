@@ -34,6 +34,7 @@ from jianer.adapters import (
 
 from plugins.JianerAI.agent import AgentError, AgentOptions, AgentRunner
 from plugins.JianerAI.memory import JianerMemoryStore
+from plugins.JianerAI.memorix_adapter import JianerMemoryAdapter
 from plugins.JianerAI.moderation import (
     ContentModerator,
     ModerationError,
@@ -249,6 +250,13 @@ class RuntimeOptions:
     memory_topk: int
     transcript_retention_days: int
     tts_options: SpeechOptions
+    memory_backend: str = "long_memory"
+    memorix_data_dir: Path = Path("data/jianer_ai_memorix")
+    embedding_config_path: Path = Path("aiconfig/embedding.json")
+    memory_console_enabled: bool = False
+    memory_console_host: str = "0.0.0.0"
+    memory_console_port: int = 8787
+    memory_console_token: str = ""
     blocked_group_ids: frozenset[str] = frozenset()
     content_moderation_enabled: bool = False
     content_moderation_ai_reply_enabled: bool = False
@@ -384,6 +392,19 @@ class RuntimeOptions:
                 1,
                 int(others.get("memory_cleanup_keep_days", 90)),
             ),
+            memory_backend=str(others.get("memory_backend", "long_memory") or "long_memory").strip().lower(),
+            memorix_data_dir=_resolve_runtime_path(
+                project_root,
+                others.get("memorix_data_dir", "data/jianer_ai_memorix"),
+            ),
+            embedding_config_path=_resolve_runtime_path(
+                project_root,
+                others.get("embedding_config_path", "aiconfig/embedding.json"),
+            ),
+            memory_console_enabled=_runtime_bool(others.get("jianer_ai_memory_console_enabled", False), default=False),
+            memory_console_host=str(others.get("jianer_ai_memory_console_host", "0.0.0.0") or "0.0.0.0"),
+            memory_console_port=max(1, min(65535, int(others.get("jianer_ai_memory_console_port", 8787)))),
+            memory_console_token=str(others.get("jianer_ai_memory_console_token", "") or "").strip(),
             tts_options=SpeechOptions(
                 voice=str(tts_raw.get("voiceColor") or "zh-CN-XiaoyiNeural"),
                 rate=str(tts_raw.get("rate") or "+0%"),
@@ -516,11 +537,76 @@ class JianerAIService:
                     ),
                 ),
             )
-        self.memory = memory or JianerMemoryStore(
-            options.database_path,
-            default_memory_enabled=options.memory_enabled_default,
-            default_memory_interval_seconds=options.memory_interval_seconds,
-        )
+        if memory is not None:
+            self.memory = memory
+        elif options.memory_backend == "legacy":
+            self.memory = JianerMemoryStore(
+                options.database_path,
+                default_memory_enabled=options.memory_enabled_default,
+                default_memory_interval_seconds=options.memory_interval_seconds,
+            )
+        else:
+            legacy_memory = JianerMemoryStore(
+                options.database_path,
+                default_memory_enabled=options.memory_enabled_default,
+                default_memory_interval_seconds=options.memory_interval_seconds,
+            )
+            embedding_raw: Mapping[str, Any] = {}
+            for candidate in (
+                options.embedding_config_path,
+                options.project_root / "aiconfig" / "embedding.json.example",
+            ):
+                try:
+                    loaded = json.loads(candidate.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(loaded, Mapping):
+                    embedding_raw = loaded
+                    break
+            embedding_model = str(
+                embedding_raw.get("Model", embedding_raw.get("model", "auto"))
+                or "auto"
+            ).strip()
+            embedding_dimension = max(
+                1,
+                int(
+                    embedding_raw.get(
+                        "Dimension", embedding_raw.get("dimension", 1536)
+                    )
+                ),
+            )
+            self.memory = JianerMemoryAdapter(
+                project_root=options.project_root,
+                data_dir=options.memorix_data_dir,
+                config={
+                    "plugin": {"enabled": True},
+                    "storage": {"data_dir": str(options.memorix_data_dir)},
+                    "embedding": {
+                        "model_name": embedding_model,
+                        "provider": str(embedding_raw.get("Provider", embedding_raw.get("provider", "openai")) or "openai").strip().lower(),
+                        "api_key": str(embedding_raw.get("ApiKey", embedding_raw.get("api_key", "")) or "").strip(),
+                        "base_url": str(embedding_raw.get("BaseUrl", embedding_raw.get("base_url", "")) or "").strip().rstrip("/"),
+                        "dimension": embedding_dimension,
+                        "batch_size": int(embedding_raw.get("BatchSize", embedding_raw.get("batch_size", 32))),
+                        "max_concurrent": int(embedding_raw.get("MaxConcurrent", embedding_raw.get("max_concurrent", 4))),
+                        "timeout_seconds": float(embedding_raw.get("TimeoutSeconds", embedding_raw.get("timeout_seconds", 30.0)) or 30.0),
+                        "retry": {
+                            "max_attempts": int(embedding_raw.get("MaxRetries", embedding_raw.get("max_retries", 3)) or 3),
+                            "min_wait_seconds": float(embedding_raw.get("RetryMinWaitSeconds", embedding_raw.get("retry_min_wait_seconds", 1.0)) or 1.0),
+                            "max_wait_seconds": float(embedding_raw.get("RetryMaxWaitSeconds", embedding_raw.get("retry_max_wait_seconds", 10.0)) or 10.0),
+                        },
+                        "enable_cache": bool(embedding_raw.get("CacheEnabled", embedding_raw.get("cache_enabled", True))),
+                        "dimension_request_mode": "explicit",
+                        "fallback": {"enabled": False},
+                    },
+                    "retrieval": {
+                        "vector_pools": {"mode": "dual"},
+                        "sparse": {"enabled": True},
+                    },
+                },
+                legacy_store=legacy_memory,
+                enabled=True,
+            )
         self.presets = presets or PresetStore(
             options.project_root / "prerequisites" / "current.json",
             options.project_root / "prerequisites",
@@ -600,6 +686,7 @@ class JianerAIService:
         self._reviews_resumed = False
         self._closed = False
         self._start_lock = asyncio.Lock()
+        self._memory_console_thread: threading.Thread | None = None
 
     @classmethod
     def from_runtime(cls, runtime: Mapping[str, Any]) -> "JianerAIService":
@@ -3785,9 +3872,53 @@ class JianerAIService:
                 self._maintenance_loop(),
                 name="jianer-ai-maintenance",
             )
+            self._start_memory_console()
             if not self._reviews_resumed:
                 self._reviews_resumed = True
                 await self._resume_pending_memory_reviews()
+
+    def _start_memory_console(self) -> None:
+        if not self.options.memory_console_enabled or self._memory_console_thread is not None:
+            return
+        if not self.options.memory_console_token:
+            self._log_info(
+                "JianerAI memory console refused to start: token is required"
+            )
+            return
+        try:
+            from plugins.JianerAI.memorix_console import (
+                ConsoleConfig,
+                start_console_in_thread,
+            )
+
+            # JianerMemoryAdapter lazily owns the long-lived memory kernel.
+            # Resolve it before handing the console its dependencies; passing
+            # ``kernel=None`` would silently expose only the compatibility
+            # ledger and make graph/profile/admin panels unavailable.
+            console_kernel = getattr(self.memory, "_kernel", None)
+            resolve_kernel = getattr(self.memory, "_call_kernel", None)
+            if console_kernel is None and callable(resolve_kernel):
+                async def _identity(kernel: Any) -> Any:
+                    return kernel
+
+                console_kernel = resolve_kernel(_identity)
+
+            self._memory_console_thread = start_console_in_thread(
+                kernel=console_kernel,
+                memory_store=self.memory,
+                config=ConsoleConfig(
+                    enabled=True,
+                    host=self.options.memory_console_host,
+                    port=self.options.memory_console_port,
+                    token=self.options.memory_console_token,
+                ),
+            )
+            self._log_info(
+                "JianerAI memory console started at "
+                f"{self.options.memory_console_host}:{self.options.memory_console_port}"
+            )
+        except Exception:
+            self._log_exception("JianerAI memory console failed to start")
 
     async def _maintenance_loop(self) -> None:
         while not self._closed:
@@ -4187,3 +4318,12 @@ def _runtime_bool(value: Any, *, default: bool) -> bool:
     if normalized in _FALSE_WORDS:
         return False
     return bool(default)
+
+
+def _resolve_runtime_path(project_root: Path, value: Any) -> Path:
+    candidate = Path(str(value or "")).expanduser()
+    if not str(value or "").strip():
+        return project_root.resolve()
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    return candidate.resolve()

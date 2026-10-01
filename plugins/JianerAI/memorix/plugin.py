@@ -1,0 +1,346 @@
+"""Compatibility entry for SDK-style integrations.
+
+JianerAI loads Jianer Memory through
+`plugins.JianerAI.memorix.host_service`; this module remains available for
+hosts that still discover an SDK plugin entry point.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+import asyncio
+
+from plugins.JianerAI.memorix.core.runtime.admin_contracts import AdminContractError, dispatch_admin_command, parse_admin_command
+from plugins.JianerAI.memorix.core.runtime.sdk_memory_kernel import KernelSearchRequest, SDKMemoryKernel
+from plugins.JianerAI.memorix.paths import repo_root
+
+
+class ToolParamType:
+    STRING = "string"
+    INTEGER = "integer"
+    FLOAT = "number"
+    BOOLEAN = "boolean"
+
+
+class ToolParameterInfo:
+    def __init__(self, name: str, param_type: str, description: str, required: bool) -> None:
+        self.name = name
+        self.param_type = param_type
+        self.description = description
+        self.required = required
+
+
+def Tool(_name: str, **_metadata: Any):
+    """Keep SDK-style method declarations importable in the native host."""
+
+    def decorate(function):
+        return function
+
+    return decorate
+
+
+def _tool_param(name: str, param_type: ToolParamType, description: str, required: bool) -> ToolParameterInfo:
+    return ToolParameterInfo(name=name, param_type=param_type, description=description, required=required)
+
+
+_ADMIN_TOOL_PARAMS = [
+    _tool_param("action", ToolParamType.STRING, "管理动作", True),
+    _tool_param("target", ToolParamType.STRING, "可选目标标识", False),
+]
+
+
+class JianerMemoryPlugin:
+    def __init__(self) -> None:
+        self._plugin_root = repo_root()
+        self._plugin_config: Dict[str, Any] = {}
+        self._kernel: Optional[SDKMemoryKernel] = None
+        self._kernel_lock = asyncio.Lock()
+        self._kernel_shutdown_error = ""
+
+    def set_plugin_config(self, config: Dict[str, Any]) -> None:
+        """更新下一次内核初始化使用的配置，不在同步入口关闭活动内核。"""
+        self._plugin_config = config or {}
+
+    async def _shutdown_kernel(self) -> None:
+        """等待内核后台任务退出并释放资源，成功后再清除实例引用。"""
+        async with self._kernel_lock:
+            if self._kernel is None:
+                return
+            try:
+                await self._kernel.shutdown()
+            except Exception as exc:
+                self._kernel_shutdown_error = str(exc)
+                raise
+            else:
+                self._kernel = None
+                self._kernel_shutdown_error = ""
+
+    async def on_load(self):
+        await self._get_kernel()
+
+    async def on_unload(self):
+        await self._shutdown_kernel()
+
+    async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
+        """配置变化时异步停机，后续工具调用会按最新配置惰性重建内核。"""
+        _ = version
+        if scope == "self":
+            self.set_plugin_config(config_data if isinstance(config_data, dict) else {})
+            await self._shutdown_kernel()
+            return
+        if scope in {"bot", "model"} and self._kernel is not None:
+            await self._shutdown_kernel()
+
+    async def _get_kernel(self) -> SDKMemoryKernel:
+        async with self._kernel_lock:
+            if self._kernel_shutdown_error:
+                raise RuntimeError(f"Jianer Memory 上次停机未完成，拒绝复用旧内核: {self._kernel_shutdown_error}")
+            if self._kernel is None:
+                kernel = SDKMemoryKernel(plugin_root=self._plugin_root, config=self._plugin_config)
+                await kernel.initialize()
+                self._kernel = kernel
+            return self._kernel
+
+    async def _dispatch_admin_tool(self, method_name: str, action: str, **kwargs):
+        try:
+            command = parse_admin_command(method_name, {"action": action, **kwargs})
+        except AdminContractError as exc:
+            return exc.to_response()
+        kernel = await self._get_kernel()
+        return await dispatch_admin_command(kernel, command)
+
+    @Tool(
+        "search_memory",
+        description="搜索长期记忆",
+        parameters=[
+            _tool_param("query", ToolParamType.STRING, "查询文本", False),
+            _tool_param("limit", ToolParamType.INTEGER, "返回条数", False),
+            _tool_param("mode", ToolParamType.STRING, "search/time/hybrid/episode/aggregate", False),
+            _tool_param("chat_id", ToolParamType.STRING, "聊天流 ID", False),
+            _tool_param("person_id", ToolParamType.STRING, "人物 ID", False),
+            _tool_param("time_start", ToolParamType.FLOAT, "起始时间戳", False),
+            _tool_param("time_end", ToolParamType.FLOAT, "结束时间戳", False),
+            _tool_param("respect_filter", ToolParamType.BOOLEAN, "是否应用聊天过滤配置", False),
+        ],
+    )
+    async def handle_search_memory(
+        self,
+        query: str = "",
+        limit: int = 5,
+        mode: str = "search",
+        chat_id: str = "",
+        person_id: str = "",
+        time_start: str | float | None = None,
+        time_end: str | float | None = None,
+        respect_filter: bool = True,
+        **kwargs,
+    ):
+        kernel = await self._get_kernel()
+        return await kernel.search_memory(
+            KernelSearchRequest(
+                query=query,
+                limit=limit,
+                mode=mode,
+                chat_id=chat_id,
+                person_id=person_id,
+                time_start=time_start,
+                time_end=time_end,
+                respect_filter=respect_filter,
+                user_id=str(kwargs.get("user_id", "") or "").strip(),
+                group_id=str(kwargs.get("group_id", "") or "").strip(),
+            )
+        )
+
+    @Tool(
+        "ingest_summary",
+        description="写入聊天摘要到长期记忆",
+        parameters=[
+            _tool_param("external_id", ToolParamType.STRING, "外部幂等 ID", True),
+            _tool_param("chat_id", ToolParamType.STRING, "聊天流 ID", True),
+            _tool_param("text", ToolParamType.STRING, "摘要文本", True),
+            _tool_param("time_start", ToolParamType.FLOAT, "起始时间戳", False),
+            _tool_param("time_end", ToolParamType.FLOAT, "结束时间戳", False),
+            _tool_param("respect_filter", ToolParamType.BOOLEAN, "是否应用聊天过滤配置", False),
+        ],
+    )
+    async def handle_ingest_summary(
+        self,
+        external_id: str,
+        chat_id: str,
+        text: str,
+        participants: Optional[List[str]] = None,
+        time_start: float | None = None,
+        time_end: float | None = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        respect_filter: bool = True,
+        **kwargs,
+    ):
+        kernel = await self._get_kernel()
+        return await kernel.ingest_summary(
+            external_id=external_id,
+            chat_id=chat_id,
+            text=text,
+            participants=participants,
+            time_start=time_start,
+            time_end=time_end,
+            tags=tags,
+            metadata=metadata,
+            respect_filter=respect_filter,
+            user_id=str(kwargs.get("user_id", "") or "").strip(),
+            group_id=str(kwargs.get("group_id", "") or "").strip(),
+        )
+
+    @Tool(
+        "ingest_text",
+        description="写入普通长期记忆文本",
+        parameters=[
+            _tool_param("external_id", ToolParamType.STRING, "外部幂等 ID", True),
+            _tool_param("source_type", ToolParamType.STRING, "来源类型", True),
+            _tool_param("text", ToolParamType.STRING, "原始文本", True),
+            _tool_param("chat_id", ToolParamType.STRING, "聊天流 ID", False),
+            _tool_param("timestamp", ToolParamType.FLOAT, "时间戳", False),
+            _tool_param("respect_filter", ToolParamType.BOOLEAN, "是否应用聊天过滤配置", False),
+        ],
+    )
+    async def handle_ingest_text(
+        self,
+        external_id: str,
+        source_type: str,
+        text: str,
+        chat_id: str = "",
+        person_ids: Optional[List[str]] = None,
+        participants: Optional[List[str]] = None,
+        timestamp: float | None = None,
+        time_start: float | None = None,
+        time_end: float | None = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        respect_filter: bool = True,
+        **kwargs,
+    ):
+        relations = kwargs.get("relations")
+        entities = kwargs.get("entities")
+        kernel = await self._get_kernel()
+        return await kernel.ingest_text(
+            external_id=external_id,
+            source_type=source_type,
+            text=text,
+            chat_id=chat_id,
+            person_ids=person_ids,
+            participants=participants,
+            timestamp=timestamp,
+            time_start=time_start,
+            time_end=time_end,
+            tags=tags,
+            metadata=metadata,
+            entities=entities,
+            relations=relations,
+            respect_filter=respect_filter,
+            user_id=str(kwargs.get("user_id", "") or "").strip(),
+            group_id=str(kwargs.get("group_id", "") or "").strip(),
+        )
+
+    @Tool(
+        "get_person_profile",
+        description="获取人物画像",
+        parameters=[
+            _tool_param("person_id", ToolParamType.STRING, "人物 ID", True),
+            _tool_param("chat_id", ToolParamType.STRING, "聊天流 ID", False),
+            _tool_param("limit", ToolParamType.INTEGER, "证据条数", False),
+        ],
+    )
+    async def handle_get_person_profile(self, person_id: str, chat_id: str = "", limit: int = 10, **kwargs):
+        _ = kwargs
+        kernel = await self._get_kernel()
+        return await kernel.get_person_profile(person_id=person_id, chat_id=chat_id, limit=limit)
+
+    @Tool(
+        "maintain_memory",
+        description="维护长期记忆关系状态",
+        parameters=[
+            _tool_param("action", ToolParamType.STRING, "reinforce/protect/restore/freeze/recycle_bin", True),
+            _tool_param("target", ToolParamType.STRING, "目标哈希或查询文本", False),
+            _tool_param("hours", ToolParamType.FLOAT, "保护时长（小时）", False),
+            _tool_param("limit", ToolParamType.INTEGER, "查询条数（用于 recycle_bin）", False),
+        ],
+    )
+    async def handle_maintain_memory(
+        self,
+        action: str,
+        target: str = "",
+        hours: float | None = None,
+        reason: str = "",
+        limit: int = 50,
+        **kwargs,
+    ):
+        _ = kwargs
+        kernel = await self._get_kernel()
+        return await kernel.maintain_memory(action=action, target=target, hours=hours, reason=reason, limit=limit)
+
+    @Tool("memory_stats", description="获取长期记忆统计", parameters=[])
+    async def handle_memory_stats(self, **kwargs):
+        _ = kwargs
+        kernel = await self._get_kernel()
+        return kernel.memory_stats()
+
+    @Tool("memory_graph_admin", description="长期记忆图谱管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_graph_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_graph_admin", action=action, **kwargs)
+
+    @Tool("memory_source_admin", description="长期记忆来源管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_source_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_source_admin", action=action, **kwargs)
+
+    @Tool("memory_episode_admin", description="Episode 管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_episode_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_episode_admin", action=action, **kwargs)
+
+    @Tool("memory_profile_admin", description="人物画像管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_profile_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_profile_admin", action=action, **kwargs)
+
+    @Tool("memory_fact_admin", description="结构化事实账本管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_fact_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_fact_admin", action=action, **kwargs)
+
+    @Tool("memory_runtime_admin", description="长期记忆运行时管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_runtime_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_runtime_admin", action=action, **kwargs)
+
+    @Tool("memory_import_admin", description="长期记忆导入管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_import_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_import_admin", action=action, **kwargs)
+
+    @Tool("memory_bundle_admin", description="可分享记忆包管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_bundle_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_bundle_admin", action=action, **kwargs)
+
+    @Tool("memory_tuning_admin", description="长期记忆调优管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_tuning_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_tuning_admin", action=action, **kwargs)
+
+    @Tool("memory_v5_admin", description="长期记忆 V5 管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_v5_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_v5_admin", action=action, **kwargs)
+
+    @Tool("memory_delete_admin", description="长期记忆删除管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_delete_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_delete_admin", action=action, **kwargs)
+
+    @Tool("memory_correction_admin", description="长期记忆修正管理接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_correction_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_correction_admin", action=action, **kwargs)
+
+    @Tool("memory_fuzzy_modify_admin", description="长期记忆修正管理兼容接口", parameters=_ADMIN_TOOL_PARAMS)
+    async def handle_memory_fuzzy_modify_admin(self, action: str, **kwargs):
+        return await self._dispatch_admin_tool("memory_fuzzy_modify_admin", action=action, **kwargs)
+
+
+def create_plugin():
+    return JianerMemoryPlugin()
+
+
+# Compatibility alias for integrations that imported the historical class.
+AMemorixPlugin = JianerMemoryPlugin

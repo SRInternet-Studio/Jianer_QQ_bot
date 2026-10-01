@@ -1,0 +1,182 @@
+"""检索后处理共用的路径回退辅助工具。"""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple
+
+from ..retrieval.dual_path import RetrievalResult
+
+
+def extract_entities(query: str, graph_store: Any) -> List[str]:
+    """使用 n-gram 匹配从查询中提取至多两个图节点。"""
+    if not graph_store:
+        return []
+
+    text = str(query or "").strip()
+    if not text:
+        return []
+
+    # 保持该启发式规则与历史兼容行为一致。
+    tokens = text.replace("?", " ").replace("!", " ").replace(".", " ").split()
+    if not tokens:
+        return []
+
+    found_entities = set()
+    skip_indices = set()
+    max_n = min(4, len(tokens))
+
+    for size in range(max_n, 0, -1):
+        for i in range(len(tokens) - size + 1):
+            if any(idx in skip_indices for idx in range(i, i + size)):
+                continue
+            span = " ".join(tokens[i : i + size])
+            matched_node = graph_store.find_node(span, ignore_case=True)
+            if not matched_node:
+                continue
+            found_entities.add(matched_node)
+            for idx in range(i, i + size):
+                skip_indices.add(idx)
+
+    return list(found_entities)
+
+
+def find_paths_between_entities(
+    start_node: str,
+    end_node: str,
+    graph_store: Any,
+    metadata_store: Any,
+    *,
+    allowed_relation_ids: Optional[Collection[str]] = None,
+    max_depth: int = 3,
+    max_paths: int = 5,
+) -> List[Dict[str, Any]]:
+    """查找并补充两个节点之间的间接路径信息。"""
+    if not graph_store or not metadata_store:
+        return []
+
+    try:
+        paths = graph_store.find_paths(
+            start_node,
+            end_node,
+            max_depth=max_depth,
+            max_paths=max_paths,
+        )
+    except Exception:
+        return []
+
+    if not paths:
+        return []
+
+    allowed = None if allowed_relation_ids is None else {str(value) for value in allowed_relation_ids}
+    edge_cache: Dict[Tuple[str, str], Tuple[str, str, str]] = {}
+    formatted_paths: List[Dict[str, Any]] = []
+
+    for path_nodes in paths:
+        if not isinstance(path_nodes, Sequence) or len(path_nodes) < 2:
+            continue
+
+        path_desc: List[str] = []
+        relation_hashes: List[str] = []
+        path_allowed = True
+        for i in range(len(path_nodes) - 1):
+            u = str(path_nodes[i])
+            v = str(path_nodes[i + 1])
+
+            cache_key = tuple(sorted((u, v)))
+            if cache_key in edge_cache:
+                pred, direction, relation_hash = edge_cache[cache_key]
+            else:
+                pred = "related"
+                direction = "->"
+                rels = metadata_store.get_relations(subject=u, object=v, include_inactive=False)
+                if not rels:
+                    rels = metadata_store.get_relations(subject=v, object=u, include_inactive=False)
+                    direction = "<-"
+                if allowed is not None:
+                    rels = [row for row in rels if str(row.get("hash", "") or "") in allowed]
+                relation_hash = ""
+
+                if rels:
+                    best_rel = max(rels, key=lambda x: x.get("confidence", 1.0))
+                    pred = str(best_rel.get("predicate", "related") or "related")
+                    relation_hash = str(best_rel.get("hash", "") or "").strip()
+                edge_cache[cache_key] = (pred, direction, relation_hash)
+
+            if allowed is not None and not relation_hash:
+                path_allowed = False
+                break
+            if relation_hash:
+                relation_hashes.append(relation_hash)
+
+
+            step_str = f"-[{pred}]->" if direction == "->" else f"<-[{pred}]-"
+            path_desc.append(step_str)
+
+        if not path_allowed:
+            continue
+
+        full_path_str = str(path_nodes[0])
+        for i, step in enumerate(path_desc):
+            full_path_str += f" {step} {path_nodes[i + 1]}"
+
+        formatted_paths.append(
+            {
+                "nodes": list(path_nodes),
+                "description": full_path_str,
+                "relation_hashes": relation_hashes,
+            }
+        )
+
+    return formatted_paths
+
+
+def find_paths_from_query(
+    query: str,
+    graph_store: Any,
+    metadata_store: Any,
+    *,
+    allowed_relation_ids: Optional[Collection[str]] = None,
+    max_depth: int = 3,
+    max_paths: int = 5,
+) -> List[Dict[str, Any]]:
+    """从查询中提取实体并解析间接路径。"""
+    entities = extract_entities(query, graph_store)
+    if len(entities) != 2:
+        return []
+    return find_paths_between_entities(
+        entities[0],
+        entities[1],
+        graph_store,
+        metadata_store,
+        allowed_relation_ids=allowed_relation_ids,
+        max_depth=max_depth,
+        max_paths=max_paths,
+    )
+
+
+def to_retrieval_results(paths: Sequence[Dict[str, Any]]) -> List[RetrievalResult]:
+    """将路径结果转换为统一检索链路使用的结果。"""
+    converted: List[RetrievalResult] = []
+    for item in paths:
+        description = str(item.get("description", "")).strip()
+        if not description:
+            continue
+        hash_seed = description.encode("utf-8")
+        path_hash = f"path_{hashlib.sha1(hash_seed).hexdigest()}"
+        converted.append(
+            RetrievalResult(
+                hash_value=path_hash,
+                content=f"[Indirect Relation] {description}",
+                score=0.95,
+                result_type="relation",
+                source="graph_path",
+                metadata={
+                    "source": "graph_path",
+                    "is_indirect": True,
+                    "relation_hashes": list(item.get("relation_hashes", [])),
+                    "nodes": list(item.get("nodes", [])),
+                },
+            )
+        )
+    return converted

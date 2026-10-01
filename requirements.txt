@@ -15,7 +15,15 @@ pillow
 pydantic>=2,<3
 pyecharts>=2,<3
 numpy>=2,<3
+faiss-cpu>=1.8,<2
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+scipy>=1.10,<2
+jieba>=0.42,<1
+sqlalchemy>=2,<3
 sqlmodel>=0.0.38
+json-repair>=0.30,<1
+tomlkit>=0.13,<1
 httpx-ws>=0.7.2,<1
 httpx
 PyJWT[crypto]>=2.10,<3

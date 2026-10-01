@@ -1,0 +1,15 @@
+{
+  "FriendlyName": "JianerAI memory embedding",
+  "Provider": "openai",
+  "Model": "text-embedding-3-small",
+  "ApiKey": "",
+  "BaseUrl": "https://api.openai.com/v1",
+  "Dimension": 1536,
+  "BatchSize": 32,
+  "MaxConcurrent": 4,
+  "TimeoutSeconds": 30,
+  "MaxRetries": 3,
+  "CacheEnabled": true,
+  "FallbackEnabled": false,
+  "BackfillEnabled": true
+}

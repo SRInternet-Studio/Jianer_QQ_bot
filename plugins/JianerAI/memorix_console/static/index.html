@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JianerAI Memory Console</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>JianerAI / Memory</span></div>
+    <div class="connection"><span id="connection-dot" class="status-dot"></span><span id="connection-label">未连接</span><button id="connect-button" type="button">连接</button></div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar" aria-label="记忆控制台导航">
+      <div class="sidebar-label">运行面板</div>
+      <nav id="nav">
+        <button class="nav-item active" data-view="overview" type="button">概览</button>
+        <button class="nav-item" data-view="search" type="button">语义检索</button>
+        <button class="nav-item" data-view="paragraphs" type="button">段落</button>
+        <button class="nav-item" data-view="relations" type="button">关系图</button>
+        <button class="nav-item" data-view="episodes" type="button">Episodes</button>
+        <button class="nav-item" data-view="profiles" type="button">人物画像</button>
+        <button class="nav-item" data-view="recycle-bin" type="button">回收站</button>
+        <button class="nav-item" data-view="maintenance" type="button">维护任务</button>
+      </nav>
+      <div class="sidebar-foot"><span>LAN / Token</span><span id="runtime-state">OFFLINE</span></div>
+      <details class="legal-notice"><summary>许可与来源</summary><p>Jianer Memory 含有上游长期记忆运行时代码改编部分，适用 AGPL-3.0。<a href="/legal" target="_blank" rel="noreferrer">查看完整来源与许可证</a></p></details>
+    </aside>
+    <main class="main" id="main" tabindex="-1">
+      <section class="view active" data-panel="overview">
+        <div class="view-head"><div><p class="eyebrow">JIANER MEMORY / RUNTIME</p><h1>记忆运行状态</h1></div><button class="outline-button" id="refresh-overview" type="button">刷新</button></div>
+        <div id="overview-state" class="notice">请输入 Token 后连接控制台。</div>
+        <div class="metrics" id="metrics"></div>
+        <div class="split-grid">
+          <section class="panel"><div class="panel-head"><h2>Embedding 状态</h2><span id="embedding-state" class="badge">未检测</span></div><pre id="embedding-data" class="data-block">等待连接。</pre></section>
+          <section class="panel"><div class="panel-head"><h2>向量池</h2><span class="panel-meta">paragraph / graph</span></div><div id="pools-data" class="pool-list"></div></section>
+        </div>
+      </section>
+      <section class="view" data-panel="search">
+        <div class="view-head"><div><p class="eyebrow">RETRIEVAL / HYBRID</p><h1>语义检索</h1></div></div>
+        <form class="query-bar" id="search-form"><label for="search-input">查询文本</label><input id="search-input" name="q" autocomplete="off" required><select id="search-mode" name="mode"><option value="search">search</option><option value="hybrid">hybrid</option><option value="time">time</option><option value="episode">episode</option><option value="aggregate">aggregate</option></select><button type="submit">执行检索</button></form>
+        <div id="search-summary" class="notice">输入查询后查看向量与 BM25 融合结果。</div><div id="search-results" class="result-list"></div>
+      </section>
+      <section class="view" data-panel="paragraphs"><div class="view-head"><div><p class="eyebrow">KNOWLEDGE / PARAGRAPH</p><h1>段落</h1></div><button class="outline-button" data-refresh-resource="paragraphs" type="button">刷新</button></div><div id="paragraphs-list" class="table-wrap"></div></section>
+      <section class="view" data-panel="relations"><div class="view-head"><div><p class="eyebrow">KNOWLEDGE / GRAPH</p><h1>关系图</h1></div><button class="outline-button" id="refresh-graph" type="button">刷新</button></div><form class="query-bar" id="graph-form"><label for="graph-input">实体或关系</label><input id="graph-input" name="q"><button type="submit">查询图谱</button></form><div id="graph-view" class="graph-view"></div></section>
+      <section class="view" data-panel="episodes"><div class="view-head"><div><p class="eyebrow">CONVERSATION / EPISODE</p><h1>Episodes</h1></div><button class="outline-button" data-refresh-resource="episodes" type="button">刷新</button></div><div id="episodes-list" class="table-wrap"></div></section>
+      <section class="view" data-panel="profiles"><div class="view-head"><div><p class="eyebrow">IDENTITY / PROFILE</p><h1>人物画像</h1></div></div><form class="query-bar" id="profile-form"><label for="profile-input">person_id</label><input id="profile-input" name="person_id" required><button type="submit">读取画像</button></form><pre id="profile-data" class="data-block">输入 person_id 后读取。</pre></section>
+      <section class="view" data-panel="recycle-bin"><div class="view-head"><div><p class="eyebrow">LIFECYCLE / DELETED</p><h1>回收站</h1></div><button class="outline-button" data-refresh-resource="recycle-bin" type="button">刷新</button></div><div id="recycle-bin-list" class="table-wrap"></div><div class="lifecycle-tools"><form id="restore-form" class="query-bar"><label for="restore-input">operation_id</label><input id="restore-input" required><button type="submit">恢复操作</button></form><form id="delete-form" class="query-bar"><label for="delete-input">删除目标</label><select id="delete-mode"><option value="paragraph">paragraph</option><option value="relation">relation</option><option value="source">source</option></select><input id="delete-input" required><button type="submit">预览删除</button></form><pre id="lifecycle-data" class="data-block">选择操作后查看结果。</pre></div></section>
+      <section class="view" data-panel="maintenance"><div class="view-head"><div><p class="eyebrow">OPERATIONS / MAINTENANCE</p><h1>维护任务</h1></div></div><form class="maintenance-form" id="maintenance-form"><label>动作<select name="action"><option value="status">status</option><option value="run">run</option><option value="prune">prune</option><option value="reinforce">reinforce</option><option value="protect">protect</option></select></label><label>目标<input name="target"></label><label>时长（小时）<input name="hours" type="number" min="0" step="1"></label><label>原因<input name="reason" value="console"></label><button type="submit">提交任务</button></form><pre id="maintenance-data" class="data-block">尚未提交维护任务。</pre></section>
+    </main>
+  </div>
+  <dialog id="token-dialog"><form method="dialog" id="token-form"><h2>连接记忆控制台</h2><p>使用服务端配置的 X-Memory-Token 访问局域网控制台。</p><label for="token-input">Token</label><input id="token-input" type="password" autocomplete="off" required><div class="dialog-actions"><button value="cancel" type="submit">取消</button><button id="save-token" value="default" type="submit">连接</button></div></form></dialog>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

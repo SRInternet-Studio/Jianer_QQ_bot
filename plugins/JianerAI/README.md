@@ -333,3 +333,34 @@ v1 接口，不包含已标记弃用的三个城市天气 v7 接口，也不包�
 引用解析与媒体解析是两个独立适配器能力。媒体只接受 Core
 `resolve_media()` 返回的已解析字节，并受 scheme、重定向、大小、总超时、MIME
 嗅探和本地路径白名单限制。
+# Jianer Memory 长期记忆
+
+JianerAI 的默认 `memory_backend` 是 `long_memory`。长期记忆由
+`plugins/JianerAI/memorix/` 内核维护：SQLite 保存元数据、证据、Episode 和
+生命周期状态，FAISS 保存 paragraph / relation 向量，SQLite FTS5/BM25、双路
+融合、图关系和 PageRank 负责召回。旧 `JianerMemoryStore` 继续保存聊天原文、
+身份绑定、生成屏障和审查任务；长期记忆读写默认不会切换到旧存储。
+
+Embedding 使用独立的 `aiconfig/embedding.json`，该文件不与聊天模型配置共享。
+可从 `aiconfig/embedding.json.example` 复制后填写 OpenAI 兼容接口或 Gemini
+接口。向量维度、批量、并发、重试和缓存均由该文件控制。默认集成要求 Embedding
+模型可用；连接失败会报告运行时错误，不会静默改用旧记忆或关键词检索。
+
+记忆控制台是可选的局域网服务。配置 `others.jianer_ai_memory_console_enabled`
+为 `true` 并提供 `others.jianer_ai_memory_console_token` 后，服务监听
+`0.0.0.0:8787`，所有 API 请求必须带 `X-Memory-Token`。前端位于
+`plugins/JianerAI/memorix_console/static/`，使用 Industrial 视觉方向，展示真实
+内核状态、向量池、语义检索、段落、Episode、图谱、画像、回收站和维护任务。
+
+迁移旧动态表数据库：
+
+```bash
+python -m plugins.JianerAI.memorix.scripts.migrate_jianer_memory \
+  jianer_memory.db --target-db jianer_ai.db \
+  --data-dir data/jianer_ai_memorix
+```
+
+先加 `--dry-run` 查看表和计数。迁移脚本会记录源文件 SHA-256，并在覆盖已有
+目标数据库前创建备份。
+
+本项目的长期记忆功能基于 MaiBot 的开源记忆实现编写，并结合 JianerAI 的运行时接口完成集成；来源与许可说明见 `plugins/JianerAI/memorix/NOTICE.md`。
