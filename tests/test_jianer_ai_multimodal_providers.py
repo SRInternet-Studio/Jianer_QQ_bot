@@ -99,6 +99,7 @@ def test_canonical_parser_names_and_legacy_aliases_load(tmp_path: Path) -> None:
         "responses": ("OpenAI Responses", "openai_responses"),
         "google": ("Google GenerateContent", "google_generate_content"),
         "anthropic": ("Anthropic Messages", "anthropic_messages"),
+        "openai-compact": ("OpenAI ChatCompletions", "openai_chat_completions"),
         "legacy-openai": ("openai", "openai_chat_completions"),
         "legacy-gemini": ("gemini", "google_generate_content"),
     }

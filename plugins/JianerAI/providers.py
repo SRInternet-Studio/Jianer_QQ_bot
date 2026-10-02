@@ -691,6 +691,7 @@ def _normalize_provider(value: Any) -> str:
         "openai": "openai_chat_completions",
         "openai-compatible": "openai_chat_completions",
         "chat-completions": "openai_chat_completions",
+        "openai-chatcompletions": "openai_chat_completions",
         "openai-chat-completions": "openai_chat_completions",
         "responses": "openai_responses",
         "openai-responses": "openai_responses",
