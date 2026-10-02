@@ -9,6 +9,7 @@ import ipaddress
 import json
 import logging
 import re
+import secrets
 import socket
 import threading
 import time
@@ -256,7 +257,6 @@ class RuntimeOptions:
     memory_console_enabled: bool = False
     memory_console_host: str = "0.0.0.0"
     memory_console_port: int = 8787
-    memory_console_token: str = ""
     blocked_group_ids: frozenset[str] = frozenset()
     content_moderation_enabled: bool = False
     content_moderation_ai_reply_enabled: bool = False
@@ -404,7 +404,6 @@ class RuntimeOptions:
             memory_console_enabled=_runtime_bool(others.get("jianer_ai_memory_console_enabled", False), default=False),
             memory_console_host=str(others.get("jianer_ai_memory_console_host", "0.0.0.0") or "0.0.0.0"),
             memory_console_port=max(1, min(65535, int(others.get("jianer_ai_memory_console_port", 8787)))),
-            memory_console_token=str(others.get("jianer_ai_memory_console_token", "") or "").strip(),
             tts_options=SpeechOptions(
                 voice=str(tts_raw.get("voiceColor") or "zh-CN-XiaoyiNeural"),
                 rate=str(tts_raw.get("rate") or "+0%"),
@@ -1429,6 +1428,15 @@ class JianerAIService:
     async def shutdown(self) -> None:
         if self._closed:
             return
+        console_thread, self._memory_console_thread = self._memory_console_thread, None
+        if console_thread is not None:
+            stop_console = getattr(console_thread, "stop", None)
+            if callable(stop_console):
+                try:
+                    await asyncio.to_thread(stop_console)
+                except Exception:
+                    self._memory_console_thread = console_thread
+                    raise
         self._closed = True
         task, self._maintenance_task = self._maintenance_task, None
         if task is not None:
@@ -3872,19 +3880,16 @@ class JianerAIService:
                 self._maintenance_loop(),
                 name="jianer-ai-maintenance",
             )
-            self._start_memory_console()
+            await self._start_memory_console()
             if not self._reviews_resumed:
                 self._reviews_resumed = True
                 await self._resume_pending_memory_reviews()
 
-    def _start_memory_console(self) -> None:
+    async def _start_memory_console(self) -> None:
         if not self.options.memory_console_enabled or self._memory_console_thread is not None:
             return
-        if not self.options.memory_console_token:
-            self._log_info(
-                "JianerAI memory console refused to start: token is required"
-            )
-            return
+        console_thread = None
+        token = secrets.token_urlsafe(32)
         try:
             from plugins.JianerAI.memorix_console import (
                 ConsoleConfig,
@@ -3903,21 +3908,32 @@ class JianerAIService:
 
                 console_kernel = resolve_kernel(_identity)
 
-            self._memory_console_thread = start_console_in_thread(
+            console_thread = start_console_in_thread(
                 kernel=console_kernel,
                 memory_store=self.memory,
                 config=ConsoleConfig(
                     enabled=True,
                     host=self.options.memory_console_host,
                     port=self.options.memory_console_port,
-                    token=self.options.memory_console_token,
+                    token=token,
                 ),
             )
-            self._log_info(
-                "JianerAI memory console started at "
-                f"{self.options.memory_console_host}:{self.options.memory_console_port}"
+            await asyncio.to_thread(console_thread.wait_until_ready)
+            self._memory_console_thread = console_thread
+            print(
+                "JianerAI memory console started. "
+                f"Listen: {self.options.memory_console_host}:{self.options.memory_console_port}; "
+                f"Local URL: http://127.0.0.1:{self.options.memory_console_port}; "
+                f"temporary token (valid until shutdown): {token}",
+                flush=True,
             )
         except Exception:
+            if console_thread is not None:
+                try:
+                    await asyncio.to_thread(console_thread.stop)
+                except Exception:
+                    self._memory_console_thread = console_thread
+                    self._log_exception("JianerAI memory console failed to stop after startup error")
             self._log_exception("JianerAI memory console failed to start")
 
     async def _maintenance_loop(self) -> None:

@@ -347,10 +347,11 @@ Embedding 使用独立的 `aiconfig/embedding.json`，该文件不与聊天模�
 模型可用；连接失败会报告运行时错误，不会静默改用旧记忆或关键词检索。
 
 记忆控制台是可选的局域网服务。配置 `others.jianer_ai_memory_console_enabled`
-为 `true` 并提供 `others.jianer_ai_memory_console_token` 后，服务监听
-`0.0.0.0:8787`，所有 API 请求必须带 `X-Memory-Token`。前端位于
-`plugins/JianerAI/memorix_console/static/`，使用 Industrial 视觉方向，展示真实
-内核状态、向量池、语义检索、段落、Episode、图谱、画像、回收站和维护任务。
+为 `true` 后，服务每次启动都会生成新的临时 Token，并只输出到启动控制台；Token
+不会写入配置、数据库或浏览器持久存储。重启后旧 Token 失效，需要从本次启动输出中
+重新输入。服务默认监听 `0.0.0.0:8787`，所有 API 请求必须带 `X-Memory-Token`。
+前端位于 `plugins/JianerAI/memorix_console/static/`，展示内核状态、向量池、语义检索、
+段落、Episode、图谱、画像、回收站和维护任务。
 
 迁移旧动态表数据库：
 

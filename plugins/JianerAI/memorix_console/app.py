@@ -71,7 +71,7 @@ def create_app(
     console_config = config if isinstance(config, ConsoleConfig) else ConsoleConfig.from_mapping(config)
     expected_token = str(token if token is not None else console_config.token).strip()
     if not expected_token:
-        raise ValueError("jianer_ai_memory_console_token is required to start the memory console")
+        raise ValueError("a memory console token is required")
     adapter = MemoryConsoleAdapter(kernel=kernel, memory_store=memory_store, config=(config if isinstance(config, Mapping) else getattr(kernel, "config", {})))
     app = FastAPI(title="JianerAI Memory Console", version="1.0", docs_url="/api/docs", redoc_url=None)
     app.state.memory_console = adapter

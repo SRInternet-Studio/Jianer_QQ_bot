@@ -1,6 +1,7 @@
 (() => {
   "use strict";
-  const state = { token: localStorage.getItem("jianer-memory-console-token") || "" };
+  const state = { token: "" };
+  try { localStorage.removeItem("jianer-memory-console-token"); } catch {}
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
@@ -21,8 +22,9 @@
   const loadResource = async (resource) => { const target = $(`#${resource}-list`); if (!target) return; target.innerHTML = `<div class="notice">读取中…</div>`; try { renderTable(target, await api(`/${resource}`), resource); } catch (error) { target.innerHTML = `<div class="notice">${esc(error.message)}</div>`; } };
   const renderSearch = (data) => { const hits = data.hits || []; $("#search-summary").textContent = data.error || `${hits.length} 条命中 / ${data.retrieval_mode || "runtime"}`; $("#search-results").innerHTML = hits.length ? hits.map((hit, index) => `<article class="result-item"><div class="result-top"><span>${String(index + 1).padStart(2, "0")} / ${esc(hit.type || "memory")}</span><span>${esc(hit.score ?? hit.similarity ?? "")}</span></div><div class="result-content">${esc(hit.content || hit.text || hit.summary || JSON.stringify(hit))}</div><div class="result-meta">${esc(hit.source || hit.hash || hit.paragraph_hash || "")}</div></article>`).join("") : `<div class="notice">没有命中记录。</div>`; };
   const renderGraph = (data) => { const edges = data.edges || data.relations || []; const nodes = data.nodes || []; $("#graph-view").innerHTML = `<div class="result-meta">${nodes.length} nodes / ${edges.length} edges</div><div class="graph-list">${edges.length ? edges.map((edge) => `<div class="graph-edge"><span>${esc(edge.subject || edge.source || "")}</span> <span class="muted">${esc(edge.predicate || edge.label || "->")}</span> <span>${esc(edge.object || edge.target || "")}</span></div>`).join("") : `<div class="notice">没有可显示的关系。</div>`}</div>`; };
-  $("#connect-button").addEventListener("click", () => { $("#token-input").value = state.token; $("#token-dialog").showModal(); });
-  $("#token-form").addEventListener("submit", (event) => { if (event.submitter?.id !== "save-token") return; event.preventDefault(); state.token = $("#token-input").value.trim(); localStorage.setItem("jianer-memory-console-token", state.token); $("#token-dialog").close(); refreshOverview(); });
+  $("#connect-button").addEventListener("click", () => { $("#token-input").value = ""; $("#token-dialog").showModal(); });
+  $("#token-form").addEventListener("submit", (event) => { if (event.submitter?.id !== "save-token") return; event.preventDefault(); state.token = $("#token-input").value.trim(); $("#token-input").value = ""; $("#token-dialog").close(); refreshOverview(); });
+  $("#token-dialog").addEventListener("close", () => { $("#token-input").value = ""; });
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => { $$(".nav-item").forEach((item) => item.classList.toggle("active", item === button)); $$(".view").forEach((view) => view.classList.toggle("active", view.dataset.panel === button.dataset.view)); const resource = button.dataset.view; if (["paragraphs", "episodes", "recycle-bin"].includes(resource)) loadResource(resource); }));
   $("#refresh-overview").addEventListener("click", refreshOverview);
   $("#search-form").addEventListener("submit", async (event) => { event.preventDefault(); try { renderSearch(await api(`/search?q=${encodeURIComponent($("#search-input").value)}&mode=${encodeURIComponent($("#search-mode").value)}`)); } catch (error) { $("#search-summary").textContent = error.message; } });

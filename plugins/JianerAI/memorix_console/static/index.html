@@ -50,7 +50,7 @@
       <section class="view" data-panel="maintenance"><div class="view-head"><div><p class="eyebrow">OPERATIONS / MAINTENANCE</p><h1>维护任务</h1></div></div><form class="maintenance-form" id="maintenance-form"><label>动作<select name="action"><option value="status">status</option><option value="run">run</option><option value="prune">prune</option><option value="reinforce">reinforce</option><option value="protect">protect</option></select></label><label>目标<input name="target"></label><label>时长（小时）<input name="hours" type="number" min="0" step="1"></label><label>原因<input name="reason" value="console"></label><button type="submit">提交任务</button></form><pre id="maintenance-data" class="data-block">尚未提交维护任务。</pre></section>
     </main>
   </div>
-  <dialog id="token-dialog"><form method="dialog" id="token-form"><h2>连接记忆控制台</h2><p>使用服务端配置的 X-Memory-Token 访问局域网控制台。</p><label for="token-input">Token</label><input id="token-input" type="password" autocomplete="off" required><div class="dialog-actions"><button value="cancel" type="submit">取消</button><button id="save-token" value="default" type="submit">连接</button></div></form></dialog>
+  <dialog id="token-dialog"><form method="dialog" id="token-form"><h2>连接记忆控制台</h2><p>输入机器人本次启动时输出的临时 Token。</p><label for="token-input">Token</label><input id="token-input" type="password" autocomplete="off" required><div class="dialog-actions"><button value="cancel" type="submit">取消</button><button id="save-token" value="default" type="submit">连接</button></div></form></dialog>
   <script src="/static/app.js" defer></script>
 </body>
 </html>
