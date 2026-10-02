@@ -5,10 +5,13 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import time
 
+from ..._compat import get_logger
 from ...utils.hash import compute_hash
 from ...utils.memory_lifecycle_policy import RelationLifecycleEvent
 from ...utils.runtime_payloads import tokens
 from .base import KernelServiceBase
+
+logger = get_logger("Jianer Memory.GraphAdminService")
 
 
 class MemoryGraphAdminService(KernelServiceBase):
@@ -19,6 +22,16 @@ class MemoryGraphAdminService(KernelServiceBase):
 
         act = str(action or "").strip().lower()
         if act == "get_graph":
+            profile_service = getattr(self, "person_profile_service", None)
+            reconcile = getattr(profile_service, "reconcile_profile_relations", None)
+            if callable(reconcile):
+                try:
+                    await reconcile()
+                except Exception as exc:
+                    # Graph reads remain available if an optional profile
+                    # repair cannot run; the authoritative relation state is
+                    # still exposed through the metadata-backed serializer.
+                    logger.debug("自动关系归一化失败: %s", exc)
             return {"success": True, **self._serialize_graph(limit=max(1, int(kwargs.get("limit", 200) or 200)))}
         if act == "search":
             return self._search_graph(

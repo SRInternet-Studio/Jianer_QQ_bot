@@ -395,6 +395,92 @@ class PersonProfileService:
                 suggestions.append(name)
         return suggestions
 
+    @staticmethod
+    def _extract_explicit_person_aliases(text: str) -> List[str]:
+        """Extract names explicitly assigned to the current profile subject."""
+
+        content = re.sub(r"[\r\n]+", " ", str(text or "")).strip()
+        if not content:
+            return []
+        stop = r"\s，。！？；!?;:：、,\"'“”‘’（）()\[\]【】"
+        patterns = (
+            rf"(?:我|他|她|这个人|对方)(?:就)?(?:叫|是|名叫|名字是|自称)\s*([^{stop}]{{1,32}})",
+            rf"(?:称呼|叫作|叫做)(?:我|他|她|这个人|对方)?\s*([^{stop}]{{1,32}})",
+            rf"只称呼(?:我|他|她|这个人|对方)?\s*([^{stop}]{{1,32}})",
+        )
+        ignored = {
+            "我",
+            "本人",
+            "用户",
+            "当前用户",
+            "他",
+            "她",
+            "它",
+            "对方",
+            "某人",
+            "同型号",
+            "同型号的机娘",
+            "同型号机娘",
+            "计算机特化型",
+            "计算机特化型的",
+            "这样",
+            "这么",
+            "如此",
+        }
+        aliases: List[str] = []
+        seen = set()
+        for pattern in patterns:
+            for match in re.finditer(pattern, content, flags=re.IGNORECASE):
+                candidate = str(match.group(1) or "").strip(" ，,、:：\"'“”‘’（）()[]【】")
+                if (
+                    not candidate
+                    or candidate in ignored
+                    or "同型号" in candidate
+                    or "机娘" in candidate
+                    or candidate.startswith("计算机特化")
+                    or candidate.endswith(("的", "了", "呢", "啦"))
+                    or any(token in candidate for token in ("交代", "确认", "告诉", "记住", "让我"))
+                ):
+                    continue
+                key = candidate.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                aliases.append(candidate[:64])
+        return aliases
+
+    def _fact_derived_person_aliases(self, person_id: str) -> Tuple[List[str], str]:
+        """Read explicit identity corrections from the memory fact ledger."""
+
+        try:
+            claims = self.metadata_store.list_person_profile_fact_claims(
+                person_id,
+                effective_at=time.time(),
+                limit=200,
+            )
+        except Exception:
+            return [], ""
+        candidates: List[str] = []
+        seen = set()
+        for claim in claims:
+            text = str(claim.get("value_text", "") or "").strip()
+            for alias in self._extract_explicit_person_aliases(text):
+                key = alias.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(alias)
+        return candidates, (candidates[0] if candidates else "")
+
+    def _configured_bot_name(self) -> str:
+        configured = self._cfg("bot", {})
+        if isinstance(configured, dict):
+            for key in ("nickname", "name", "display_name"):
+                value = str(configured.get(key, "") or "").strip()
+                if value:
+                    return value
+        return ""
+
     def _get_derived_person_aliases(self, person_id: str) -> Tuple[List[str], str, List[str]]:
         """只从人物主档案中的可信身份字段推导自动别名。"""
         aliases: List[str] = []
@@ -402,11 +488,14 @@ class PersonProfileService:
         memory_traits: List[str] = []
         if not person_id:
             return aliases, primary_name, memory_traits
+        record = None
         try:
             with get_db_session(auto_commit=False) as session:
                 record = session.exec(select(PersonInfo).where(PersonInfo.person_id == person_id).limit(1)).first()
-                if not record:
-                    return [person_id], person_id, memory_traits
+        except Exception as e:
+            logger.debug(f"宿主人物数据库不可用，改用事实别名: person_id={person_id}, err={e}")
+        fact_aliases, fact_primary = self._fact_derived_person_aliases(person_id)
+        if record is not None:
             person_name = str(record.person_name or "").strip()
             nickname = str(record.user_nickname or "").strip()
             group_nicks = self._parse_group_nicks(record.group_cardname)
@@ -429,8 +518,13 @@ class PersonProfileService:
                     continue
                 seen.add(key)
                 aliases.append(norm)
-        except Exception as e:
-            logger.warning(f"解析人物别名失败: person_id={person_id}, err={e}")
+        if fact_aliases:
+            known = {item.casefold() for item in aliases}
+            aliases.extend(item for item in fact_aliases if item.casefold() not in known)
+            # An explicit correction such as "他叫桃子" is more precise than
+            # an old host nickname, while the host record remains available as
+            # an additional alias for lookup.
+            primary_name = fact_primary or primary_name
         if not aliases:
             aliases = [primary_name or person_id]
             primary_name = primary_name or person_id
@@ -598,8 +692,17 @@ class PersonProfileService:
         *,
         primary_name: str,
         person_id: str,
+        person_aliases: Optional[List[str]] = None,
+        bot_name: str = "",
     ) -> List[Tuple[str, str, str]]:
-        """Extract only explicit Chinese two-party relationship statements."""
+        """Extract explicit two-party statements and resolve host pronouns.
+
+        Person facts are written from the bot's first-person perspective. In
+        that context ``我`` means the configured bot, while ``他``/``她``
+        generally refers to the person whose profile is being refreshed. The
+        caller can omit ``bot_name`` for compatibility with older standalone
+        tests, in which case the historical current-person mapping remains.
+        """
 
         normalized = re.sub(r"[\r\n]+", " ", str(text or "")).strip().strip("- ")
         if not normalized:
@@ -607,18 +710,69 @@ class PersonProfileService:
         current = str(primary_name or "").strip() or str(person_id or "").strip()
         if not current:
             return []
+        aliases = {
+            str(item).strip().casefold()
+            for item in (current, person_id, *(person_aliases or []))
+            if str(item).strip()
+        }
+        bot = str(bot_name or "").strip()
+        bot_key = bot.casefold()
+        person_pronouns = {"他", "她", "这个人", "对方", "该用户", "用户"}
+        bot_pronouns = {"我", "本人", "你", "机器人", "bot"}
+
+        def resolve_endpoint(value: str) -> str:
+            token = str(value or "").strip(" ，,、:：\"'“”‘’")
+            key = token.casefold()
+            if key in {"是", "为", "属于", "和", "与", "跟"}:
+                return ""
+            if key in aliases or key == str(person_id or "").strip().casefold():
+                return current
+            if key in person_pronouns:
+                return current
+            if key in bot_pronouns or (bot_key and key == bot_key):
+                return bot or current
+            return token
+
+        def clean_predicate(value: str) -> str:
+            predicate = re.sub(r"^(?:是|为|属于)\s*", "", str(value or "")).strip(" ，,、")
+            predicate = re.sub(r"^(?:的|一名|一个)\s*", "", predicate).strip()
+            return predicate
+
         candidates: List[Tuple[str, str, str]] = []
+        declared_pair_pattern = re.compile(
+            r"(?:他|她|这个人|对方)(?:就)?(?:叫|是|名叫|名字是)\s*"
+            r"(?P<declared>[^，。！？；!?;]{1,32}?)\s*[,，]\s*"
+            r"(?:是\s*)?(?:和|与|跟)\s*"
+            r"(?P<right>[^，。！？；!?;]{1,16}?)\s*"
+            r"(?:是\s*)?(?P<predicate>同型号(?:的)?[^，。！？；!?;]{0,32})"
+        )
+        for match in declared_pair_pattern.finditer(normalized):
+            left = resolve_endpoint(match.group("declared"))
+            right = resolve_endpoint(match.group("right"))
+            predicate = clean_predicate(match.group("predicate"))
+            if left and right and predicate and left != right:
+                candidates.append((left, predicate, right))
+
         pair_pattern = re.compile(
             r"(?P<left>[^，。！？；!?;]{1,32}?)[和与跟](?P<right>[^，。！？；!?;]{1,32}?)(?:是|为|属于)(?P<predicate>[^，。！？；!?;]{1,48})"
         )
         for match in pair_pattern.finditer(normalized):
             left = match.group("left").strip(" ，,、")
             right = match.group("right").strip(" ，,、")
-            predicate = match.group("predicate").strip(" ，,、")
-            if left in {"我", "本人", "用户", "当前用户"}:
-                left = current
-            if right in {"我", "本人", "用户", "当前用户"}:
-                right = current
+            predicate = clean_predicate(match.group("predicate"))
+            left = resolve_endpoint(left)
+            right = resolve_endpoint(right)
+            if left and right and predicate and left != right:
+                candidates.append((left, predicate, right))
+
+        # Common shorthand omits the copula: ``桃子和我同型号的机娘``.
+        shorthand_pattern = re.compile(
+            r"(?P<left>[^，。！？；!?;]{1,32}?)[和与跟](?P<right>[^，。！？；!?;]{1,16}?)(?:是)?(?P<predicate>同型号(?:的)?[^，。！？；!?;]{0,32})"
+        )
+        for match in shorthand_pattern.finditer(normalized):
+            left = resolve_endpoint(match.group("left"))
+            right = resolve_endpoint(match.group("right"))
+            predicate = clean_predicate(match.group("predicate"))
             if left and right and predicate and left != right:
                 candidates.append((left, predicate, right))
 
@@ -626,8 +780,8 @@ class PersonProfileService:
             r"(?P<other>[^，。！？；!?;]{1,32}?)是我的(?P<predicate>[^，。！？；!?;]{1,32})"
         )
         for match in personal_pattern.finditer(normalized):
-            other = match.group("other").strip(" ，,、")
-            predicate = match.group("predicate").strip(" ，,、")
+            other = resolve_endpoint(match.group("other"))
+            predicate = clean_predicate(match.group("predicate"))
             if other and predicate and other != current:
                 candidates.append((current, predicate, other))
 
@@ -647,6 +801,7 @@ class PersonProfileService:
         person_id: str,
         primary_name: str,
         fact_claims: List[Dict[str, Any]],
+        person_aliases: Optional[List[str]] = None,
     ) -> None:
         """Project old explicit person facts into graph relations once observed."""
 
@@ -654,6 +809,8 @@ class PersonProfileService:
         if writer is None or not bool(self._cfg("person_profile.auto_relation_backfill", True)):
             return
         write_vectors = bool(self._cfg("retrieval.relation_vectorization.enabled", False))
+        bot_name = self._configured_bot_name()
+        planned: list[dict[str, Any]] = []
         for claim in fact_claims[:64]:
             text = str(claim.get("value_text", "") or "").strip()
             if not text:
@@ -662,6 +819,8 @@ class PersonProfileService:
                 text,
                 primary_name=primary_name,
                 person_id=person_id,
+                person_aliases=person_aliases,
+                bot_name=bot_name,
             )
             if not candidates:
                 continue
@@ -692,48 +851,166 @@ class PersonProfileService:
                     None,
                 )
             for subject, predicate, obj in candidates:
-                try:
-                    relation_hash = self.metadata_store.compute_relation_hash(
-                        subject,
-                        predicate,
-                        obj,
+                relation_metadata = {
+                    "source_type": "person_fact_relation",
+                    "relation_origin": "automatic_profile_backfill",
+                    "person_id": person_id,
+                    "person_ids": [person_id],
+                    "fact_claim_id": str(claim.get("claim_id", "") or ""),
+                    "authority": authority,
+                }
+                if bot_name:
+                    relation_metadata.update(
+                        {
+                            "person_display_name": primary_name,
+                            "bot_display_name": bot_name,
+                        }
                     )
-                    existing = self.metadata_store.get_relation(
-                        relation_hash,
-                        include_inactive=False,
-                    )
-                    if existing is not None:
-                        continue
-                except Exception:
-                    # The write service remains the source of truth if an
-                    # older metadata store lacks the optional lookup helper.
-                    pass
-                try:
-                    await writer.upsert_relation_with_vector(
-                        subject=subject,
-                        predicate=predicate,
-                        obj=obj,
-                        confidence=confidence,
-                        source_paragraph=source_paragraph,
-                        metadata={
-                            "source_type": "person_fact_relation",
-                            "relation_origin": "automatic_profile_backfill",
-                            "person_id": person_id,
-                            "person_ids": [person_id],
-                            "fact_claim_id": str(claim.get("claim_id", "") or ""),
-                            "authority": authority,
-                        },
-                        write_vector=write_vectors,
-                    )
-                except Exception as exc:
-                    logger.debug(
-                        "人物事实关系回填失败: person_id=%s, relation=%s-%s-%s, err=%s",
-                        person_id,
-                        subject,
-                        predicate,
-                        obj,
-                        exc,
-                    )
+                planned.append(
+                    {
+                        "subject": subject,
+                        "predicate": predicate,
+                        "object": obj,
+                        "confidence": confidence,
+                        "source_paragraph": source_paragraph,
+                        "metadata": relation_metadata,
+                    }
+                )
+
+        if not planned:
+            return
+
+        desired_signatures = {
+            (
+                str(item["subject"]).casefold(),
+                str(item["predicate"]).casefold(),
+                str(item["object"]).casefold(),
+            )
+            for item in planned
+        }
+        stale_hashes: list[str] = []
+        try:
+            existing_relations = self.metadata_store.get_relations(include_inactive=False)
+        except Exception:
+            existing_relations = []
+        for relation in existing_relations:
+            metadata = coerce_metadata_dict(relation.get("metadata"))
+            if str(metadata.get("source_type", "") or "").strip() != "person_fact_relation":
+                continue
+            if str(metadata.get("person_id", "") or "").strip() != str(person_id).strip():
+                continue
+            signature = (
+                str(relation.get("subject", "") or "").strip().casefold(),
+                str(relation.get("predicate", "") or "").strip().casefold(),
+                str(relation.get("object", "") or "").strip().casefold(),
+            )
+            relation_hash = str(relation.get("hash", "") or "").strip()
+            if relation_hash and signature not in desired_signatures:
+                stale_hashes.append(relation_hash)
+        if stale_hashes:
+            try:
+                self.metadata_store.mark_relations_inactive(
+                    stale_hashes,
+                    reason="profile_identity_normalized",
+                )
+                self._publish_relation_projection()
+            except Exception as exc:
+                logger.debug(
+                    "人物事实关系旧身份边清理失败: person_id=%s, err=%s",
+                    person_id,
+                    exc,
+                )
+
+        for item in planned:
+            subject = str(item["subject"])
+            predicate = str(item["predicate"])
+            obj = str(item["object"])
+            try:
+                relation_hash = self.metadata_store.compute_relation_hash(
+                    subject,
+                    predicate,
+                    obj,
+                )
+                existing = self.metadata_store.get_relation(
+                    relation_hash,
+                    include_inactive=False,
+                )
+                if existing is not None:
+                    continue
+            except Exception:
+                # The write service remains the source of truth if an
+                # older metadata store lacks the optional lookup helper.
+                pass
+            try:
+                await writer.upsert_relation_with_vector(
+                    subject=subject,
+                    predicate=predicate,
+                    obj=obj,
+                    confidence=float(item["confidence"]),
+                    source_paragraph=item["source_paragraph"],
+                    metadata=dict(item["metadata"]),
+                    write_vector=write_vectors,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "人物事实关系回填失败: person_id=%s, relation=%s-%s-%s, err=%s",
+                    person_id,
+                    subject,
+                    predicate,
+                    obj,
+                    exc,
+                )
+
+    def _publish_relation_projection(self) -> None:
+        """Publish relation lifecycle changes through the active SDK kernel."""
+
+        runtime = self._cfg("plugin_instance")
+        publish = getattr(runtime, "publish_authoritative_graph_projection", None)
+        if callable(publish):
+            publish()
+
+    async def reconcile_profile_relations(
+        self,
+        person_ids: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """Repair automatic profile relations before graph/profile reads.
+
+        This keeps old snapshots useful after an identity resolver changes. Only
+        relations produced by the profile backfill are considered, so manually
+        authored graph edges remain untouched.
+        """
+
+        if self.relation_write_service is None:
+            return {"scanned": 0, "refreshed": 0}
+        targets = {
+            str(item).strip()
+            for item in (person_ids or [])
+            if str(item).strip()
+        }
+        if not targets:
+            try:
+                rows = self.metadata_store.get_relations(include_inactive=False)
+            except Exception:
+                rows = []
+            for relation in rows:
+                metadata = coerce_metadata_dict(relation.get("metadata"))
+                if str(metadata.get("source_type", "") or "").strip() != "person_fact_relation":
+                    continue
+                person_id = str(metadata.get("person_id", "") or "").strip()
+                if person_id:
+                    targets.add(person_id)
+        refreshed = 0
+        for person_id in sorted(targets):
+            aliases, primary_name, _ = self.get_person_aliases(person_id)
+            fact_claims = self._collect_person_fact_claims(person_id, limit=64)
+            await self._backfill_explicit_fact_relations(
+                person_id=person_id,
+                primary_name=primary_name,
+                person_aliases=aliases,
+                fact_claims=fact_claims,
+            )
+            refreshed += 1
+        return {"scanned": len(targets), "refreshed": refreshed}
 
     def _merge_fact_claim_buckets(
         self,
@@ -1355,6 +1632,37 @@ class PersonProfileService:
 
         if not snapshot:
             return True
+        # Identity and relation normalization is part of the profile input.
+        # Older snapshots may still expose the canonical ID or unresolved
+        # pronouns as graph endpoints; force one refresh so the backfill can
+        # repair those edges instead of serving the stale cache indefinitely.
+        try:
+            aliases, primary_name, _ = self.get_person_aliases(person_id)
+        except Exception:
+            aliases, primary_name = [], str(person_id or "").strip()
+        snapshot_aliases = {
+            str(item).strip().casefold()
+            for item in (snapshot.get("aliases") or [])
+            if str(item).strip()
+        }
+        expected_aliases = {
+            str(item).strip().casefold()
+            for item in (aliases or [primary_name])
+            if str(item).strip()
+        }
+        if expected_aliases and not expected_aliases.issubset(snapshot_aliases):
+            return True
+        for relation in snapshot.get("relation_edges") or []:
+            if not isinstance(relation, dict):
+                continue
+            endpoints = {
+                str(relation.get("subject", "") or "").strip().casefold(),
+                str(relation.get("object", "") or "").strip().casefold(),
+            }
+            if str(person_id or "").strip().casefold() in endpoints or endpoints.intersection(
+                {"他", "她", "它", "对方", "某人"}
+            ):
+                return True
         sections = parse_profile_sections(str(snapshot.get("profile_text", "") or ""))
         if not sections:
             return True
@@ -1466,6 +1774,7 @@ class PersonProfileService:
             person_id=pid,
             primary_name=primary_name,
             fact_claims=fact_claims,
+            person_aliases=aliases,
         )
         relation_edges = self._collect_relation_evidence(aliases, limit=max(10, top_k * 2), person_id=pid)
         vector_evidence = await self._collect_vector_evidence(aliases, top_k=max(4, top_k), person_id=pid)

@@ -133,3 +133,75 @@ def test_explicit_person_fact_can_be_backfilled_into_graph_relation():
         ]
 
     asyncio.run(scenario())
+
+
+def test_person_fact_alias_and_bot_relation_are_canonicalized():
+    class Metadata:
+        def compute_relation_hash(self, subject, predicate, obj):
+            return f"{subject}|{predicate}|{obj}"
+
+        def get_relation(self, hash_value, include_inactive=False):
+            return None
+
+        def get_relations(self, include_inactive=True):
+            return []
+
+        def get_fact_evidence(self, claim_id):
+            return []
+
+    class RelationWriter:
+        def __init__(self):
+            self.calls = []
+
+        async def upsert_relation_with_vector(self, **kwargs):
+            self.calls.append(kwargs)
+
+    async def scenario():
+        service = object.__new__(PersonProfileService)
+        service.metadata_store = Metadata()
+        service.plugin_config = {"bot": {"nickname": "星语"}}
+        writer = RelationWriter()
+        service.relation_write_service = writer
+        await service._backfill_explicit_fact_relations(
+            person_id="qq:2822554898",
+            primary_name="桃子",
+            person_aliases=["桃子"],
+            fact_claims=[
+                {
+                    "claim_id": "claim-1",
+                    "value_text": "桃子和我是同型号的机娘。",
+                    "authority": "summary_derived",
+                    "confidence": 0.9,
+                }
+            ],
+        )
+        assert len(writer.calls) == 1
+        assert writer.calls[0]["subject"] == "桃子"
+        assert writer.calls[0]["obj"] == "星语"
+        assert writer.calls[0]["metadata"]["person_id"] == "qq:2822554898"
+        assert writer.calls[0]["metadata"]["person_display_name"] == "桃子"
+        assert writer.calls[0]["metadata"]["bot_display_name"] == "星语"
+
+    asyncio.run(scenario())
+
+
+def test_explicit_person_alias_extraction_ignores_predicate_fragments():
+    assert PersonProfileService._extract_explicit_person_aliases(
+        "他是桃子，和我是同型号的机娘，上次他是这样交代的。"
+    ) == ["桃子"]
+
+
+def test_relation_candidates_resolve_declared_alias_and_bot_pronoun():
+    texts = (
+        "他是桃子，是和我同型号的机娘。",
+        "他是桃子，和我同型号的机娘。",
+        "他叫桃子，他和我是同型号的机娘。",
+    )
+    for text in texts:
+        assert PersonProfileService._extract_explicit_relation_candidates(
+            text,
+            primary_name="桃子",
+            person_id="qq:2822554898",
+            person_aliases=["桃子"],
+            bot_name="星语",
+        ) == [("桃子", "同型号的机娘", "星语")]

@@ -348,6 +348,23 @@ class JianerMemoryAdapter:
             self._kernel_error = f"{type(exc).__name__}: {exc}"
             raise
 
+    def get_person_alias_details(self, canonical_user_id: str) -> Mapping[str, Any]:
+        """Resolve the display aliases used by profile and relation views."""
+
+        person_id = _text(canonical_user_id)
+        if not person_id:
+            return {}
+
+        async def operation(kernel: Any) -> Mapping[str, Any]:
+            service = getattr(kernel, "person_profile_service", None)
+            getter = getattr(service, "get_person_alias_details", None)
+            if not callable(getter):
+                return {}
+            value = getter(person_id)
+            return dict(value) if isinstance(value, Mapping) else {}
+
+        return self._call_kernel(operation)
+
     def _scope_payload(
         self,
         *,

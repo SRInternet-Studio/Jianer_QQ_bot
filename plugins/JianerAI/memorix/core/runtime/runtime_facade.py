@@ -104,6 +104,11 @@ class KernelRuntimeFacade:
 
         self._kernel._save_vector_store(store)
 
+    def publish_authoritative_graph_projection(self) -> Dict[str, Any]:
+        """Publish metadata relation lifecycle changes to the graph snapshot."""
+
+        return self._kernel._maintenance_service._publish_authoritative_graph_projection()
+
     async def ingest_text(self, **kwargs: Any) -> Dict[str, Any]:
         """让派生写入统一复用内核的 external ID 幂等入口。"""
 

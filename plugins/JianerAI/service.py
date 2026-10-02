@@ -173,7 +173,11 @@ _MEMORY_REVIEW_SYSTEM_RULES = (
     "relations 用于关系图，只抽取用户原话明确表达的长期关系，不能凭常识补全。"
     "每项 relation 必须包含 subject、predicate、object、scope、confidence；subject 和 object"
     "保留原话中的名称，若原话使用‘我’，用当前发言者表示；scope=person 表示当前发言者的个人关系，"
-    "scope=group 只表示当前群的共同关系。私聊禁止使用 group。"
+    "scope=group 只表示当前群的共同关系。私聊禁止使用 group。关系参与者上下文中，"
+    "‘你’、‘机器人’、‘我（BOT）’以及当前机器人名称指 BOT；‘他’、‘她’、‘它’、‘对方’、‘某人’"
+    "在原话没有明确指代时必须丢弃，绝不能凭常识创建一个叫这些词的实体。"
+    "例如用户说‘我和你是同型号的机娘’，应把 subject 设为当前发言者，把 object 设为 BOT；"
+    "用户说‘桃子和机器人是同型号的机娘’，object 应使用 BOT 的显示名。"
     "persona_template 是渲染后的完整当前人设；memory_text 必须严格使用这份模板的"
     "第一人称语气、思想和价值取向；canonical_fact 必须是中性、"
     "简洁、可用于去重的事实摘要。update 的 memory_id 必须来自输入的 allowed IDs。"
@@ -586,6 +590,7 @@ class JianerAIService:
                 data_dir=options.memorix_data_dir,
                 config={
                     "plugin": {"enabled": True},
+                    "bot": {"nickname": options.bot_name},
                     "storage": {"data_dir": str(options.memorix_data_dir)},
                     "embedding": {
                         "model_name": embedding_model,
@@ -2911,7 +2916,11 @@ class JianerAIService:
                 str(self._item_value(item, "sender_name", "") or ""),
             ).strip()
             if sender_name:
-                return sender_name[:128]
+                # Group cards often append a transient status in parentheses.
+                # Keep the stable nickname as the profile/graph display name.
+                sender_name = re.split(r"[（(\[【]", sender_name, maxsplit=1)[0].strip()
+                if sender_name:
+                    return sender_name[:128]
         return str(canonical)
 
     @staticmethod
@@ -3625,6 +3634,46 @@ class JianerAIService:
                 recent_messages,
                 episode.speaker_canonical_id,
             )
+            speaker_aliases: tuple[str, ...] = (speaker_name,)
+            alias_details = getattr(self.memory, "get_person_alias_details", None)
+            if callable(alias_details):
+                try:
+                    resolved_aliases = await asyncio.to_thread(
+                        alias_details,
+                        episode.speaker_canonical_id,
+                    )
+                except Exception:
+                    resolved_aliases = {}
+                if isinstance(resolved_aliases, Mapping):
+                    effective_aliases = tuple(
+                        str(item).strip()
+                        for item in resolved_aliases.get("effective_aliases", ())
+                        if str(item).strip()
+                    )
+                    primary_alias = str(
+                        resolved_aliases.get("primary_name", "") or ""
+                    ).strip()
+                    if primary_alias and primary_alias != episode.speaker_canonical_id:
+                        speaker_name = primary_alias
+                    speaker_aliases = tuple(
+                        dict.fromkeys((speaker_name, *effective_aliases))
+                    )
+            bot_canonical_id = f"bot:{episode.protocol}:{episode.self_id}"
+            bot_display_name = str(self.options.bot_name or "简儿").strip() or "简儿"
+            bot_aliases = tuple(
+                dict.fromkeys(
+                    (
+                        bot_display_name,
+                        "机器人",
+                        "BOT",
+                        "bot",
+                        "你",
+                        "我（BOT）",
+                        "我(BOT)",
+                        bot_canonical_id,
+                    )
+                )
+            )
             persona_template = self._render_persona_template(
                 preset,
                 event_user=speaker_name,
@@ -3648,6 +3697,10 @@ class JianerAIService:
                         "conversation_id": episode.conversation_id,
                         "person_id": episode.speaker_canonical_id,
                         "person_display_name": speaker_name,
+                        "person_aliases": list(speaker_aliases),
+                        "bot_canonical_id": bot_canonical_id,
+                        "bot_display_name": bot_display_name,
+                        "bot_aliases": list(bot_aliases),
                         "group_allowed": episode.conversation_kind == "group",
                     },
                     "exchange": {
@@ -3805,6 +3858,10 @@ class JianerAIService:
                         relations_to_apply,
                         speaker_id=episode.speaker_canonical_id,
                         speaker_name=speaker_name,
+                        speaker_aliases=speaker_aliases,
+                        bot_canonical_id=bot_canonical_id,
+                        bot_display_name=bot_display_name,
+                        bot_aliases=bot_aliases,
                     )
                     by_scope: dict[str, list[dict[str, Any]]] = {}
                     for relation in normalized_relations:
@@ -4011,19 +4068,62 @@ class JianerAIService:
         *,
         speaker_id: str,
         speaker_name: str,
+        speaker_aliases: Sequence[str] = (),
+        bot_canonical_id: str = "",
+        bot_display_name: str = "",
+        bot_aliases: Sequence[str] = (),
     ) -> tuple[dict[str, Any], ...]:
-        """Resolve first-person relation subjects to the scoped speaker identity."""
+        """Resolve relation endpoints without turning pronouns into entities."""
 
         fallback = str(speaker_id or "").strip()
         display = str(speaker_name or "").strip() or fallback
+        speaker_tokens = {
+            str(item).strip().casefold()
+            for item in (fallback, display, *speaker_aliases)
+            if str(item).strip()
+        }
+        bot_fallback = str(bot_canonical_id or "").strip()
+        bot_display = str(bot_display_name or "").strip() or bot_fallback
+        bot_tokens = {
+            str(item).strip().casefold()
+            for item in (bot_fallback, bot_display, *bot_aliases)
+            if str(item).strip()
+        }
         first_person = {"我", "本人", "当前用户", "用户"}
+        bot_references = {
+            "你",
+            "机器人",
+            "bot",
+            "我（bot）",
+            "我(bot)",
+            "我（机器人）",
+            "我(机器人)",
+        }
+        unresolved_pronouns = {"他", "她", "它", "对方", "某人", "这个人"}
         normalized: list[dict[str, Any]] = []
         for raw in relations:
             item = dict(raw)
+            invalid = False
             for field in ("subject", "object"):
-                value = str(item.get(field) or "").strip()
-                if value in first_person:
+                value = re.sub(r"\s+", " ", str(item.get(field) or "")).strip()
+                value_key = value.casefold()
+                if not value:
+                    invalid = True
+                    break
+                if value_key in bot_tokens or value_key in bot_references:
+                    if bot_display:
+                        item[field] = bot_display
+                elif value_key in speaker_tokens or value in first_person:
                     item[field] = display
+                elif value in unresolved_pronouns:
+                    invalid = True
+                    break
+            if invalid:
+                continue
+            subject = str(item.get("subject") or "").strip()
+            obj = str(item.get("object") or "").strip()
+            if not subject or not obj or subject.casefold() == obj.casefold():
+                continue
             normalized.append(item)
         return tuple(normalized)
 
