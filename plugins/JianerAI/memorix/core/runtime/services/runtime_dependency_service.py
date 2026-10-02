@@ -45,6 +45,7 @@ class MemoryRuntimeDependencyService(KernelServiceBase):
             sparse_index=self.sparse_index,
             plugin_config=runtime_config,
             retriever=self.retriever,
+            relation_write_service=self.relation_write_service,
         )
         self.episode_segmentation_service = kernel_module.EpisodeSegmentationService(plugin_config=runtime_config)
         self.episode_service = kernel_module.EpisodeService(

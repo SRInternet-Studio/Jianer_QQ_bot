@@ -383,25 +383,24 @@ class JianerMemoryAdapter:
         source_type: str,
         metadata: Mapping[str, Any],
         person_ids: Sequence[str] = (),
+        entities: Sequence[str] = (),
+        relations: Sequence[Mapping[str, Any]] = (),
         chat_id: str = "",
+        group_id: str = "",
         timestamp: int | None = None,
     ) -> str:
-        async def operation(kernel: Any) -> dict[str, Any]:
-            return await kernel.ingest_text(
-                external_id=external_id,
-                source_type=source_type,
-                text=content,
-                chat_id=chat_id,
-                person_ids=tuple(person_ids),
-                participants=(),
-                timestamp=float(timestamp or _now()),
-                metadata=dict(metadata),
-                respect_filter=False,
-                user_id=(str(person_ids[0]) if person_ids else ""),
-                group_id=chat_id if source_type == "group_fact" else "",
-            )
-
-        payload = self._call_kernel(operation)
+        payload = self._call_ingest_payload(
+            external_id=external_id,
+            content=content,
+            source_type=source_type,
+            metadata=metadata,
+            person_ids=person_ids,
+            entities=entities,
+            relations=relations,
+            chat_id=chat_id,
+            group_id=group_id,
+            timestamp=timestamp,
+        )
         stored = payload.get("stored_ids") if isinstance(payload, Mapping) else None
         if not stored:
             skipped = payload.get("skipped_ids") if isinstance(payload, Mapping) else None
@@ -410,6 +409,142 @@ class JianerMemoryAdapter:
         if not paragraph_hash:
             raise RuntimeError(f"Jianer long-memory ingest returned no paragraph hash: {payload!r}")
         return paragraph_hash
+
+    def _call_ingest_payload(
+        self,
+        *,
+        external_id: str,
+        content: str,
+        source_type: str,
+        metadata: Mapping[str, Any],
+        person_ids: Sequence[str] = (),
+        entities: Sequence[str] = (),
+        relations: Sequence[Mapping[str, Any]] = (),
+        chat_id: str = "",
+        group_id: str = "",
+        timestamp: int | None = None,
+    ) -> Mapping[str, Any]:
+        async def operation(kernel: Any) -> dict[str, Any]:
+            return await kernel.ingest_text(
+                external_id=external_id,
+                source_type=source_type,
+                text=content,
+                chat_id=chat_id,
+                person_ids=tuple(person_ids),
+                participants=(),
+                entities=tuple(entities),
+                relations=tuple(dict(item) for item in relations if isinstance(item, Mapping)),
+                timestamp=float(timestamp or _now()),
+                metadata=dict(metadata),
+                respect_filter=False,
+                user_id=(str(person_ids[0]) if person_ids else ""),
+                group_id=group_id if group_id else (chat_id if source_type == "group_fact" else ""),
+            )
+
+        payload = self._call_kernel(operation)
+        return dict(payload) if isinstance(payload, Mapping) else {}
+
+    def write_memory_review_relations(
+        self,
+        *,
+        preset: Any = "default",
+        exchange_key: str,
+        source_text: str,
+        relations: Sequence[Mapping[str, Any]],
+        canonical_user_id: str = "",
+        protocol: Any = "",
+        self_id: Any = "",
+        conversation_kind: str = "private",
+        conversation_id: Any = "",
+        observed_at: int | None = None,
+    ) -> Mapping[str, Any]:
+        """Persist relations extracted by the asynchronous memory reviewer.
+
+        The reviewer writes through the same ingest path as imported knowledge so
+        metadata, graph edges and optional relation embeddings stay consistent.
+        The exchange key and normalized triples make retries idempotent.
+        """
+
+        normalized: list[dict[str, Any]] = []
+        entities: list[str] = []
+        seen_entities: set[str] = set()
+        for raw in relations:
+            if not isinstance(raw, Mapping):
+                continue
+            subject = _text(raw.get("subject"))
+            predicate = _text(raw.get("predicate"))
+            obj = _text(raw.get("object"))
+            if not (subject and predicate and obj):
+                continue
+            try:
+                confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.8))))
+            except (TypeError, ValueError):
+                confidence = 0.8
+            relation = {
+                "subject": subject,
+                "predicate": predicate,
+                "object": obj,
+                "confidence": confidence,
+                "metadata": {
+                    "source_type": "memory_review_relation",
+                    "relation_origin": "automatic_memory_review",
+                },
+            }
+            normalized.append(relation)
+            for entity in (subject, obj):
+                if entity.casefold() not in seen_entities:
+                    seen_entities.add(entity.casefold())
+                    entities.append(entity)
+        if not normalized:
+            return {"stored_ids": [], "relation_hashes": [], "skipped_ids": []}
+
+        scope = "group" if str(conversation_kind or "").strip().casefold() == "group" else "person"
+        subject_id = _text(canonical_user_id) if scope == "person" else _text(conversation_id)
+        relation_signature = json.dumps(
+            [
+                {key: item[key] for key in ("subject", "predicate", "object", "confidence")}
+                for item in normalized
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(
+            f"{_preset(preset)}\0{exchange_key}\0{relation_signature}".encode("utf-8")
+        ).hexdigest()
+        metadata = {
+            "source_type": "memory_review_relation",
+            "relation_origin": "automatic_memory_review",
+            "review_exchange_key": _text(exchange_key),
+            "preset": _preset(preset),
+            "person_id": _text(canonical_user_id) if scope == "person" else "",
+            "person_ids": [_text(canonical_user_id)] if scope == "person" and _text(canonical_user_id) else [],
+            "relation_scope": scope,
+            "protocol": _text(protocol),
+            "self_id": _text(self_id),
+            "group_id": _text(conversation_id) if scope == "group" else "",
+            "evidence_message_ids": [_text(exchange_key)],
+        }
+        payload = self._call_ingest_payload(
+            external_id=f"jianer:auto-relation:{digest}",
+            content=_text(source_text),
+            source_type="memory_review_relation",
+            metadata=metadata,
+            person_ids=(_text(canonical_user_id),) if scope == "person" and _text(canonical_user_id) else (),
+            entities=entities,
+            relations=normalized,
+            chat_id=_text(conversation_id),
+            group_id=_text(conversation_id) if scope == "group" else "",
+            timestamp=observed_at,
+        )
+        stored = payload.get("stored_ids") if isinstance(payload, Mapping) else []
+        relation_hashes = [str(item) for item in (stored or [])[1:] if str(item)]
+        return {
+            **dict(payload),
+            "relation_hashes": relation_hashes,
+            "scope": scope,
+            "subject_id": subject_id,
+        }
 
     def _fallback_call(self, name: str, **kwargs: Any) -> Any:
         if not self._allow_legacy_fallback:

@@ -316,7 +316,9 @@ v1 接口，不包含已标记弃用的三个城市天气 v7 接口，也不包�
 - 原始聊天默认滚动保存 90 天，每张表每轮最多清理 1000 行。回复前和审查时只读取当前
   会话最近 50 条、最多 8000 字；任何工具或模型上下文都不能跨会话或跨人设泄漏。
 - 每次回复成功发送后先写出站聊天和 episode，再创建持久 `job_memory_reviews` 任务。
-  独立审查器只允许 `create`、`update` 或 `no-op`，每轮最多三项；任务以 exchange key
+  独立审查器会自动整理长期事实，并从用户明确表达的关系中生成关系三元组；关系写入
+  与 paragraph、图投影和可选 relation embedding 使用同一条 ingest 链路，不要求 Agent
+  先调用记忆工具。审查器每轮最多三项记忆 action 和六项关系，任务以 exchange key
   幂等，失败按指数退避，进程重启后继续。发送失败不会创建 episode 或审查任务。
 - v4 数据库不会在普通启动时静默升级；启动会抛出明确的迁移要求。只有显式调用
   `JianerMemoryStore(..., initialize=False).migrate_to_v5()` 才会先用 SQLite Backup API
@@ -350,8 +352,10 @@ Embedding 使用独立的 `aiconfig/embedding.json`，该文件不与聊天模�
 为 `true` 后，服务每次启动都会生成新的临时 Token，并只输出到启动控制台；Token
 不会写入配置、数据库或浏览器持久存储。重启后旧 Token 失效，需要从本次启动输出中
 重新输入。服务默认监听 `0.0.0.0:8787`，所有 API 请求必须带 `X-Memory-Token`。
-前端位于 `plugins/JianerAI/memorix_console/static/`，展示内核状态、向量池、语义检索、
-段落、Episode、图谱、画像、回收站和维护任务。
+前端源码位于 `plugins/JianerAI/memorix_console/frontend/`，使用 Vue 3 构建；机器人运行时
+从 `memorix_console/static/` 提供页面。开发预览可在 `frontend/` 下运行 `npm ci && npm run dev`，
+更新运行时页面时运行 `npm ci && npm run build`。控制台展示内核状态、向量池、语义检索、
+段落、对话片段、图谱、画像、事实、来源、回收站和维护任务。
 
 迁移旧动态表数据库：
 

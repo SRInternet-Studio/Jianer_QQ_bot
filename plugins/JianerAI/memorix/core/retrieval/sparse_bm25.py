@@ -133,10 +133,14 @@ class SQLiteFTS5SparseBackend(SparseSearchBackend):
             self.metadata_store.ensure_relations_fts_backfilled(conn=conn)
         if self.config.enable_ngram_fallback_index:
             self.metadata_store.ensure_paragraph_ngram_schema(conn=conn)
-            if not self.metadata_store.is_paragraph_ngram_ready(
+            ngram_ready = self.metadata_store.ensure_paragraph_ngram_backfilled(
                 n=self.config.char_ngram_n,
                 conn=conn,
-            ):
+            ) and self.metadata_store.is_paragraph_ngram_ready(
+                n=self.config.char_ngram_n,
+                conn=conn,
+            )
+            if not ngram_ready:
                 logger.warning("paragraph ngram 索引未就绪，检索路径将跳过 ngram fallback")
         return True
 

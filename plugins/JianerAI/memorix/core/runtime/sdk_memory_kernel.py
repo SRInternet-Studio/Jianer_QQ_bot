@@ -990,11 +990,20 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
     @staticmethod
     def _empty_person_profile_response(*, person_id: str = "", person_name: str = "") -> Dict[str, Any]:
         return {
+            "success": False,
             "summary": "",
             "traits": [],
+            "profile_text": "",
+            "auto_profile_text": "",
+            "sections": {
+                title: []
+                for title in ("身份设定", "关系设定", "稳定了解", "相处偏好", "近期互动", "不确定信息", "维护备注")
+            },
             "evidence": [],
+            "evidence_count": 0,
             "person_id": str(person_id or "").strip(),
             "person_name": str(person_name or "").strip(),
+            "aliases": [],
             "profile_source": "",
             "has_manual_override": False,
         }

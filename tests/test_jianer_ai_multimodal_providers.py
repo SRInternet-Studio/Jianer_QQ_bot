@@ -258,6 +258,139 @@ def test_google_empty_response_reports_safe_finish_metadata(
     asyncio.run(scenario())
 
 
+def test_google_thought_only_candidate_retries_with_tools_at_low_thinking_level(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        config_dir = tmp_path / "google-recovery"
+        _write_config(
+            config_dir,
+            "google",
+            "Google GenerateContent",
+            Model="gemini-3.1-pro",
+        )
+        payloads: list[dict] = []
+        responses = iter(
+            (
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [{"text": "internal", "thought": True}],
+                            },
+                            "finishReason": "STOP",
+                        }
+                    ]
+                },
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [{"text": "recovered answer"}],
+                            },
+                            "finishReason": "STOP",
+                        }
+                    ]
+                },
+            )
+        )
+
+        async def transport(provider, config, payload):
+            assert provider == "gemini"
+            payloads.append(dict(payload))
+            return next(responses)
+
+        registry = ProviderRegistry(config_dir, transport=transport)
+        result = await registry.complete_request(
+            "google",
+            ChatRequest(
+                message="query",
+                tools=(
+                    FunctionTool(
+                        name="lookup",
+                        description="Lookup",
+                        parameters=_numeric_enum_tool_schema(),
+                    ),
+                ),
+            ),
+        )
+
+        assert result.text == "recovered answer"
+        assert len(payloads) == 2
+        assert payloads[0]["tools"]
+        assert payloads[1]["tools"]
+        assert payloads[1]["generationConfig"]["thinkingConfig"] == {
+            "thinkingLevel": "low"
+        }
+        assert payloads[1]["contents"][-1]["parts"][0]["text"].endswith(
+            "如果不需要工具，直接用纯文本回答。"
+        )
+
+    asyncio.run(scenario())
+
+
+def test_google_malformed_function_call_retries_without_tools(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        config_dir = tmp_path / "google-malformed-call"
+        _write_config(
+            config_dir,
+            "google",
+            "Google GenerateContent",
+            Model="gemini-3.1-pro",
+        )
+        payloads: list[dict] = []
+        responses = iter(
+            (
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [{"text": "", "thought": True}],
+                            },
+                            "finishReason": "MALFORMED_FUNCTION_CALL",
+                        }
+                    ]
+                },
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [{"text": "plain answer"}],
+                            },
+                            "finishReason": "STOP",
+                        }
+                    ]
+                },
+            )
+        )
+
+        async def transport(provider, config, payload):
+            assert provider == "gemini"
+            payloads.append(dict(payload))
+            return next(responses)
+
+        registry = ProviderRegistry(config_dir, transport=transport)
+        result = await registry.complete_request(
+            "google",
+            ChatRequest(message="query"),
+        )
+
+        assert result.text == "plain answer"
+        assert len(payloads) == 2
+        assert "tools" not in payloads[1]
+        assert payloads[1]["generationConfig"]["thinkingConfig"] == {
+            "thinkingLevel": "minimal"
+        }
+
+    asyncio.run(scenario())
+
+
 def test_all_parsers_replay_only_supplied_local_history(tmp_path: Path) -> None:
     async def scenario() -> None:
         config_dir = tmp_path / "all-local-history"

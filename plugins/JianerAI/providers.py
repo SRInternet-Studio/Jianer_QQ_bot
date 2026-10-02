@@ -425,6 +425,11 @@ class ProviderRegistry:
             response = await self._request("gemini", config, payload)
             result = _extract_gemini_response(response)
             if not result.text and not result.tool_calls:
+                response, result = await self._recover_gemini_empty_response(
+                    config,
+                    request,
+                )
+            if not result.text and not result.tool_calls:
                 raise _gemini_empty_response_error(response)
         elif config.provider == "anthropic_messages":
             payload = _build_anthropic_payload(config, request)
@@ -445,6 +450,46 @@ class ProviderRegistry:
             )
             return ProviderResponse(normalized_text, result.tool_calls, turn)
         return result
+
+    async def _recover_gemini_empty_response(
+        self,
+        config: ModelConfig,
+        request: ChatRequest,
+    ) -> tuple[Any, ProviderResponse]:
+        """Retry an empty Gemini candidate with a less fragile generation mode.
+
+        Gemini 3 gateways can return a thought-only candidate or
+        ``MALFORMED_FUNCTION_CALL`` when function declarations are present. A
+        single retry keeps the declarations when the caller supplied tools, so
+        an explicit memory or web operation still has a chance to execute. A
+        request without tools is retried as an explicit plain-text generation.
+        The retry is deliberately bounded to one request so a persistently
+        empty provider response still follows the normal error path.
+        """
+        has_tools = bool(request.tools)
+        recovery_request = replace(
+            request,
+            message=(
+                _gemini_tool_retry_message(request.message)
+                if has_tools
+                else _gemini_plain_text_retry_message(request.message)
+            ),
+        )
+        recovery_payload = _build_gemini_payload(config, recovery_request)
+        generation_config = recovery_payload.get("generationConfig")
+        if isinstance(generation_config, dict) and _is_gemini_3_model(config.model):
+            # Keep enough output budget for a visible answer after hidden
+            # reasoning. Lower thinking levels avoid the thought-only and
+            # malformed-call responses seen with the default tool setting.
+            generation_config["thinkingConfig"] = {
+                "thinkingLevel": "low" if has_tools else "minimal"
+            }
+        recovery_response = await self._request(
+            "gemini",
+            config,
+            recovery_payload,
+        )
+        return recovery_response, _extract_gemini_response(recovery_response)
 
     async def _complete_responses(
         self,
@@ -921,6 +966,21 @@ def _build_gemini_payload(
 def _is_gemini_3_model(model: str) -> bool:
     normalized = str(model or "").strip().casefold().replace("_", "-")
     return "gemini-3" in normalized
+
+
+def _gemini_plain_text_retry_message(message: str) -> str:
+    instruction = "请直接用纯文本回答当前用户请求，不要调用工具、函数或输出 function call。"
+    text = str(message or "").rstrip()
+    return f"{text}\n\n{instruction}" if text else instruction
+
+
+def _gemini_tool_retry_message(message: str) -> str:
+    instruction = (
+        "请重新处理当前用户请求。需要执行操作时，只能调用已声明的工具，"
+        "并为每个调用返回合法的 JSON 参数；如果不需要工具，直接用纯文本回答。"
+    )
+    text = str(message or "").rstrip()
+    return f"{text}\n\n{instruction}" if text else instruction
 
 
 def _build_responses_payload(

@@ -153,6 +153,18 @@ class ModerationProviders(FakeProviders):
         )
 
 
+class RecordingRelationWriter:
+    def __init__(self):
+        self.calls = []
+
+    def write(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "stored_ids": ["paragraph-hash", "relation-hash"],
+            "relation_hashes": ["relation-hash"],
+        }
+
+
 class ReplyModerationProviders(FakeProviders):
     def __init__(self, answer: str, reply_review: str):
         super().__init__(answer)
@@ -1639,6 +1651,66 @@ def test_memory_review_updates_an_existing_person_memory(tmp_path: Path):
             assert conn.execute(
                 "SELECT operation FROM audit_memory_actions"
             ).fetchone()[0] == "update"
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_memory_review_automatically_writes_explicit_relations(tmp_path: Path):
+    async def scenario():
+        relation_writer = RecordingRelationWriter()
+        provider = MemoryReviewProviders(
+            "记下啦。",
+            json.dumps(
+                {
+                    "decision": "apply",
+                    "actions": [],
+                    "relations": [
+                        {
+                            "subject": "我",
+                            "predicate": "是同型号的機娘",
+                            "object": "桃子",
+                            "scope": "person",
+                            "confidence": 0.94,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        service, _, _ = _service(
+            tmp_path,
+            memory_review_enabled=True,
+            provider=provider,
+        )
+        service.memory.write_memory_review_relations = relation_writer.write
+        actions = FakeActions()
+        event = _at_event("桃子和我是同型号的机娘")
+        await service.observe(event, actions)
+        assert await service.handle_fallback(event, actions)
+        while service._background_tasks:
+            await asyncio.gather(*tuple(service._background_tasks), return_exceptions=True)
+            await asyncio.sleep(0)
+
+        assert len(relation_writer.calls) == 1
+        call = relation_writer.calls[0]
+        assert call["relations"] == [
+            {
+                "subject": "user-42",
+                "predicate": "同型号的機娘",
+                "object": "桃子",
+                "scope": "person",
+                "confidence": 0.94,
+                "reason": "",
+            },
+        ]
+        assert call["canonical_user_id"] == "qq:42"
+        assert call["source_text"] == "桃子和我是同型号的机娘"
+        with sqlite3.connect(service.options.database_path) as conn:
+            actions = conn.execute(
+                "SELECT operation, scope, status FROM audit_memory_actions"
+            ).fetchall()
+        assert actions == [("create", "person", "created")]
         await service.shutdown()
 
     asyncio.run(scenario())

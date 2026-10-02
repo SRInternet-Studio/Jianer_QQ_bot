@@ -156,6 +156,7 @@ activemq-data/
 *.pem
 *.key
 .venv
+node_modules/
 env/
 venv/
 ENV/

@@ -13,6 +13,7 @@ from ...utils.feedback_policy import (
 )
 from ...utils.metadata import coerce_metadata_dict
 from ...utils.profile_evidence import profile_evidence_type_from_source, profile_relation_content
+from ...utils.profile_text import parse_profile_sections
 from ...utils.runtime_payloads import tokens
 from .base import KernelServiceBase
 
@@ -78,11 +79,17 @@ class MemoryProfileAdminService(KernelServiceBase):
     @staticmethod
     def _empty_person_profile_response(*, person_id: str = "", person_name: str = "") -> Dict[str, Any]:
         return {
+            "success": False,
             "summary": "",
+            "profile_text": "",
+            "auto_profile_text": "",
+            "sections": {title: [] for title in ("身份设定", "关系设定", "稳定了解", "相处偏好", "近期互动", "不确定信息", "维护备注")},
             "traits": [],
             "evidence": [],
+            "evidence_count": 0,
             "person_id": str(person_id or "").strip(),
             "person_name": str(person_name or "").strip(),
+            "aliases": [],
             "profile_source": "",
             "has_manual_override": False,
         }
@@ -180,15 +187,38 @@ class MemoryProfileAdminService(KernelServiceBase):
 
         evidence = self._filter_user_visible_hits(evidence)
         text = str(profile.get("profile_text", "") or "").strip()
-        traits = [line.strip("- ").strip() for line in text.splitlines() if line.strip()][:8]
+        parsed_sections = parse_profile_sections(text)
+        section_titles = ("身份设定", "关系设定", "稳定了解", "相处偏好", "近期互动", "不确定信息", "维护备注")
+        if not parsed_sections and text:
+            parsed_sections = {"稳定了解": [text]}
+        sections = {title: list(parsed_sections.get(title, [])) for title in section_titles}
+        traits = [line.strip("- ").strip() for line in text.splitlines() if line.strip() and not line.startswith("#")][:8]
         return {
+            "success": True,
             "summary": text,
+            "profile_text": text,
+            "auto_profile_text": str(profile.get("auto_profile_text", "") or text),
+            "sections": sections,
             "traits": traits,
             "evidence": evidence,
+            "evidence_count": len(evidence),
             "person_id": str(profile.get("person_id", "") or requested_person_id),
             "person_name": str(profile.get("person_name", "") or ""),
+            "aliases": list(profile.get("aliases", []) or []),
+            "relation_edges": list(profile.get("relation_edges", []) or []),
+            "vector_evidence": list(profile.get("vector_evidence", []) or []),
+            "fact_claim_ids": list(profile.get("fact_claim_ids", []) or []),
+            "profile_version": profile.get("profile_version"),
+            "updated_at": profile.get("updated_at"),
+            "expires_at": profile.get("expires_at"),
+            "evidence_fingerprint": str(profile.get("evidence_fingerprint", "") or ""),
+            "from_cache": bool(profile.get("from_cache", False)),
             "profile_source": str(profile.get("profile_source", "") or "auto_snapshot"),
             "has_manual_override": bool(profile.get("has_manual_override", False)),
+            "manual_override_text": str(profile.get("manual_override_text", "") or ""),
+            "uncertain_fact_count": self.metadata_store.count_uncertain_person_fact_claims(
+                str(profile.get("person_id", "") or requested_person_id)
+            ),
         }
 
     async def get_person_profile(self, *, person_id: str, chat_id: str = "", limit: int = 10) -> Dict[str, Any]:
@@ -519,12 +549,18 @@ class MemoryProfileAdminService(KernelServiceBase):
                 "evidence": [],
             }
         evidence = self._build_profile_evidence_items(profile)
+        profile_text = str(profile.get("profile_text", "") or "")
+        parsed_sections = parse_profile_sections(profile_text)
+        section_titles = ("身份设定", "关系设定", "稳定了解", "相处偏好", "近期互动", "不确定信息", "维护备注")
+        if not parsed_sections and profile_text:
+            parsed_sections = {"稳定了解": [profile_text]}
         return {
             "success": True,
             "person_id": str(profile.get("person_id", "") or requested_person_id),
             "person_name": str(profile.get("person_name", "") or ""),
-            "profile_text": str(profile.get("profile_text", "") or ""),
+            "profile_text": profile_text,
             "auto_profile_text": str(profile.get("auto_profile_text", "") or profile.get("profile_text", "") or ""),
+            "sections": {title: list(parsed_sections.get(title, [])) for title in section_titles},
             "profile_version": profile.get("profile_version"),
             "updated_at": profile.get("updated_at"),
             "expires_at": profile.get("expires_at"),

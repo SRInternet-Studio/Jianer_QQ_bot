@@ -509,7 +509,7 @@ def register_qweather_tools(
         try:
             config = QWeatherConfig.load(project_root, environ=environ)
         except QWeatherConfigError as exc:
-            log.warning("未注册 QWeather Tools：%s", exc)
+            log.warning(f"未注册 QWeather Tools：{exc}")
             return False
         if config is None:
             return False

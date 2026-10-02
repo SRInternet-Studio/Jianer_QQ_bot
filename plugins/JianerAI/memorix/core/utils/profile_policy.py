@@ -22,6 +22,9 @@ def should_auto_enqueue_episode(config_getter: ConfigGetter, *, source_type: str
     }
     # 已加工知识包含有权威段落、实体和关系，不应再次交给 LLM 生成 Episode。
     disabled_types.add("knowledge_pack")
+    # 自动审查已经完成结构化关系提取，关系证据不应再次进入 Episode
+    # 生成链路，否则会重复调用模型并可能产生重复事实。
+    disabled_types.add("memory_review_relation")
     return normalized_source_type not in disabled_types
 
 

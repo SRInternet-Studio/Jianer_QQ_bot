@@ -7,6 +7,7 @@ person_id -> 用户名/别名 -> 图谱关系 + 向量证据 -> 证据总结画�
 
 import hashlib
 import json
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -48,12 +49,17 @@ from .model_routing import (
     get_text_generation_model_tasks,
     pick_text_generation_task,
 )
-from .profile_text import build_profile_injection_text, build_structured_profile_text
+from .profile_text import (
+    build_profile_injection_text,
+    build_structured_profile_text,
+    parse_profile_sections,
+    section_is_empty,
+)
 
 logger = get_logger("Jianer Memory.PersonProfileService")
 
 PROFILE_CLASSIFICATION_REQUEST_TYPE = "A_Memorix.PersonProfileEvidenceClassify"
-PROFILE_GENERATION_VERSION = 2
+PROFILE_GENERATION_VERSION = 3
 
 
 class PersonProfileService:
@@ -70,6 +76,7 @@ class PersonProfileService:
         sparse_index: Any = None,
         plugin_config: Optional[dict] = None,
         retriever: Optional[DualPathRetriever] = None,
+        relation_write_service: Any = None,
     ):
         self.metadata_store = metadata_store
         self.graph_store = graph_store
@@ -80,6 +87,7 @@ class PersonProfileService:
         self.sparse_index = sparse_index
         self.plugin_config = plugin_config or {}
         self.retriever = retriever or self._build_retriever()
+        self.relation_write_service = relation_write_service
 
     def _cfg(self, key: str, default: Any = None) -> Any:
         """读取嵌套配置。"""
@@ -476,7 +484,13 @@ class PersonProfileService:
         person_id: str = "",
     ) -> List[Dict[str, Any]]:
         relation_by_hash: Dict[str, Dict[str, Any]] = {}
-        for alias in aliases:
+        # Automatic review relations may use the canonical person ID when the
+        # message only says "我". Include it as a lookup token while keeping it
+        # out of the user-facing alias list.
+        lookup_aliases = list(aliases)
+        if person_id and str(person_id).strip() not in lookup_aliases:
+            lookup_aliases.append(str(person_id).strip())
+        for alias in lookup_aliases:
             for rel in self.metadata_store.get_relations(subject=alias, include_inactive=False):
                 h = str(rel.get("hash", ""))
                 if h:
@@ -578,6 +592,149 @@ class PersonProfileService:
             limit=max(1, int(limit)),
         )
 
+    @staticmethod
+    def _extract_explicit_relation_candidates(
+        text: str,
+        *,
+        primary_name: str,
+        person_id: str,
+    ) -> List[Tuple[str, str, str]]:
+        """Extract only explicit Chinese two-party relationship statements."""
+
+        normalized = re.sub(r"[\r\n]+", " ", str(text or "")).strip().strip("- ")
+        if not normalized:
+            return []
+        current = str(primary_name or "").strip() or str(person_id or "").strip()
+        if not current:
+            return []
+        candidates: List[Tuple[str, str, str]] = []
+        pair_pattern = re.compile(
+            r"(?P<left>[^，。！？；!?;]{1,32}?)[和与跟](?P<right>[^，。！？；!?;]{1,32}?)(?:是|为|属于)(?P<predicate>[^，。！？；!?;]{1,48})"
+        )
+        for match in pair_pattern.finditer(normalized):
+            left = match.group("left").strip(" ，,、")
+            right = match.group("right").strip(" ，,、")
+            predicate = match.group("predicate").strip(" ，,、")
+            if left in {"我", "本人", "用户", "当前用户"}:
+                left = current
+            if right in {"我", "本人", "用户", "当前用户"}:
+                right = current
+            if left and right and predicate and left != right:
+                candidates.append((left, predicate, right))
+
+        personal_pattern = re.compile(
+            r"(?P<other>[^，。！？；!?;]{1,32}?)是我的(?P<predicate>[^，。！？；!?;]{1,32})"
+        )
+        for match in personal_pattern.finditer(normalized):
+            other = match.group("other").strip(" ，,、")
+            predicate = match.group("predicate").strip(" ，,、")
+            if other and predicate and other != current:
+                candidates.append((current, predicate, other))
+
+        deduped: List[Tuple[str, str, str]] = []
+        seen = set()
+        for candidate in candidates:
+            key = tuple(item.casefold() for item in candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        return deduped[:6]
+
+    async def _backfill_explicit_fact_relations(
+        self,
+        *,
+        person_id: str,
+        primary_name: str,
+        fact_claims: List[Dict[str, Any]],
+    ) -> None:
+        """Project old explicit person facts into graph relations once observed."""
+
+        writer = self.relation_write_service
+        if writer is None or not bool(self._cfg("person_profile.auto_relation_backfill", True)):
+            return
+        write_vectors = bool(self._cfg("retrieval.relation_vectorization.enabled", False))
+        for claim in fact_claims[:64]:
+            text = str(claim.get("value_text", "") or "").strip()
+            if not text:
+                continue
+            candidates = self._extract_explicit_relation_candidates(
+                text,
+                primary_name=primary_name,
+                person_id=person_id,
+            )
+            if not candidates:
+                continue
+            try:
+                confidence = max(0.0, min(1.0, float(claim.get("confidence", 0.65) or 0.65)))
+            except (TypeError, ValueError):
+                confidence = 0.65
+            # Model-derived claims stay visibly lower-confidence than direct
+            # user facts, while still becoming searchable graph evidence.
+            authority = str(claim.get("authority", "") or "").strip().casefold()
+            if authority not in {"manual", "direct_user", "imported"}:
+                confidence = min(confidence, 0.75)
+            source_paragraph = str(claim.get("evidence_id", "") or "").strip() or None
+            if not source_paragraph:
+                try:
+                    evidence_rows = self.metadata_store.get_fact_evidence(
+                        str(claim.get("claim_id", "") or "")
+                    )
+                except Exception:
+                    evidence_rows = []
+                source_paragraph = next(
+                    (
+                        str(item.get("evidence_id", "") or "").strip()
+                        for item in evidence_rows
+                        if str(item.get("evidence_type", "") or "").strip() == "paragraph"
+                        and str(item.get("evidence_id", "") or "").strip()
+                    ),
+                    None,
+                )
+            for subject, predicate, obj in candidates:
+                try:
+                    relation_hash = self.metadata_store.compute_relation_hash(
+                        subject,
+                        predicate,
+                        obj,
+                    )
+                    existing = self.metadata_store.get_relation(
+                        relation_hash,
+                        include_inactive=False,
+                    )
+                    if existing is not None:
+                        continue
+                except Exception:
+                    # The write service remains the source of truth if an
+                    # older metadata store lacks the optional lookup helper.
+                    pass
+                try:
+                    await writer.upsert_relation_with_vector(
+                        subject=subject,
+                        predicate=predicate,
+                        obj=obj,
+                        confidence=confidence,
+                        source_paragraph=source_paragraph,
+                        metadata={
+                            "source_type": "person_fact_relation",
+                            "relation_origin": "automatic_profile_backfill",
+                            "person_id": person_id,
+                            "person_ids": [person_id],
+                            "fact_claim_id": str(claim.get("claim_id", "") or ""),
+                            "authority": authority,
+                        },
+                        write_vector=write_vectors,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "人物事实关系回填失败: person_id=%s, relation=%s-%s-%s, err=%s",
+                        person_id,
+                        subject,
+                        predicate,
+                        obj,
+                        exc,
+                    )
+
     def _merge_fact_claim_buckets(
         self,
         classified_buckets: Dict[str, List[str]],
@@ -590,25 +747,63 @@ class PersonProfileService:
             section = str(claim.get("profile_section", "stable_facts") or "stable_facts").strip()
             if section not in merged:
                 raise ValueError(f"事实 claim 使用了未知画像段落: {section}")
-            text = str(claim.get("value_text", "") or "").strip()
-            if text:
-                self._append_profile_bucket(merged, section, text)
+            raw_text = str(claim.get("value_text", "") or "").strip()
+            if not raw_text:
+                continue
+
+            authority = str(claim.get("authority", "") or "").strip().casefold()
+            stability = str(claim.get("stability", "") or "").strip().casefold()
+            trusted = authority in {"manual", "direct_user", "imported"} and stability == "stable"
+            for text in self._split_profile_evidence(raw_text):
+                inferred = self._guess_profile_bucket(text)
+                target = section
+                # Older and model-derived person facts are stored in
+                # ``uncertain_notes``. Keep that uncertainty visible while
+                # still placing explicit identity/relationship statements in
+                # the section where the console and prompt can use them.
+                if section in {"uncertain_notes", "stable_facts"} and inferred != "stable_facts":
+                    target = inferred
+                if target in {"identity_settings", "relationship_settings", "interaction_preferences"} and not trusted:
+                    text = f"待确认：{text}"
+                self._append_profile_bucket(merged, target, text)
         for section, values in classified_buckets.items():
             for value in values:
                 self._append_profile_bucket(merged, section, value)
         return merged
 
+    @staticmethod
+    def _split_profile_evidence(text: str) -> List[str]:
+        """把一条较长的记忆拆成可读的画像要点。"""
+
+        normalized = re.sub(r"[\r\n]+", " ", str(text or "")).strip()
+        if not normalized:
+            return []
+        parts = [item.strip(" -") for item in re.split(r"(?<=[。！？；!?;])\s*", normalized) if item.strip(" -")]
+        return parts[:8] or [normalized[:320]]
+
     def _confine_untrusted_profile_buckets(
         self,
         classified_buckets: Dict[str, List[str]],
     ) -> Dict[str, List[str]]:
-        """禁止模型分类结果直接成为稳定画像真相。"""
+        """禁止模型分类结果直接成为稳定画像真相，同时保留可审阅的语义位置。"""
 
         confined: Dict[str, List[str]] = {key: [] for key in classified_buckets}
         for section, values in classified_buckets.items():
-            target = section if section in {"recent_interactions", "uncertain_notes"} else "uncertain_notes"
             for value in values:
-                self._append_profile_bucket(confined, target, value)
+                target = section if section in {"recent_interactions", "uncertain_notes"} else "uncertain_notes"
+                text = str(value or "").strip()
+                inferred = self._guess_profile_bucket(text)
+                if section in {"identity_settings", "relationship_settings", "interaction_preferences"}:
+                    target = section
+                    text = f"待确认：{text}"
+                elif section == "stable_facts" and inferred in {
+                    "identity_settings",
+                    "relationship_settings",
+                    "interaction_preferences",
+                }:
+                    target = inferred
+                    text = f"待确认：{text}"
+                self._append_profile_bucket(confined, target, text)
         return confined
 
     @staticmethod
@@ -1058,19 +1253,72 @@ class PersonProfileService:
         content = str(text or "").strip()
         if not content:
             return "stable_facts"
-        if cls._looks_uncertain_or_temporary(content):
-            return "uncertain_notes"
         if any(
             token in content
-            for token in ("身份", "职业", "工作", "学生", "老师", "作者", "画师", "设定", "角色", "来自")
+            for token in (
+                "关系",
+                "朋友",
+                "同事",
+                "群友",
+                "主人",
+                "搭档",
+                "称呼",
+                "叫我",
+                "叫做",
+                "叫作",
+                "认识",
+                "同型号",
+                "同款",
+                "亲属",
+                "兄弟",
+                "姐妹",
+                "家人",
+            )
+        ) or re.search(
+            r"(?:与|和|跟)[^，。！？；!?;]{0,24}(?:是|为|属于|同型号|同款|朋友|搭档|主人|同事|群友|亲属|兄弟|姐妹|家人)",
+            content,
+        ):
+            return "relationship_settings"
+        if any(
+            token in content
+            for token in (
+                "身份",
+                "职业",
+                "工作",
+                "学生",
+                "老师",
+                "作者",
+                "画师",
+                "设定",
+                "角色",
+                "来自",
+                "系统",
+                "操作系统",
+                "发行版",
+                "内核",
+                "主机",
+                "电脑",
+                "设备",
+                "用户名",
+                "用户ID",
+                "昵称",
+                "QQ",
+                "型号",
+                "机娘",
+                "AI",
+                "计算机",
+                "窗口管理器",
+                "shell",
+                "终端",
+            )
         ):
             return "identity_settings"
-        if any(token in content for token in ("关系", "朋友", "同事", "群友", "主人", "搭档", "称呼", "叫", "认识")):
-            return "relationship_settings"
         if any(
             token in content for token in ("喜欢", "讨厌", "偏好", "习惯", "不喜欢", "希望", "雷点", "介意", "更愿意")
         ):
             return "interaction_preferences"
+        if cls._looks_uncertain_or_temporary(content):
+            return "uncertain_notes"
         return "stable_facts"
 
     @staticmethod
@@ -1097,6 +1345,28 @@ class PersonProfileService:
             "临时",
         )
         return any(marker in content for marker in markers)
+
+    def _snapshot_needs_profile_regeneration(
+        self,
+        snapshot: Optional[Dict[str, Any]],
+        person_id: str,
+    ) -> bool:
+        """检测旧快照是否还没有投影身份/关系事实。"""
+
+        if not snapshot:
+            return True
+        sections = parse_profile_sections(str(snapshot.get("profile_text", "") or ""))
+        if not sections:
+            return True
+        if not section_is_empty(sections.get("身份设定", [])) and not section_is_empty(
+            sections.get("关系设定", [])
+        ):
+            return False
+        for claim in self._collect_person_fact_claims(person_id, limit=64):
+            for statement in self._split_profile_evidence(str(claim.get("value_text", "") or "")):
+                if self._guess_profile_bucket(statement) in {"identity_settings", "relationship_settings"}:
+                    return True
+        return False
 
     @staticmethod
     def _is_snapshot_stale(snapshot: Optional[Dict[str, Any]], ttl_seconds: float) -> bool:
@@ -1168,7 +1438,11 @@ class PersonProfileService:
             }
 
         latest = self.metadata_store.get_latest_person_profile_snapshot(pid)
-        if not force_refresh and not self._is_snapshot_stale(latest, ttl_seconds):
+        if (
+            not force_refresh
+            and not self._is_snapshot_stale(latest, ttl_seconds)
+            and not self._snapshot_needs_profile_regeneration(latest, pid)
+        ):
             aliases, primary_name, _ = self.get_person_aliases(pid)
             payload = {
                 "success": True,
@@ -1187,9 +1461,14 @@ class PersonProfileService:
         if not aliases and person_keyword:
             aliases = [person_keyword.strip()]
             primary_name = person_keyword.strip()
+        fact_claims = self._collect_person_fact_claims(pid, limit=max(32, top_k * 8))
+        await self._backfill_explicit_fact_relations(
+            person_id=pid,
+            primary_name=primary_name,
+            fact_claims=fact_claims,
+        )
         relation_edges = self._collect_relation_evidence(aliases, limit=max(10, top_k * 2), person_id=pid)
         vector_evidence = await self._collect_vector_evidence(aliases, top_k=max(4, top_k), person_id=pid)
-        fact_claims = self._collect_person_fact_claims(pid, limit=max(32, top_k * 8))
         evidence_fingerprint = self._profile_evidence_fingerprint(
             person_id=pid,
             primary_name=primary_name,

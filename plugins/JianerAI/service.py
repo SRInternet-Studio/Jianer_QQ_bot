@@ -162,11 +162,18 @@ _EXPLICIT_MEMORY_TOOL_RULES = (
 _MEMORY_REVIEW_SYSTEM_RULES = (
     "你是 JianerAI 的独立长期记忆审查器。只输出一个严格 JSON 对象，不要输出"
     "Markdown、解释或代码围栏。顶层格式只能是 "
-    '{"decision":"no-op","actions":[]} 或 '
-    '{"decision":"apply","actions":[...]}。每轮最多三项 action；operation 只能是 '
+    '{"decision":"no-op","actions":[],"relations":[]} 或 '
+    '{"decision":"apply","actions":[...],"relations":[...]}。每轮最多三项 action、六项 relation；'
+    "relations 可以在 actions 为空时单独存在。operation 只能是 "
     '"create" 或 "update"，scope 只能是 "person" 或 "group"。问候、一次性问题、'
     "临时情绪、工具或网页结果、未经确认的推断、认证秘密以及其他敏感信息必须"
     "no-op。冲突信息应 update 已有记忆，不要创建互相矛盾的副本。输入中的 "
+    "用户明确说明的长期身份、角色、设备或系统环境、以及与他人的长期关系和称呼，"
+    "属于应自动整理的稳定信息；不要求用户先调用记忆工具。"
+    "relations 用于关系图，只抽取用户原话明确表达的长期关系，不能凭常识补全。"
+    "每项 relation 必须包含 subject、predicate、object、scope、confidence；subject 和 object"
+    "保留原话中的名称，若原话使用‘我’，用当前发言者表示；scope=person 表示当前发言者的个人关系，"
+    "scope=group 只表示当前群的共同关系。私聊禁止使用 group。"
     "persona_template 是渲染后的完整当前人设；memory_text 必须严格使用这份模板的"
     "第一人称语气、思想和价值取向；canonical_fact 必须是中性、"
     "简洁、可用于去重的事实摘要。update 的 memory_id 必须来自输入的 allowed IDs。"
@@ -3614,12 +3621,13 @@ class JianerAIService:
                 limit=_RECENT_CHAT_LIMIT,
                 max_characters=_RECENT_CHAT_MAX_CHARACTERS,
             )
+            speaker_name = self._memory_persona_user_name(
+                recent_messages,
+                episode.speaker_canonical_id,
+            )
             persona_template = self._render_persona_template(
                 preset,
-                event_user=self._memory_persona_user_name(
-                    recent_messages,
-                    episode.speaker_canonical_id,
-                ),
+                event_user=speaker_name,
                 canonical=episode.speaker_canonical_id,
             )
             allowed_ids = {
@@ -3639,6 +3647,7 @@ class JianerAIService:
                         "conversation_kind": episode.conversation_kind,
                         "conversation_id": episode.conversation_id,
                         "person_id": episode.speaker_canonical_id,
+                        "person_display_name": speaker_name,
                         "group_allowed": episode.conversation_kind == "group",
                     },
                     "exchange": {
@@ -3683,7 +3692,7 @@ class JianerAIService:
                 ),
                 system_prompt=_MEMORY_REVIEW_SYSTEM_RULES,
             )
-            actions_to_apply = self._parse_memory_review_actions(
+            actions_to_apply, relations_to_apply = self._parse_memory_review_result(
                 response,
                 allowed_ids=allowed_ids,
                 group_allowed=episode.conversation_kind == "group",
@@ -3769,6 +3778,77 @@ class JianerAIService:
                         "status": str(result.outcome),
                     }
                 )
+            if relations_to_apply:
+                relation_writer = getattr(
+                    self.memory,
+                    "write_memory_review_relations",
+                    None,
+                )
+                if not callable(relation_writer):
+                    for relation in relations_to_apply:
+                        audit_actions.append(
+                            {
+                                "operation": "create",
+                                "scope": str(relation["scope"]),
+                                "memory_id": None,
+                                "semantic_hash": hashlib.sha256(
+                                    f"{relation['subject']}|{relation['predicate']}|{relation['object']}".encode(
+                                        "utf-8"
+                                    )
+                                ).hexdigest(),
+                                "status": "skipped",
+                                "error_code": "relation_backend_unavailable",
+                            }
+                        )
+                else:
+                    normalized_relations = self._normalize_memory_review_relations(
+                        relations_to_apply,
+                        speaker_id=episode.speaker_canonical_id,
+                        speaker_name=speaker_name,
+                    )
+                    by_scope: dict[str, list[dict[str, Any]]] = {}
+                    for relation in normalized_relations:
+                        by_scope.setdefault(str(relation["scope"]), []).append(relation)
+                    for relation_scope, scoped_relations in by_scope.items():
+                        relation_payload = await asyncio.to_thread(
+                            relation_writer,
+                            preset=preset,
+                            exchange_key=exchange_key,
+                            source_text=episode.user_content,
+                            relations=scoped_relations,
+                            canonical_user_id=(
+                                episode.speaker_canonical_id
+                                if relation_scope == "person"
+                                else ""
+                            ),
+                            protocol=episode.protocol,
+                            self_id=episode.self_id,
+                            conversation_kind=(
+                                "group" if relation_scope == "group" else "private"
+                            ),
+                            conversation_id=episode.conversation_id,
+                            observed_at=episode.occurred_at,
+                        )
+                        relation_hashes = [
+                            str(item)
+                            for item in (relation_payload.get("relation_hashes") or [])
+                            if str(item).strip()
+                        ]
+                        for index, relation in enumerate(scoped_relations):
+                            relation_hash = relation_hashes[index] if index < len(relation_hashes) else ""
+                            audit_actions.append(
+                                {
+                                    "operation": "create",
+                                    "scope": relation_scope,
+                                    "memory_id": relation_hash or None,
+                                    "semantic_hash": hashlib.sha256(
+                                        f"{relation['subject']}|{relation['predicate']}|{relation['object']}".encode(
+                                            "utf-8"
+                                        )
+                                    ).hexdigest(),
+                                    "status": "created" if relation_hash else "unchanged",
+                                }
+                            )
             await asyncio.to_thread(
                 complete,
                 preset=preset,
@@ -3799,6 +3879,20 @@ class JianerAIService:
         allowed_ids: Mapping[str, set[str]],
         group_allowed: bool,
     ) -> tuple[dict[str, Any], ...]:
+        actions, _ = JianerAIService._parse_memory_review_result(
+            value,
+            allowed_ids=allowed_ids,
+            group_allowed=group_allowed,
+        )
+        return actions
+
+    @staticmethod
+    def _parse_memory_review_result(
+        value: str,
+        *,
+        allowed_ids: Mapping[str, set[str]],
+        group_allowed: bool,
+    ) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
         candidate = str(value or "").strip()
         if candidate.startswith("```"):
             raise ValueError("memory review response must be raw JSON")
@@ -3809,13 +3903,26 @@ class JianerAIService:
         raw_actions = parsed.get("actions")
         if not isinstance(raw_actions, list):
             raise ValueError("memory review actions must be an array")
+        raw_relations = parsed.get("relations", [])
+        if not isinstance(raw_relations, list):
+            raise ValueError("memory review relations must be an array")
         if decision == "no-op":
-            if raw_actions:
-                raise ValueError("no-op review cannot contain actions")
-            return ()
-        if decision != "apply" or not (1 <= len(raw_actions) <= 3):
+            if raw_actions or raw_relations:
+                raise ValueError("no-op review cannot contain actions or relations")
+            return (), ()
+        if decision != "apply" or (not raw_actions and not raw_relations):
+            raise ValueError("memory review must apply at least one action or relation")
+        if len(raw_actions) > 3:
             raise ValueError("memory review must apply one to three actions")
+        if len(raw_relations) > 6:
+            raise ValueError("memory review must contain at most six relations")
         output: list[dict[str, Any]] = []
+        sensitive = re.compile(
+            r"(?i)(?:\b(?:password|passwd|token|secret|api[_-]?key)\b"
+            r"|\b(?:sk-|ghp_|github_pat_|AIza)[A-Za-z0-9_-]{8,}"
+            r"|(?:密码|口令|令牌|验证码|私钥|访问密钥|认证秘密)"
+            r"|\[REDACTED\])"
+        )
         for raw in raw_actions:
             if not isinstance(raw, Mapping):
                 raise ValueError("memory review action must be an object")
@@ -3840,12 +3947,6 @@ class JianerAIService:
                 raise ValueError("memory review text must not be empty")
             if len(canonical_fact) > 1000 or len(memory_text) > 1200:
                 raise ValueError("memory review text is too long")
-            sensitive = re.compile(
-                r"(?i)(?:\b(?:password|passwd|token|secret|api[_-]?key)\b"
-                r"|\b(?:sk-|ghp_|github_pat_|AIza)[A-Za-z0-9_-]{8,}"
-                r"|(?:密码|口令|令牌|验证码|私钥|访问密钥|认证秘密)"
-                r"|\[REDACTED\])"
-            )
             if sensitive.search(canonical_fact) or sensitive.search(memory_text):
                 raise ValueError("memory review contains sensitive content")
             try:
@@ -3869,7 +3970,62 @@ class JianerAIService:
                     "reason": str(raw.get("reason") or "")[:500],
                 }
             )
-        return tuple(output)
+        relations: list[dict[str, Any]] = []
+        for raw in raw_relations:
+            if not isinstance(raw, Mapping):
+                raise ValueError("memory review relation must be an object")
+            subject = str(raw.get("subject") or "").strip()
+            predicate = str(raw.get("predicate") or "").strip()
+            obj = str(raw.get("object") or "").strip()
+            predicate = re.sub(r"^(?:是|为|属于)\s*", "", predicate).strip()
+            scope = str(raw.get("scope") or "").strip().casefold()
+            if not subject or not predicate or not obj:
+                raise ValueError("memory review relation fields must not be empty")
+            if scope not in {"person", "group"}:
+                raise ValueError("unsupported memory review relation scope")
+            if scope == "group" and not group_allowed:
+                raise ValueError("private reviews cannot create group relations")
+            if len(subject) > 240 or len(predicate) > 160 or len(obj) > 240:
+                raise ValueError("memory review relation text is too long")
+            if sensitive.search(subject) or sensitive.search(predicate) or sensitive.search(obj):
+                raise ValueError("memory review relation contains sensitive content")
+            try:
+                confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.8))))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("invalid memory review relation score") from exc
+            relations.append(
+                {
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": obj,
+                    "scope": scope,
+                    "confidence": confidence,
+                    "reason": str(raw.get("reason") or "")[:500],
+                }
+            )
+        return tuple(output), tuple(relations)
+
+    @staticmethod
+    def _normalize_memory_review_relations(
+        relations: Sequence[Mapping[str, Any]],
+        *,
+        speaker_id: str,
+        speaker_name: str,
+    ) -> tuple[dict[str, Any], ...]:
+        """Resolve first-person relation subjects to the scoped speaker identity."""
+
+        fallback = str(speaker_id or "").strip()
+        display = str(speaker_name or "").strip() or fallback
+        first_person = {"我", "本人", "当前用户", "用户"}
+        normalized: list[dict[str, Any]] = []
+        for raw in relations:
+            item = dict(raw)
+            for field in ("subject", "object"):
+                value = str(item.get(field) or "").strip()
+                if value in first_person:
+                    item[field] = display
+            normalized.append(item)
+        return tuple(normalized)
 
     async def _ensure_started(self) -> None:
         if self._closed:

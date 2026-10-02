@@ -610,6 +610,34 @@ def test_unconfigured_and_invalid_registration_skip_safely(tmp_path: Path, caplo
     assert "missing-private.pem" not in caplog.text
 
 
+def test_invalid_registration_supports_framework_logger(tmp_path: Path):
+    class FrameworkLogger:
+        def __init__(self):
+            self.messages = []
+
+        def warning(self, message):
+            self.messages.append(message)
+
+    logger = FrameworkLogger()
+    registry = ToolRegistry()
+    values = {
+        "QWEATHER_API_HOST": "valid.qweatherapi.com",
+        "QWEATHER_PROJECT_ID": "private-project",
+        "QWEATHER_CREDENTIAL_ID": "private-credential",
+        "QWEATHER_PRIVATE_KEY_PATH": "missing-private.pem",
+    }
+
+    assert not register_qweather_tools(
+        registry,
+        project_root=tmp_path,
+        logger=logger,
+        environ=values,
+    )
+    assert registry._tools == {}
+    assert len(logger.messages) == 1
+    assert "未注册 QWeather Tools" in logger.messages[0]
+
+
 def test_system_rules_include_mandatory_qweather_attribution_exception():
     assert "qweather_" in _AGENT_SYSTEM_RULES
     assert "render_information_card" in _AGENT_SYSTEM_RULES

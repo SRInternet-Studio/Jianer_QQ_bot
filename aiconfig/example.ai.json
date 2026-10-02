@@ -1,9 +1,9 @@
 {
   "FriendlyName": "example",
-  "Model": "gemini-2.5-flash",
-  "ResponseType": "OpenAI Chat Completions",
+  "Model": "gemini-3.8-flash",
+  "ResponseType": "Google GenerateContent",
   "ApiKey": "sk-",
-  "BaseUrl": "https://rinkoai.com/v1",
+  "BaseUrl": "https://api.rinko.ai/",
   "Temperature": 0.7,
   "MaxTokens": 2000,
   "ToolsEnabled": "auto"
