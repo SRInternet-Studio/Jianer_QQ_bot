@@ -253,6 +253,7 @@ config.json
 config12.json
 aiconfig/*.ai.json
 !aiconfig/example.ai.json
+aiconfig/embedding.json
 jianer_memory.db
 jianer_memory.db-shm
 jianer_memory.db-wal
