@@ -90,6 +90,8 @@ class MemoryRuntimeDependencyService(KernelServiceBase):
                 self._save_vector_store(self.paragraph_vector_store)
             if self.graph_vector_store is not None:
                 self._save_vector_store(self.graph_vector_store)
+            if self.paragraph_vector_store is not None and self.graph_vector_store is not None:
+                self._refresh_dual_vector_ready_manifest_from_stores()
         if self.graph_store is not None:
             with self._relation_graph_projection_lock:
                 self.graph_store.save()

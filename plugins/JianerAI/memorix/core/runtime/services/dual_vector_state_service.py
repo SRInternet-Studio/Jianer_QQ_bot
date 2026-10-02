@@ -62,6 +62,11 @@ class MemoryDualVectorStateService(KernelServiceBase):
         graph_count = int(manifest.get("graph_vectors", 0) or 0)
         if paragraph_count < 0 or graph_count < 0:
             return False
+        empty_initialization = (
+            paragraph_count == 0
+            and graph_count == 0
+            and str(manifest.get("generation_reason", "") or "") == "empty_initialization"
+        )
         current_fingerprint = self._current_embedding_fingerprint_for_validation()
         manifest_fingerprint = self._normalize_embedding_fingerprint(manifest.get("embedding_fingerprint"))
         if current_fingerprint is None or manifest_fingerprint is None:
@@ -70,7 +75,7 @@ class MemoryDualVectorStateService(KernelServiceBase):
                 and graph_count == 0
                 and str(manifest.get("generation_reason", "") or "") == "integrity_recovery"
             )
-            if not empty_recovery_generation:
+            if not empty_recovery_generation and not empty_initialization:
                 logger.warning("双池 ready manifest 缺少可校验 embedding 指纹，保持单池降级")
                 return False
         if (
@@ -85,6 +90,19 @@ class MemoryDualVectorStateService(KernelServiceBase):
                 f"current={current_fingerprint.get('hash', '')}"
             )
             return False
+        if empty_initialization and not all(
+            (
+                self._vector_store_is_empty(
+                    self.vector_store,
+                    self._vectors_root(),
+                    allowed_directories={"paragraph", "graph"},
+                    allowed_files={"dual_ready.json"},
+                ),
+                self._vector_store_is_empty(self.paragraph_vector_store, self._paragraph_vector_dir()),
+                self._vector_store_is_empty(self.graph_vector_store, self._graph_vector_dir()),
+            )
+        ):
+            return False
         return self._paragraph_vector_dir().exists() and self._graph_vector_dir().exists()
 
     def _write_dual_vector_ready_manifest(
@@ -95,7 +113,14 @@ class MemoryDualVectorStateService(KernelServiceBase):
         generation_reason: str = "",
     ) -> None:
         current_dimension = self._current_embedding_status_dimension()
-        embedding_fingerprint = self._current_embedding_fingerprint(dimension=current_dimension)
+        is_empty_initialization = str(generation_reason or "").strip() == "empty_initialization" and not any(
+            int(item.get("done", 0) or 0) for item in stats.values()
+        )
+        embedding_fingerprint = (
+            None
+            if is_empty_initialization
+            else self._current_embedding_fingerprint(dimension=current_dimension)
+        )
         payload = {
             "status": "ready",
             "version": 1,
@@ -117,6 +142,128 @@ class MemoryDualVectorStateService(KernelServiceBase):
         tmp_path = path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(path)
+
+    @staticmethod
+    def _vector_store_is_empty(
+        store: Optional[VectorStore],
+        data_dir: Path,
+        *,
+        allowed_directories: Optional[set[str]] = None,
+        allowed_files: Optional[set[str]] = None,
+    ) -> bool:
+        if store is not None:
+            try:
+                if int(store.num_vectors or 0) > 0:
+                    return False
+                if getattr(store, "_known_hashes", None) or getattr(store, "_deleted_ids", None):
+                    return False
+            except Exception:
+                return False
+
+        root = Path(data_dir)
+        if not root.exists():
+            return True
+        if not root.is_dir():
+            return False
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            return False
+        allowed = set(allowed_directories or ())
+        for child in children:
+            if child.is_dir():
+                if child.name not in allowed or child.is_symlink():
+                    return False
+                continue
+
+        store_files = {"vectors_metadata.json", "vectors.bin", "vectors_ids.bin"}
+        store_files.update(allowed_files or ())
+        if any(not child.is_dir() and child.name not in store_files for child in children):
+            return False
+
+        vector_path = root / "vectors.bin"
+        ids_path = root / "vectors_ids.bin"
+        if vector_path.exists() != ids_path.exists():
+            return False
+        if vector_path.exists() and (vector_path.stat().st_size or ids_path.stat().st_size):
+            return False
+
+        metadata_path = root / "vectors_metadata.json"
+        if not metadata_path.exists():
+            return not any(not child.is_dir() and child.name not in (allowed_files or ()) for child in children)
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        if not isinstance(metadata, dict):
+            return False
+        if metadata.get("known_hashes") != [] or metadata.get("deleted_ids") != []:
+            return False
+        commit = metadata.get("binary_commit")
+        if not isinstance(commit, dict):
+            return False
+        return all(
+            isinstance(commit.get(key), int)
+            and not isinstance(commit.get(key), bool)
+            and commit.get(key) == 0
+            for key in ("vector_bytes", "id_bytes")
+        )
+
+    def _initialize_empty_dual_vector_pools(self, *, dimension: int) -> bool:
+        if (
+            not self._dual_vector_pools_config_enabled()
+            or self.metadata_store is None
+            or self._dual_vector_ready_manifest_path().exists()
+            or self._legacy_vector_view is not None
+            or self._vector_persist_blocked_until_rebuild
+        ):
+            return False
+
+        targets = self._count_vector_rebuild_targets()
+        if any(int(count or 0) != 0 for count in targets.values()):
+            return False
+        if not all(
+            (
+                self._vector_store_is_empty(
+                    self.vector_store,
+                    self._vectors_root(),
+                    allowed_directories={"paragraph", "graph"},
+                ),
+                self._vector_store_is_empty(self.paragraph_vector_store, self._paragraph_vector_dir()),
+                self._vector_store_is_empty(self.graph_vector_store, self._graph_vector_dir()),
+            )
+        ):
+            return False
+
+        self.paragraph_vector_store = self._make_vector_store(
+            self._paragraph_vector_dir(), dimension=dimension
+        )
+        self.graph_vector_store = self._make_vector_store(
+            self._graph_vector_dir(), dimension=dimension
+        )
+        self.paragraph_vector_store.save()
+        self.graph_vector_store.save()
+        zero_stats = {
+            "paragraphs": {"done": 0, "failed": 0},
+            "entities": {"done": 0, "failed": 0},
+            "relations": {"done": 0, "failed": 0},
+        }
+        zero_migration = {
+            "paragraphs": {"copied": 0, "encoded": 0, "missing": 0},
+            "entities": {"copied": 0, "encoded": 0, "missing": 0},
+            "relations": {"copied": 0, "encoded": 0, "missing": 0},
+        }
+        self._write_dual_vector_ready_manifest(
+            stats=zero_stats,
+            migration_stats=zero_migration,
+            generation_reason="empty_initialization",
+        )
+        self._dual_vector_pools_ready = self._dual_vector_ready(expected_dimension=dimension)
+        if self._dual_vector_pools_ready:
+            logger.info("空向量存储已初始化为双池模式")
+        else:
+            self._remove_dual_vector_ready_manifest()
+        return self._dual_vector_pools_ready
 
     def _remove_dual_vector_ready_manifest(self) -> None:
         try:
@@ -146,7 +293,19 @@ class MemoryDualVectorStateService(KernelServiceBase):
             "entities": {"copied": 0, "encoded": 0, "missing": 0},
             "relations": {"copied": 0, "encoded": 0, "missing": 0},
         }
-        self._write_dual_vector_ready_manifest(stats=stats, migration_stats=migration_stats)
+        empty_initialization = (
+            paragraph_count == 0
+            and graph_count == 0
+            and self.paragraph_vector_store is not None
+            and self.graph_vector_store is not None
+            and self._vector_store_is_empty(self.paragraph_vector_store, self._paragraph_vector_dir())
+            and self._vector_store_is_empty(self.graph_vector_store, self._graph_vector_dir())
+        )
+        self._write_dual_vector_ready_manifest(
+            stats=stats,
+            migration_stats=migration_stats,
+            generation_reason="empty_initialization" if empty_initialization else "",
+        )
 
     def _clear_legacy_single_vector_files_after_dual_ready(self) -> None:
         root = self._vectors_root()
@@ -300,6 +459,8 @@ class MemoryDualVectorStateService(KernelServiceBase):
     def _reload_dual_vector_stores_from_disk(self) -> bool:
         current_dimension = self._current_embedding_status_dimension()
         if not self._dual_vector_ready(expected_dimension=current_dimension):
+            if self._initialize_empty_dual_vector_pools(dimension=current_dimension):
+                return True
             self._try_recover_dual_ready_manifest()
         if not self._dual_vector_ready(expected_dimension=current_dimension):
             manifest = self._read_dual_vector_ready_manifest()
