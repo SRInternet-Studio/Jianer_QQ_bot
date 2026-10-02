@@ -18,6 +18,7 @@ from plugins.JianerAI.memory import (
 )
 from plugins.JianerAI.providers import (
     AssistantTurn,
+    EmptyProviderResponseError,
     ProviderRegistry,
     ProviderResponse,
     ProviderToolCall,
@@ -986,6 +987,81 @@ def test_agent_runner_falls_back_only_for_explicit_tool_unsupported():
             enabled=True,
         ) == "普通回答"
         assert provider.marked == ["legacy-model"]
+        assert len(provider.chat_calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_agent_runner_falls_back_to_plain_generation_after_empty_tool_response():
+    class EmptyToolResponseProvider(SequenceProvider):
+        async def complete_request(self, model, request):
+            self.requests.append(request)
+            assert request.tools
+            raise EmptyProviderResponseError("empty tool response")
+
+    async def scenario():
+        provider = EmptyToolResponseProvider()
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        context, _, _ = _context()
+        logger = RecordingLogger()
+
+        answer = await AgentRunner(provider, registry, logger=logger).run(
+            model="model-a",
+            message="hello",
+            history=(),
+            system_prompt="system",
+            attachments=(),
+            context=context,
+            enabled=True,
+        )
+
+        assert answer == "普通回答"
+        assert len(provider.requests) == 1
+        assert len(provider.chat_calls) == 1
+        model, message, kwargs = provider.chat_calls[0]
+        assert (model, message) == ("model-a", "hello")
+        assert kwargs == {
+            "history": (),
+            "system_prompt": "system",
+            "attachments": (),
+        }
+        assert "回退到普通生成" in "\n".join(logger.messages)
+
+    asyncio.run(scenario())
+
+
+def test_agent_runner_propagates_empty_response_from_plain_generation_fallback():
+    class EmptyProvider(SequenceProvider):
+        async def complete_request(self, model, request):
+            self.requests.append(request)
+            raise EmptyProviderResponseError("empty response")
+
+        async def chat(self, model, message, **kwargs):
+            self.chat_calls.append((model, message, kwargs))
+            raise EmptyProviderResponseError("empty fallback response")
+
+    async def scenario():
+        provider = EmptyProvider()
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        context, _, _ = _context()
+
+        with pytest.raises(
+            EmptyProviderResponseError,
+            match="empty fallback response",
+        ):
+            await AgentRunner(provider, registry).run(
+                model="model-a",
+                message="hello",
+                history=(),
+                system_prompt="",
+                attachments=(),
+                context=context,
+                enabled=True,
+            )
+
+        assert len(provider.requests) == 1
         assert len(provider.chat_calls) == 1
 
     asyncio.run(scenario())

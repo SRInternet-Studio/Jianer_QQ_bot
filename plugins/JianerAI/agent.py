@@ -13,6 +13,7 @@ from plugins.JianerAI.observability import (
 )
 from plugins.JianerAI.providers import (
     ChatRequest,
+    EmptyProviderResponseError,
     FunctionTool,
     MediaAttachment,
     ProviderRegistry,
@@ -115,17 +116,30 @@ class AgentRunner:
         try:
             async with asyncio.timeout(self.options.total_timeout_seconds):
                 while True:
-                    response = await complete(
-                        model,
-                        ChatRequest(
-                            message=message,
-                            history=tuple(history),
+                    try:
+                        response = await complete(
+                            model,
+                            ChatRequest(
+                                message=message,
+                                history=tuple(history),
+                                system_prompt=system_prompt,
+                                attachments=tuple(attachments),
+                                tools=declarations,
+                                turns=tuple(turns),
+                            ),
+                        )
+                    except EmptyProviderResponseError:
+                        safe_log_info(
+                            self._logger,
+                            "JianerAI Agent 工具请求返回空响应，回退到普通生成",
+                        )
+                        return await self.providers.chat(
+                            model,
+                            message,
+                            history=history,
                             system_prompt=system_prompt,
-                            attachments=tuple(attachments),
-                            tools=declarations,
-                            turns=tuple(turns),
-                        ),
-                    )
+                            attachments=attachments,
+                        )
                     if not response.tool_calls:
                         return str(response.text or "").rstrip()
                     turns.append(response.turn)
