@@ -1426,18 +1426,19 @@ class JianerAIService:
         )
 
     async def shutdown(self) -> None:
-        if self._closed:
-            return
-        console_thread, self._memory_console_thread = self._memory_console_thread, None
-        if console_thread is not None:
-            stop_console = getattr(console_thread, "stop", None)
-            if callable(stop_console):
-                try:
-                    await asyncio.to_thread(stop_console)
-                except Exception:
-                    self._memory_console_thread = console_thread
-                    raise
-        self._closed = True
+        async with self._start_lock:
+            if self._closed:
+                return
+            console_thread, self._memory_console_thread = self._memory_console_thread, None
+            if console_thread is not None:
+                stop_console = getattr(console_thread, "stop", None)
+                if callable(stop_console):
+                    try:
+                        await asyncio.to_thread(stop_console)
+                    except Exception:
+                        self._memory_console_thread = console_thread
+                        raise
+            self._closed = True
         task, self._maintenance_task = self._maintenance_task, None
         if task is not None:
             task.cancel()
@@ -3871,19 +3872,49 @@ class JianerAIService:
         return tuple(output)
 
     async def _ensure_started(self) -> None:
-        if self._closed or self._maintenance_task is not None:
+        if self._closed:
             return
         async with self._start_lock:
-            if self._closed or self._maintenance_task is not None:
+            if self._closed:
                 return
-            self._maintenance_task = asyncio.create_task(
-                self._maintenance_loop(),
-                name="jianer-ai-maintenance",
-            )
-            await self._start_memory_console()
+            if self._maintenance_task is None:
+                self._maintenance_task = asyncio.create_task(
+                    self._maintenance_loop(),
+                    name="jianer-ai-maintenance",
+                )
+            if self._memory_console_thread is None:
+                await self._start_memory_console()
             if not self._reviews_resumed:
                 self._reviews_resumed = True
                 await self._resume_pending_memory_reviews()
+
+    async def start_after_activation(
+        self,
+        manager: Any,
+        previous_manager: Any = None,
+    ) -> None:
+        def state_of(item: Any) -> str:
+            state = getattr(item, "state", "")
+            return str(getattr(state, "value", state)).casefold()
+
+        while not self._closed:
+            state = state_of(manager)
+            if state == "active":
+                break
+            if state in {"draining", "failed", "closed"}:
+                return
+            await asyncio.sleep(0.05)
+
+        while (
+            not self._closed
+            and previous_manager is not None
+            and state_of(manager) == "active"
+            and state_of(previous_manager) != "closed"
+        ):
+            await asyncio.sleep(0.1)
+
+        if not self._closed and state_of(manager) == "active":
+            await self._ensure_started()
 
     async def _start_memory_console(self) -> None:
         if not self.options.memory_console_enabled or self._memory_console_thread is not None:

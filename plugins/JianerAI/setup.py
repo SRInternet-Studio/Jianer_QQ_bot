@@ -1,6 +1,7 @@
 from typing import Any
 
 from arclet.alconna import Alconna, Args
+from jianer import submit_awaitable
 from jianer.plugins import PluginMetadata
 from jianer.plugins.builtin.alconna import Command
 
@@ -48,7 +49,17 @@ def setup(client: Any, manager: Any) -> None:
     global _service
     if _service is not None:
         raise RuntimeError("JianerAI service is already set up")
+    previous_manager = getattr(client, "plugin_manager", None)
     _service = JianerAIService.from_runtime(plugin_state.get_runtime())
+    try:
+        startup = submit_awaitable(
+            _service.start_after_activation(manager, previous_manager)
+        )
+        startup.add_done_callback(
+            lambda completed, service=_service: _report_startup(service, completed)
+        )
+    except Exception:
+        _service._log_exception("JianerAI startup scheduling failed")
 
 
 async def shutdown(client: Any, manager: Any) -> None:
@@ -123,6 +134,13 @@ def _require_service() -> JianerAIService:
     if _service is None:
         raise RuntimeError("JianerAI service is not available")
     return _service
+
+
+def _report_startup(service: JianerAIService, future: Any) -> None:
+    try:
+        future.result()
+    except Exception:
+        service._log_exception("JianerAI activation startup failed")
 
 
 async def _invoke(
