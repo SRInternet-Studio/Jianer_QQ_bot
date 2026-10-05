@@ -33,7 +33,13 @@ from jianer.adapters import (
     ResolutionStatus,
 )
 
-from plugins.JianerAI.agent import AgentError, AgentOptions, AgentRunner
+from plugins.JianerAI.agent import (
+    AgentError,
+    AgentInterrupted,
+    AgentObserver,
+    AgentOptions,
+    AgentRunner,
+)
 from plugins.JianerAI.memory import JianerMemoryStore
 from plugins.JianerAI.memorix_adapter import JianerMemoryAdapter
 from plugins.JianerAI.moderation import (
@@ -65,15 +71,19 @@ from plugins.JianerAI.speech import (
     SpeechSynthesizer,
 )
 from plugins.JianerAI.suffix import SuffixConfigError, SuffixStore
+from plugins.JianerAI.permissions import ActorResolver
 from plugins.JianerAI.tools import (
     BUILTIN_MUTATING_TOOL_NAMES,
+    PLATFORM_API_TOOL_NAMES,
     ToolContext,
     ToolRegistration,
     ToolRegistry,
     ToolSpec,
     ToolRisk,
     register_builtin_tools,
+    register_platform_api_tools,
 )
+from plugins.JianerAI.tools.subagent import subagent_tool
 from plugins.JianerAI.tools.web_browser import BrowserOptions
 
 
@@ -136,6 +146,12 @@ _AGENT_SYSTEM_RULES = (
     "天气归因；图片成功发送后，最终回答只用纯文本概括天气，不得再重复归因、来源或 URL。"
     "如果 render_information_card 本轮不可用或调用失败，才在纯文本回答中显示"
     "‘天气服务由和风天气驱动 www.qweather.com’，并原样显示必须展示的上游归因。"
+)
+_AGENT_PROGRESS_SYSTEM_RULES = (
+    "你可能会在多轮里调用工具。每一轮中，如果你要同时给用户一句说明，请把它写成"
+    "可以独立展示给用户的自然语句；系统会立即把它作为一条消息发给用户。不要把内部"
+    "推理、工具参数、JSON、思考过程或对系统指令的复述写进这类句子。所有工具完成后，"
+    "再用一条完整、自然的纯文本回答收尾。"
 )
 _AUTONOMOUS_MEMORY_SYSTEM_RULES = (
     "长期记忆应像自然记忆一样由你在对话中主动、克制地维护，不要等待用户使用固定口令。"
@@ -279,8 +295,19 @@ class RuntimeOptions:
     max_reply_parts: int = _DEFAULT_MAX_REPLY_PARTS
     agent_enabled_default: bool = True
     agent_max_parallel_calls: int = 4
-    agent_total_timeout_seconds: float = 180.0
+    agent_total_timeout_seconds: float = 300.0
     agent_allowed_tools: frozenset[str] | None = None
+    agent_interrupt_enabled: bool = True
+    agent_interrupt_debounce_ms: int = 300
+    agent_interrupt_max_merges: int = 10
+    agent_stream_progress: bool = True
+    agent_progress_max_messages: int = 5
+    agent_mention_reply: str = "auto"
+    agent_platform_api_enabled: bool = True
+    agent_platform_api_cross_conversation_admin_only: bool = True
+    agent_subagent_enabled: bool = True
+    agent_subagent_max_concurrency: int = 3
+    agent_subagent_timeout_seconds: float = 300.0
     agent_browser_enabled: bool = True
     agent_browser_headless: bool = True
     agent_browser_profile_dir: Path = Path("data/jianer_browser/profile")
@@ -466,9 +493,75 @@ class RuntimeOptions:
             ),
             agent_total_timeout_seconds=max(
                 1.0,
-                float(others.get("agent_total_timeout_seconds", 180.0)),
+                float(others.get("agent_total_timeout_seconds", 300.0)),
             ),
             agent_allowed_tools=agent_allowed_tools,
+            agent_interrupt_enabled=_runtime_bool(
+                others.get("agent_interrupt_enabled", True),
+                default=True,
+            ),
+            agent_interrupt_debounce_ms=max(
+                0,
+                min(
+                    5000,
+                    int(others.get("agent_interrupt_debounce_ms", 300)),
+                ),
+            ),
+            agent_interrupt_max_merges=max(
+                1,
+                min(
+                    100,
+                    int(others.get("agent_interrupt_max_merges", 10)),
+                ),
+            ),
+            agent_stream_progress=_runtime_bool(
+                others.get("agent_stream_progress", True),
+                default=True,
+            ),
+            agent_progress_max_messages=max(
+                0,
+                min(
+                    50,
+                    int(others.get("agent_progress_max_messages", 5)),
+                ),
+            ),
+            agent_mention_reply=str(
+                others.get("agent_mention_reply", "auto") or "auto"
+            ).strip().casefold(),
+            agent_platform_api_enabled=_runtime_bool(
+                others.get("agent_platform_api_enabled", True),
+                default=True,
+            ),
+            agent_platform_api_cross_conversation_admin_only=_runtime_bool(
+                others.get(
+                    "agent_platform_api_cross_conversation_admin_only",
+                    True,
+                ),
+                default=True,
+            ),
+            agent_subagent_enabled=_runtime_bool(
+                others.get("agent_subagent_enabled", True),
+                default=True,
+            ),
+            agent_subagent_max_concurrency=max(
+                1,
+                min(
+                    8,
+                    int(others.get("agent_subagent_max_concurrency", 3)),
+                ),
+            ),
+            agent_subagent_timeout_seconds=max(
+                5.0,
+                min(
+                    1800.0,
+                    float(
+                        others.get(
+                            "agent_subagent_timeout_seconds",
+                            300.0,
+                        )
+                    ),
+                ),
+            ),
             agent_browser_enabled=_runtime_bool(
                 others.get("agent_browser_enabled", True),
                 default=True,
@@ -503,6 +596,85 @@ class GeneratedMemory:
     content: str
     weight: float
     evidence_fingerprint: str = ""
+
+
+class ConversationSession:
+    """Shared runtime state for one conversation key.
+
+    Every participant in a conversation shares one history and one in-flight
+    reply.  A message arriving while a reply is being generated is recorded as
+    an interjection and signals ``interrupt`` so the running provider call is
+    abandoned and regenerated with the merged context.
+    """
+
+    __slots__ = (
+        "key",
+        "lock",
+        "active",
+        "pending",
+        "interrupt",
+        "merges",
+        "revision",
+    )
+
+    def __init__(self, key: ConversationKey) -> None:
+        self.key = key
+        self.lock = asyncio.Lock()
+        self.active = False
+        self.pending: list[str] = []
+        self.interrupt = asyncio.Event()
+        self.merges = 0
+        self.revision = 0
+
+    def reset_interrupt(self) -> None:
+        self.interrupt = asyncio.Event()
+
+
+class _ProgressObserver(AgentObserver):
+    """Streams intermediate assistant text as standalone chat messages."""
+
+    def __init__(
+        self,
+        service: "JianerAIService",
+        event: Any,
+        actions: Any,
+        *,
+        max_messages: int,
+    ) -> None:
+        self._service = service
+        self._event = event
+        self._actions = actions
+        self._max_messages = max(0, int(max_messages))
+        self._sent = 0
+
+    async def on_assistant_text(self, text: str, *, final: bool) -> None:
+        if final or self._sent >= self._max_messages:
+            return
+        value = str(text or "").strip()
+        if not value:
+            return
+        self._sent += 1
+        await self._service._send_ai_text(
+            self._event,
+            self._actions,
+            value,
+            reply=False,
+        )
+
+    async def on_tool_start(self, call: Any) -> None:
+        return None
+
+    async def on_tool_result(self, call: Any, result: Any) -> None:
+        return None
+
+    async def on_interrupt(self, reason: str) -> None:
+        return None
+
+
+def _merge_interjections(original: str, interjections: Sequence[str]) -> str:
+    parts = [str(original or "").strip()]
+    parts.extend(str(item).strip() for item in interjections)
+    return "\n".join(part for part in parts if part)
 
 
 class JianerAIService:
@@ -646,7 +818,9 @@ class JianerAIService:
         self.tools = tools or ToolRegistry(
             allowed_risks=frozenset(allowed_risks),
             allowed_mutating_tools=(
-                BUILTIN_MUTATING_TOOL_NAMES | explicitly_allowed
+                BUILTIN_MUTATING_TOOL_NAMES
+                | explicitly_allowed
+                | PLATFORM_API_TOOL_NAMES
             ),
         )
         if tools is None:
@@ -667,12 +841,31 @@ class JianerAIService:
                 project_root=options.project_root,
                 logger=self._logger,
             )
+        if options.agent_platform_api_enabled:
+            register_platform_api_tools(self.tools)
+        if options.agent_subagent_enabled:
+            self.tools.register(
+                subagent_tool(
+                    providers=self.providers,
+                    tools=self.tools,
+                    logger=self._logger,
+                    model_resolver=lambda context: str(
+                        getattr(context, "model", "") or ""
+                    ),
+                    parent_allowed_names=options.agent_allowed_tools,
+                    max_concurrency=options.agent_subagent_max_concurrency,
+                    default_timeout_seconds=(
+                        options.agent_subagent_timeout_seconds
+                    ),
+                )
+            )
         self.agent = AgentRunner(
             self.providers,
             self.tools,
             options=AgentOptions(
                 max_parallel_calls=options.agent_max_parallel_calls,
                 total_timeout_seconds=options.agent_total_timeout_seconds,
+                max_depth=1,
             ),
             allowed_tool_names=options.agent_allowed_tools,
             logger=self._logger,
@@ -684,9 +877,8 @@ class JianerAIService:
         self._histories: dict[ConversationKey, list[dict[str, str]]] = {}
         self._history_revisions: dict[ConversationKey, int] = {}
         self._session_locks: dict[ConversationKey, asyncio.Lock] = {}
-        self._dialogue_locks: dict[
-            tuple[ConversationKey, str], asyncio.Lock
-        ] = {}
+        self._dialogue_sessions: dict[ConversationKey, ConversationSession] = {}
+        self._actor_resolver = ActorResolver()
         self._memory_generation_locks: dict[
             tuple[str, str], asyncio.Lock
         ] = {}
@@ -829,6 +1021,14 @@ class JianerAIService:
             await dialogue
         return True
 
+    def _session_for(self, key: ConversationKey) -> ConversationSession:
+        with self._state_lock:
+            session = self._dialogue_sessions.get(key)
+            if session is None:
+                session = ConversationSession(key)
+                self._dialogue_sessions[key] = session
+            return session
+
     async def _run_dialogue(
         self,
         event: Any,
@@ -837,22 +1037,89 @@ class JianerAIService:
         prompt: str,
         canonical: str,
     ) -> None:
-        dialogue_scope = (key, canonical)
+        session = self._session_for(key)
         with self._state_lock:
-            lock = self._dialogue_locks.setdefault(
-                dialogue_scope,
-                asyncio.Lock(),
-            )
-        async with lock:
-            if self._closed:
+            if session.active:
+                text = str(prompt or "").strip()
+                if text:
+                    session.pending.append(text)
+                    session.interrupt.set()
                 return
-            await self._generate_and_send(
-                event,
-                actions,
-                key,
-                prompt,
-                canonical=canonical,
-            )
+            session.active = True
+            session.merges = 0
+            session.pending = []
+            session.reset_interrupt()
+            session.revision = self._history_revisions.get(key, 0)
+        try:
+            async with session.lock:
+                if self._closed:
+                    return
+                await self._run_session_loop(
+                    event,
+                    actions,
+                    key,
+                    prompt,
+                    canonical,
+                    session,
+                )
+        finally:
+            with self._state_lock:
+                session.active = False
+                session.pending = []
+                session.reset_interrupt()
+
+    async def _run_session_loop(
+        self,
+        event: Any,
+        actions: Any,
+        key: ConversationKey,
+        prompt: str,
+        canonical: str,
+        session: ConversationSession,
+    ) -> None:
+        interrupt_enabled = bool(self.options.agent_interrupt_enabled)
+        debounce = (
+            max(0, int(self.options.agent_interrupt_debounce_ms)) / 1000.0
+        )
+        max_merges = max(1, int(self.options.agent_interrupt_max_merges))
+        current = str(prompt or "").strip()
+        while True:
+            session.reset_interrupt()
+            try:
+                await self._generate_and_send(
+                    event,
+                    actions,
+                    key,
+                    current,
+                    canonical=canonical,
+                    session=session,
+                )
+            except AgentInterrupted:
+                pass
+            with self._state_lock:
+                interjections = list(session.pending)
+                session.pending = []
+            if not interjections or not interrupt_enabled:
+                return
+            if session.merges >= max_merges:
+                self._log_info(
+                    "JianerAI 插话合并达到上限，停止重新生成 | "
+                    + format_log_data(
+                        {
+                            "protocol": key.protocol,
+                            "conversation_id": key.conversation_id,
+                            "merges": session.merges,
+                        }
+                    )
+                )
+                return
+            session.merges += 1
+            if debounce:
+                await asyncio.sleep(debounce)
+                with self._state_lock:
+                    interjections.extend(session.pending)
+                    session.pending = []
+            current = _merge_interjections(current, interjections)
 
     def _track_background_task(
         self,
@@ -1073,10 +1340,10 @@ class JianerAIService:
                     for key in collection
                     if key.preset == preset.key
                 }
-                retired_dialogues = {
-                    scope
-                    for scope in self._dialogue_locks
-                    if scope[0].preset == preset.key
+                retired_sessions = {
+                    session_key
+                    for session_key in self._dialogue_sessions
+                    if session_key.preset == preset.key
                 }
                 for key in retired_keys:
                     self._clear_history_locked(key)
@@ -1084,8 +1351,8 @@ class JianerAIService:
                     self._tts_enabled.pop(key, None)
                     self._agent_enabled.pop(key, None)
                     self._session_locks.pop(key, None)
-                for scope in retired_dialogues:
-                    self._dialogue_locks.pop(scope, None)
+                for session_key in retired_sessions:
+                    self._dialogue_sessions.pop(session_key, None)
             for base in affected_bases:
                 await self._persist_active_preset(base, default_preset.key)
         await self._send_text(
@@ -1476,22 +1743,38 @@ class JianerAIService:
         prompt: str,
         *,
         canonical: str | None = None,
+        session: ConversationSession | None = None,
     ) -> None:
         if canonical is None:
             canonical = await asyncio.to_thread(
                 self._canonical_identity, event, actions
             )
         with self._state_lock:
-            history_revision = self._history_revisions.get(key, 0)
+            history_revision = (
+                session.revision
+                if session is not None
+                else self._history_revisions.get(key, 0)
+            )
         model = self._model_for(key)
         agent_enabled = self._agent_for(key)
         sensitive_values: set[str] = set()
+        actor = await self._actor_resolver.resolve(
+            event, actions, self.runtime
+        )
         tool_context = self._tool_context(
             event,
             actions,
             key,
             canonical,
             sensitive_values=sensitive_values,
+            actor=actor,
+            model=model,
+            interrupt_event=(
+                session.interrupt
+                if session is not None
+                and self.options.agent_interrupt_enabled
+                else None
+            ),
         )
         available_tools = self._available_agent_tools(
             tool_context,
@@ -1591,6 +1874,10 @@ class JianerAIService:
                 if system_prompt
                 else _AGENT_SYSTEM_RULES
             )
+            if self.options.agent_stream_progress:
+                system_prompt = (
+                    f"{system_prompt}\n\n{_AGENT_PROGRESS_SYSTEM_RULES}"
+                )
             available_tool_names = {spec.name for spec in available_tools}
             if available_tool_names & {
                 "create_my_memory",
@@ -1632,6 +1919,17 @@ class JianerAIService:
                 attachments=attachments,
                 context=tool_context,
                 enabled=agent_enabled,
+                observer=self._progress_observer(
+                    event,
+                    actions,
+                    session=session,
+                ),
+                interrupt_event=(
+                    session.interrupt
+                    if session is not None
+                    and self.options.agent_interrupt_enabled
+                    else None
+                ),
             )
         except AgentError as exc:
             self._log_ai_dialogue_failure(
@@ -1680,6 +1978,8 @@ class JianerAIService:
                 reply=True,
             )
             return
+        except AgentInterrupted:
+            raise
         except Exception:
             self._log_ai_dialogue_failure(
                 dialogue_context,
@@ -1756,7 +2056,21 @@ class JianerAIService:
             )
             if handled:
                 return
-        await self._send_ai_text(event, actions, processed, reply=True)
+        mention_ids: tuple[str, ...] = ()
+        if (
+            key.kind is ConversationKind.GROUP
+            and self.options.agent_mention_reply == "auto"
+        ):
+            triggered_by = str(getattr(event, "user_id", "") or "").strip()
+            if triggered_by:
+                mention_ids = (triggered_by,)
+        await self._send_ai_text(
+            event,
+            actions,
+            processed,
+            reply=True,
+            at_user_ids=mention_ids,
+        )
 
         # Keep the exchange ordered even when an adapter timestamp is slightly
         # ahead of the local clock.  The outgoing row is inserted after the
@@ -2430,6 +2744,7 @@ class JianerAIService:
         text: str,
         *,
         reply: bool,
+        at_user_ids: Sequence[str] = (),
     ) -> None:
         parts = self._split_reply(str(text or "（无可用回复）"))
         await self._send_text_parts(
@@ -2437,6 +2752,7 @@ class JianerAIService:
             actions,
             parts,
             reply=reply,
+            at_user_ids=at_user_ids,
         )
 
     async def _send_ai_text(
@@ -2446,6 +2762,7 @@ class JianerAIService:
         text: str,
         *,
         reply: bool,
+        at_user_ids: Sequence[str] = (),
     ) -> None:
         normalized = str(text or "（无可用回复）").rstrip()
         parts = [
@@ -2466,6 +2783,7 @@ class JianerAIService:
             actions,
             parts,
             reply=reply,
+            at_user_ids=at_user_ids,
         )
 
     async def _send_ai_forward(
@@ -2512,9 +2830,13 @@ class JianerAIService:
         parts: Sequence[str],
         *,
         reply: bool,
+        at_user_ids: Sequence[str] = (),
     ) -> None:
         target = self._target_kwargs(event)
         capabilities = frozenset(getattr(actions, "capabilities", ()))
+        mentions = [
+            str(item).strip() for item in at_user_ids if str(item).strip()
+        ]
         for index, part in enumerate(parts):
             segments: list[Any] = []
             if (
@@ -2525,6 +2847,9 @@ class JianerAIService:
                 and Capability.SEND_REPLY in capabilities
             ):
                 segments.append(Segments.Reply(str(event.message_id)))
+            if index == 0:
+                for user_id in mentions:
+                    segments.append(Segments.At(user_id))
             segments.append(Segments.Text(part))
             await actions.send(
                 message=Manager.Message(*segments),
@@ -2685,9 +3010,30 @@ class JianerAIService:
             return ()
         return tuple(
             spec
-            for spec in self.tools.available(context)
+            for spec in self.tools.available(
+                context,
+                getattr(context, "actor", None),
+            )
             if self.options.agent_allowed_tools is None
             or spec.name in self.options.agent_allowed_tools
+        )
+
+    def _progress_observer(
+        self,
+        event: Any,
+        actions: Any,
+        *,
+        session: ConversationSession | None,
+    ) -> AgentObserver | None:
+        if session is None or not self.options.agent_stream_progress:
+            return None
+        if self.options.agent_progress_max_messages <= 0:
+            return None
+        return _ProgressObserver(
+            self,
+            event,
+            actions,
+            max_messages=self.options.agent_progress_max_messages,
         )
 
     @staticmethod
@@ -2753,6 +3099,9 @@ class JianerAIService:
         canonical: str,
         *,
         sensitive_values: set[str] | None = None,
+        actor: Any = None,
+        model: str = "",
+        interrupt_event: asyncio.Event | None = None,
     ) -> ToolContext:
         with self._state_lock:
             history = tuple(self._histories.get(key, ()))
@@ -2769,6 +3118,10 @@ class JianerAIService:
                 if sensitive_values is not None
                 else set()
             ),
+            actor=actor,
+            agent=self.agent,
+            model=str(model or ""),
+            interrupt_event=interrupt_event,
         )
 
     async def _redact_sensitive_state(
