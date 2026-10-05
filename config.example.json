@@ -77,7 +77,21 @@
         "compliment": [
             "谢谢夸奖！",
             "我会继续努力的！"
-        ]
+        ],
+        "agent_enabled_default": true,
+        "agent_max_parallel_calls": 4,
+        "agent_total_timeout_seconds": 300,
+        "agent_stream_progress": true,
+        "agent_progress_max_messages": 5,
+        "agent_mention_reply": "auto",
+        "agent_interrupt_enabled": true,
+        "agent_interrupt_debounce_ms": 300,
+        "agent_interrupt_max_merges": 10,
+        "agent_platform_api_enabled": true,
+        "agent_platform_api_cross_conversation_admin_only": true,
+        "agent_subagent_enabled": true,
+        "agent_subagent_max_concurrency": 3,
+        "agent_subagent_timeout_seconds": 300
     },
     "log_level": "INFO"
 }

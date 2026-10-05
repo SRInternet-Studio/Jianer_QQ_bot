@@ -67,10 +67,22 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `TTS`：音色、语速、音量与音高
 - `agent_enabled_default`：没有会话覆盖时是否启用 Agent，默认开启
 - `agent_max_parallel_calls`：只读工具并发上限，默认 4
-- `agent_total_timeout_seconds`：完整 Agent 轮次总超时，默认 180 秒
+- `agent_total_timeout_seconds`：完整 Agent 轮次总超时，默认 300 秒
 - `agent_allowed_tools`：允许暴露给模型的工具名称数组或逗号分隔字符串；未配置时
   允许全部内置工具，显式空数组则不暴露工具；配置白名单时，记忆写入还需显式加入
   `create_my_memory` 和/或 `update_my_memory`
+- `agent_stream_progress`：工具调用期间把模型每轮的说明文字实时发给用户，默认 `true`
+- `agent_progress_max_messages`：单轮最多发送多少条进度消息，默认 5，`0` 表示关闭
+- `agent_mention_reply`：群聊首条回复是否 At 触发者，`auto`（默认）或 `off`
+- `agent_interrupt_enabled`：允许同一会话中的新消息打断在途生成并重新生成，默认 `true`
+- `agent_interrupt_debounce_ms`：合并连续插话的防抖窗口，默认 300 毫秒
+- `agent_interrupt_max_merges`：单轮最多因插话重新生成多少次，默认 10
+- `agent_platform_api_enabled`：向模型注册平台 API 工具，默认 `true`
+- `agent_platform_api_cross_conversation_admin_only`：仅机器人管理员可向其他会话
+  发消息，默认 `true`
+- `agent_subagent_enabled`：注册 `spawn_subagents`，默认 `true`
+- `agent_subagent_max_concurrency`：Sub-Agent 并发上限，默认 3，最大 8
+- `agent_subagent_timeout_seconds`：单个 Sub-Agent 超时，默认 300 秒
 - `agent_browser_enabled`：启用 `web_browser`，默认 `true`
 - `agent_browser_headless`：使用无界面 Chromium，默认 `true`
 - `agent_browser_profile_dir`：共享持久 Profile，默认 `data/jianer_browser/profile`
@@ -199,6 +211,43 @@ transcription 接口，默认模型为
 两项 Agent 变量会按 Agent 状态、当前模型的 tools 能力、当前协议/适配器能力以及
 `agent_allowed_tools` 白名单动态过滤，不会列出本轮无法调用的工具。
 
+## 会话与插话
+
+同一 `ConversationKey`（协议 + 机器人 + 会话 + preset）内所有发言者共享一条短期
+历史和一条在途回复，不再按用户各自串行。生成期间到达的新消息会作为插话写入上下文，
+并取消当前 provider 调用，携带全部插话重新生成；`agent_interrupt_debounce_ms` 用于
+合并连续插话，`agent_interrupt_max_merges` 限制单轮重新生成次数。preset 隔离、群间
+隔离与 canonical 个人记忆跨私聊/群聊共享等原有不变量保持不变。
+
+群聊中默认首条回复会 At 触发者（`agent_mention_reply=auto`），进度消息不 At；
+私聊不 At。
+
+## 平台 API 工具
+
+当 `agent_platform_api_enabled` 为真时注册三个工具：
+
+- `send_message`：面向当前会话的高层发送接口，支持正文、At 列表、引用消息与图片链接。
+- `call_platform_api`：按当前协议透传原始接口。OneBot 传 `action` 与 `params`；Milky
+  传 `endpoint` 与 `params`；Lark 传 `/open-apis/...` 路径，可用 `method`、`params`、
+  `json` 指定请求细节。
+- `platform_command`：用 `jianer-plugin-alconna` 解析自然命令（如
+  `发送群消息 12345 你好`、`撤回消息 678`、`禁言成员 12345 678 60`、`查询群成员
+  12345 678`），无法识别时回退为 `action {JSON}` 原始调用。
+
+`send_message` 属于 `ToolRisk.MUTATING`；`call_platform_api` 与 `platform_command`
+属于 `ToolRisk.PRIVILEGED`。**只有群管理员（`sender.role` 为 owner/admin）或机器人
+管理员（runtime 的 `root_users`/`super_users`/`manage_users`/`admins`）才能主动让
+机器人调用平台 API**，普通成员在工具列表层面就看不到这两个工具。向其他会话发送消息
+仅机器人管理员可用。角色缺失时会回退查询群成员信息并缓存 60 秒。
+
+## Sub-Agent
+
+`spawn_subagents` 允许父 Agent 一次派生多个 Sub-Agent 并发执行耗时较长的子任务，
+每个子任务运行独立的工具循环，父 Agent 等待并汇总结果。子 Agent 复用同一
+`ToolRegistry` 与权限模型，工具白名单为父白名单减去 `spawn_subagents` 与父无权限的
+工具；并发上限 `agent_subagent_max_concurrency`，单任务超时
+`agent_subagent_timeout_seconds`，深度上限 1（子 Agent 不能再派生）。
+
 ## Agent 工具
 
 内置工具包括当前时间、安全算术、当前发言人资料、当前会话资料、当前 canonical
@@ -217,7 +266,7 @@ transcription 接口，默认模型为
 两个写工具属于
 `ToolRisk.MUTATING`；默认只放行这两个内置写工具，其他插件
 注册的写工具必须通过 `agent_allowed_tools` 显式点名。插件仍不向模型开放 shell、本地文件
-系统、原始 WebSocket、文件上传下载、消息管理或记忆删除能力。外部工具结果作为不可信数据处理；工具
+系统、文件上传下载或记忆删除能力。外部工具结果作为不可信数据处理；工具
 中间结果不会写入短期历史、TTS 或长期记忆，只有最终 AI 文本会进入原有回复链。
 调用搜索、GitHub 或网页工具本身不代表用户要求查看来源；默认回答不展示来源或 URL，只有用户在
 当前请求中明确要求来源、出处、引用、链接或参考资料时，才附上实际使用的完整 URL。
