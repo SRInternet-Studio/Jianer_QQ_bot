@@ -48,6 +48,11 @@ class ToolContext:
         repr=False,
         compare=False,
     )
+    actor: Any = field(default=None, repr=False, compare=False)
+    agent: Any = field(default=None, repr=False, compare=False)
+    model: str = field(default="", compare=False)
+    depth: int = field(default=0, compare=False)
+    interrupt_event: Any = field(default=None, repr=False, compare=False)
 
 
 ToolHandler = Callable[
@@ -68,6 +73,7 @@ class ToolSpec:
     max_output_chars: int = 8192
     supported_protocols: frozenset[str] = frozenset()
     required_capabilities: Capabilities = frozenset()
+    required_privilege: bool = False
     shutdown: ToolShutdown | None = field(
         default=None,
         repr=False,

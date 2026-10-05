@@ -59,14 +59,26 @@ class ToolRegistry:
                 return True
         return False
 
-    def available(self, context: ToolContext) -> tuple[ToolSpec, ...]:
+    def available(
+        self,
+        context: ToolContext,
+        actor: Any | None = None,
+    ) -> tuple[ToolSpec, ...]:
         if self._closed:
             return ()
+        if actor is None:
+            actor = getattr(context, "actor", None)
         protocol = str(context.conversation.protocol).casefold()
         capabilities = frozenset(getattr(context.actions, "capabilities", ()))
         output: list[ToolSpec] = []
         for _, spec in sorted(self._tools.values(), key=lambda item: item[1].name):
             if spec.risk not in self._allowed_risks:
+                continue
+            if (
+                getattr(spec, "required_privilege", False)
+                and actor is not None
+                and not getattr(actor, "is_privileged", False)
+            ):
                 continue
             if (
                 spec.risk is ToolRisk.MUTATING
@@ -88,7 +100,7 @@ class ToolRegistry:
         if stored is None:
             return _error_result(call, "unknown_tool", "请求的工具不存在或不可用。")
         spec = stored[1]
-        if spec not in self.available(context):
+        if spec not in self.available(context, getattr(context, "actor", None)):
             return _error_result(call, "tool_not_allowed", "当前上下文不允许使用该工具。")
         try:
             arguments = _normalize_arguments(call.arguments)
@@ -217,6 +229,9 @@ def _coerce_spec(value: Any) -> ToolSpec:
             ),
             required_capabilities=frozenset(
                 getattr(value, "required_capabilities", ())
+            ),
+            required_privilege=bool(
+                getattr(value, "required_privilege", False)
             ),
             shutdown=getattr(value, "shutdown", None),
         )
