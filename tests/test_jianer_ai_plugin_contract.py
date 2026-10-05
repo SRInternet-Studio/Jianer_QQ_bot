@@ -12,7 +12,17 @@ def test_fresh_manager_loads_agent_command_extension_api_and_shutdown(tmp_path):
 import asyncio
 import logging
 import os
+from pathlib import Path
 from types import SimpleNamespace
+
+from cfgr.manager import Serializers
+from jianer import configurator as Configurator
+
+_root = Path.cwd()
+_config = _root / "config.json"
+if not _config.is_file():
+    _config = _root / "config.example.json"
+Configurator.BotConfig.load_from(str(_config), Serializers.JSON, "jianer-bot")
 
 from bot import plugin_state
 from plugins.JianerAI.tools import ToolSpec
@@ -51,6 +61,7 @@ plugin_state.configure(
     config=SimpleNamespace(
         others={
             "jianer_ai_db_path": os.environ["JIANER_AGENT_TEST_DB"],
+            "memorix_data_dir": os.environ["JIANER_AGENT_TEST_MEMORIX"],
             "agent_enabled_default": True,
             "default_mode": "example",
         },
@@ -118,14 +129,14 @@ async def scenario():
     class BlockingAgent:
         def __init__(self):
             self.release = asyncio.Event()
-            self.two_started = asyncio.Event()
             self.started = []
+            self.prompts = []
 
         async def run(self, **kwargs):
             self.started.append(kwargs["context"].canonical_user_id)
-            if len(self.started) >= 2:
-                self.two_started.set()
-            await self.release.wait()
+            self.prompts.append(str(kwargs["message"]))
+            if len(self.started) == 1:
+                await self.release.wait()
             return "background reply"
 
     blocking_agent = BlockingAgent()
@@ -139,12 +150,18 @@ async def scenario():
         plugin_state.dispatch_fallback(first_event, first_actions),
         timeout=1,
     ) is True
+    for _ in range(600):
+        if blocking_agent.started:
+            break
+        await asyncio.sleep(0.02)
+    assert len(blocking_agent.started) == 1
+    # 同一会话共享一条在途回复：第二位发言者只登记插话，不再并发生成。
     assert await asyncio.wait_for(
         plugin_state.dispatch_fallback(second_event, second_actions),
         timeout=1,
     ) is True
-    await asyncio.wait_for(blocking_agent.two_started.wait(), timeout=2)
-    assert len(set(blocking_agent.started)) == 2
+    await asyncio.sleep(0.05)
+    assert len(blocking_agent.started) == 1
     assert plugin_state.is_generating() is False
 
     logout_actions = FakeActions()
@@ -164,9 +181,12 @@ async def scenario():
         asyncio.gather(*dialogues),
         timeout=15,
     )
+    # 插话后按合并后的上下文重新生成一次，且上下文包含插话内容。
+    assert len(blocking_agent.started) == 2
+    assert "second" in blocking_agent.prompts[-1]
     assert first_actions.sent
-    assert second_actions.sent
     key = await service._conversation_key(first_event, first_actions)
+    # 期间执行过 ~注销，清空上下文后的在途回复不再写回历史。
     assert service._histories.get(key) in (None, [])
 
     assert module.unregister_tool(registration) is True
@@ -187,6 +207,7 @@ asyncio.run(scenario())
     env["PYTHONPATH"] = str(ROOT)
     env["PYTHONUTF8"] = "1"
     env["JIANER_AGENT_TEST_DB"] = str(tmp_path / "agent-plugin.db")
+    env["JIANER_AGENT_TEST_MEMORIX"] = str(tmp_path / "memorix")
     for key in (
         "QWEATHER_API_HOST",
         "QWEATHER_PROJECT_ID",

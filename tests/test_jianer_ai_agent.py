@@ -10,7 +10,11 @@ import pytest
 
 from jianer.adapters import ConversationKey, ConversationKind
 
-from plugins.JianerAI.agent import AgentOptions, AgentRunner
+from plugins.JianerAI.agent import (
+    AgentInterrupted,
+    AgentOptions,
+    AgentRunner,
+)
 from plugins.JianerAI.memory import (
     JianerMemoryStore,
     MemoryMigrationRequiredError,
@@ -1461,3 +1465,208 @@ def test_schema_v2_session_settings_migrate_agent_override_idempotently(tmp_path
         }
     assert version == SCHEMA_VERSION == 5
     assert "agent_enabled" in columns
+
+
+class RecordingObserver:
+    def __init__(self):
+        self.texts = []
+        self.interrupts = []
+        self.tool_starts = []
+        self.tool_results = []
+
+    async def on_assistant_text(self, text, *, final):
+        self.texts.append((text, final))
+
+    async def on_tool_start(self, call):
+        self.tool_starts.append(call.name)
+
+    async def on_tool_result(self, call, result):
+        self.tool_results.append((call.name, getattr(result, "ok", None)))
+
+    async def on_interrupt(self, reason):
+        self.interrupts.append(reason)
+
+
+class ProgressProvider:
+    """First round returns text plus a tool call; second round is final."""
+
+    def __init__(self):
+        self.requests = []
+
+    def supports_tools(self, model):
+        return True
+
+    async def complete_request(self, model, request):
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            call = ProviderToolCall(
+                "call-1",
+                "calculate_expression",
+                {"expression": "6*7"},
+            )
+            return ProviderResponse(
+                "我先算一下。",
+                (call,),
+                AssistantTurn(text="我先算一下。", tool_calls=(call,)),
+            )
+        return ProviderResponse(
+            "结果是 42。",
+            (),
+            AssistantTurn(text="结果是 42。"),
+        )
+
+    async def chat(self, model, message, **kwargs):
+        return "普通回答"
+
+
+def test_agent_observer_streams_intermediate_text_and_marks_final():
+    async def scenario():
+        provider = ProgressProvider()
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        context, _, _ = _context()
+        observer = RecordingObserver()
+
+        answer = await AgentRunner(provider, registry).run(
+            model="model-a",
+            message="六乘七是多少",
+            history=(),
+            system_prompt="test",
+            attachments=(),
+            context=context,
+            enabled=True,
+            observer=observer,
+        )
+
+        assert answer == "结果是 42。"
+        assert observer.texts == [
+            ("我先算一下。", False),
+            ("结果是 42。", True),
+        ]
+        assert observer.tool_starts == ["calculate_expression"]
+        assert observer.tool_results == [("calculate_expression", True)]
+
+    asyncio.run(scenario())
+
+
+def test_agent_interrupt_cancels_in_flight_provider_call():
+    async def scenario():
+        class HangingProvider:
+            def __init__(self):
+                self.cancelled = False
+
+            def supports_tools(self, model):
+                return True
+
+            async def complete_request(self, model, request):
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                raise AssertionError("unreachable")
+
+            async def chat(self, model, message, **kwargs):
+                return "unused"
+
+        provider = HangingProvider()
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        context, _, _ = _context()
+        observer = RecordingObserver()
+        interrupt_event = asyncio.Event()
+
+        async def trigger():
+            await asyncio.sleep(0.05)
+            interrupt_event.set()
+
+        trigger_task = asyncio.create_task(trigger())
+        try:
+            with pytest.raises(AgentInterrupted):
+                await AgentRunner(provider, registry).run(
+                    model="model-a",
+                    message="hi",
+                    history=(),
+                    system_prompt="test",
+                    attachments=(),
+                    context=context,
+                    enabled=True,
+                    observer=observer,
+                    interrupt_event=interrupt_event,
+                )
+        finally:
+            await trigger_task
+        assert provider.cancelled is True
+        assert observer.interrupts == ["superseded"]
+
+    asyncio.run(scenario())
+
+
+def test_agent_options_validate_max_depth():
+    assert AgentOptions(max_depth=0).max_depth == 0
+    with pytest.raises(ValueError):
+        AgentOptions(max_depth=-1)
+
+
+def test_spawn_subagents_runs_nested_tool_loops_without_recursion():
+    from plugins.JianerAI.tools.subagent import (
+        SPAWN_SUBAGENTS_TOOL_NAME,
+        subagent_tool,
+    )
+
+    async def scenario():
+        class SubAgentProvider:
+            def __init__(self):
+                self.messages = []
+
+            def supports_tools(self, model):
+                return True
+
+            async def complete_request(self, model, request):
+                self.messages.append(request.message)
+                return ProviderResponse(
+                    f"完成：{request.message}",
+                    (),
+                    AssistantTurn(text=f"完成：{request.message}"),
+                )
+
+            async def chat(self, model, message, **kwargs):
+                return f"完成：{message}"
+
+        provider = SubAgentProvider()
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        spec = subagent_tool(
+            providers=provider,
+            tools=registry,
+            logger=None,
+            model_resolver=lambda context: "model-a",
+            max_concurrency=2,
+        )
+        registry.register(spec)
+        context, _, _ = _context()
+
+        result = await registry.execute(
+            ToolCall(
+                "spawn",
+                SPAWN_SUBAGENTS_TOOL_NAME,
+                {
+                    "tasks": [
+                        {"goal": "任务甲"},
+                        {"goal": "任务乙"},
+                    ]
+                },
+            ),
+            context,
+        )
+        payload = json.loads(result.content)
+        assert payload["ok"] is True
+        outputs = [item["output"] for item in payload["data"]["results"]]
+        assert outputs == ["完成：任务甲", "完成：任务乙"]
+        # 子 Agent 不能再次派生 Sub-Agent。
+        child_specs = {
+            item.name for item in registry.available(context)
+        }
+        assert SPAWN_SUBAGENTS_TOOL_NAME in child_specs
+
+    asyncio.run(scenario())

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2579,8 +2580,131 @@ def test_ai_reply_over_five_paragraphs_without_native_forward_sends_one_text(
         assert len(actions.sent) == 1
         sent_segments = list(actions.sent[0][1])
         assert isinstance(sent_segments[0], Segments.Reply)
-        assert isinstance(sent_segments[1], Segments.Text)
-        assert sent_segments[1].text == "\n\n".join(paragraphs)
+        # 群聊首条回复默认 At 触发者。
+        assert isinstance(sent_segments[1], Segments.At)
+        assert sent_segments[1].qq == "42"
+        assert isinstance(sent_segments[2], Segments.Text)
+        assert sent_segments[2].text == "\n\n".join(paragraphs)
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+class StreamingProviders:
+    """Streams intermediate text, then waits so a second speaker can interject."""
+
+    def __init__(self, answer="最终答案。"):
+        self.answer = answer
+        self.models = {"model-a": "模型 A"}
+        self.requests = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def list_models(self):
+        return dict(self.models)
+
+    def get(self, key):
+        if key not in self.models:
+            raise UnknownModelError(key)
+        return SimpleNamespace(key=key, friendly_name=self.models[key])
+
+    def supports_tools(self, model):
+        return True
+
+    async def complete_request(self, key, request):
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            call = ProviderToolCall(
+                "call-1",
+                "calculate_expression",
+                {"expression": "1+1"},
+            )
+            self.started.set()
+            await self.release.wait()
+            return ProviderResponse(
+                "我先算一下。",
+                (call,),
+                AssistantTurn(text="我先算一下。", tool_calls=(call,)),
+            )
+        return ProviderResponse(
+            self.answer,
+            (),
+            AssistantTurn(text=self.answer),
+        )
+
+    async def chat(self, key, message, **kwargs):
+        return "普通回答。"
+
+
+def test_group_reply_streams_progress_without_at_and_mentions_trigger(tmp_path: Path):
+    async def scenario():
+        service, _, _ = _service(tmp_path)
+        providers = StreamingProviders("最终答案。")
+        service.providers = providers
+        service.agent.providers = providers
+        actions = FakeActions({Capability.SEND_REPLY})
+        event = _at_event("帮我算一下", user_id="42")
+
+        assert await service.handle_fallback(event, actions, background_dialogue=True)
+        await asyncio.wait_for(providers.started.wait(), timeout=5)
+        providers.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(service._background_tasks)),
+            timeout=10,
+        )
+
+        sent = list(actions.sent)
+        assert sent, "expected progress and final messages"
+        # 进度消息不带 At。
+        progress_segments = list(sent[0][1])
+        assert not any(
+            isinstance(segment, Segments.At) for segment in progress_segments
+        )
+        # 最终回复 At 触发者。
+        final_segments = list(sent[-1][1])
+        assert any(
+            isinstance(segment, Segments.At) and segment.qq == "42"
+            for segment in final_segments
+        )
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_second_speaker_interjection_interrupts_and_regenerates(tmp_path: Path):
+    async def scenario():
+        service, _, _ = _service(tmp_path)
+        service.options = replace(
+            service.options,
+            agent_interrupt_debounce_ms=0,
+            agent_total_timeout_seconds=30.0,
+        )
+        providers = StreamingProviders("最终答案。")
+        service.providers = providers
+        service.agent.providers = providers
+        actions = FakeActions({Capability.SEND_REPLY})
+
+        first = _at_event("帮我算一下", user_id="42")
+        assert await service.handle_fallback(first, actions, background_dialogue=True)
+        await asyncio.wait_for(providers.started.wait(), timeout=5)
+
+        second = _at_event("再补充一个问题", user_id="99")
+        assert await service.handle_fallback(second, actions, background_dialogue=True)
+
+        providers.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(service._background_tasks)),
+            timeout=15,
+        )
+
+        # 插话触发了重新生成：至少两次 provider 调用，且第二次提示词包含插话。
+        assert len(providers.requests) >= 2
+        last_prompt = providers.requests[-1].message
+        assert "再补充一个问题" in last_prompt
+        # 同一会话共享一条历史。
+        key = await service._conversation_key(first, actions)
+        history = service._histories.get(key, [])
+        assert any("再补充一个问题" in item["content"] for item in history if item["role"] == "user")
         await service.shutdown()
 
     asyncio.run(scenario())
