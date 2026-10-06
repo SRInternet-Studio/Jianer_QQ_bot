@@ -72,7 +72,7 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
   允许全部内置工具，显式空数组则不暴露工具；配置白名单时，记忆写入还需显式加入
   `create_my_memory` 和/或 `update_my_memory`
 - `agent_stream_progress`：工具调用期间把模型每轮的说明文字实时发给用户，默认 `true`
-- `agent_progress_max_messages`：单轮最多发送多少条进度消息，默认 5，`0` 表示关闭
+- `agent_progress_max_messages`：兼容旧配置；`0` 表示关闭进度消息，正数启用模型生成的进度消息，不再限制条数
 - `agent_mention_reply`：群聊首条回复是否 At 触发者，`auto`（默认）或 `off`
 - `agent_interrupt_enabled`：允许同一会话中的新消息打断在途生成并重新生成，默认 `true`
 - `agent_interrupt_debounce_ms`：合并连续插话的防抖窗口，默认 300 毫秒
@@ -83,6 +83,15 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `agent_subagent_enabled`：注册 `spawn_subagents`，默认 `true`
 - `agent_subagent_max_concurrency`：Sub-Agent 并发上限，默认 3，最大 8
 - `agent_subagent_timeout_seconds`：单个 Sub-Agent 超时，默认 300 秒
+- `agent_subagent_allowed_tools`：Sub-Agent 可额外使用的工具白名单；默认继承父 Agent 白名单并
+  移除发送消息、原始平台 API、记忆读写和递归派生能力
+- `agent_subagent_can_send_message` / `agent_subagent_can_mutate`：是否允许 Sub-Agent 主动发消息或
+  执行变更操作，默认关闭
+- `memory_auto_inject`：每个 Agent 轮次是否自动注入相关个人记忆、群记忆、近期聊天和对话片段，默认开启
+- `memory_auto_inject_max_chars`：自动记忆资料字符预算，默认 16000
+- `memory_auto_inject_recent_chat` / `memory_auto_inject_episodes` / `memory_auto_inject_group`：分别控制近期聊天、
+  相关对话片段和群记忆注入，默认开启
+- `memory_auto_inject_subagents`：是否把当前轮次的只读记忆快照传给 Sub-Agent，默认开启
 - `agent_browser_enabled`：启用 `web_browser`，默认 `true`
 - `agent_browser_headless`：使用无界面 Chromium，默认 `true`
 - `agent_browser_profile_dir`：共享持久 Profile，默认 `data/jianer_browser/profile`
@@ -224,21 +233,24 @@ transcription 接口，默认模型为
 
 ## 平台 API 工具
 
-当 `agent_platform_api_enabled` 为真时注册三个工具：
+当 `agent_platform_api_enabled` 为真时，模型获得当前协议对应的静态 API 工具：
 
-- `send_message`：面向当前会话的高层发送接口，支持正文、At 列表、引用消息与图片链接。
-- `call_platform_api`：按当前协议透传原始接口。OneBot 传 `action` 与 `params`；Milky
-  传 `endpoint` 与 `params`；Lark 传 `/open-apis/...` 路径，可用 `method`、`params`、
-  `json` 指定请求细节。
-- `platform_command`：用 `jianer-plugin-alconna` 解析自然命令（如
-  `发送群消息 12345 你好`、`撤回消息 678`、`禁言成员 12345 678 60`、`查询群成员
-  12345 678`），无法识别时回退为 `action {JSON}` 原始调用。
+- `send_message`：向当前会话发送消息，支持正文、At 列表、引用消息与图片链接。
+- OneBot V11：按 [OneBot V11 公开 API](https://11.onebot.dev/api/public.html) 注册 38 个
+  `onebot_*` 工具，包含消息收发、消息查询、群成员管理、好友请求和状态查询。隐藏 API
+  与未声明 action 不会暴露。
+- Milky 1.3：按官方 OpenAPI 注册 65 个 `milky_*` 工具，包含消息收发、群精华、群成员、
+  通知、文件和账号 API。每个工具固定 endpoint、HTTP 方法及参数 JSON Schema。
+- Lark/飞书：注册 9 个 `lark_*` 消息工具，覆盖发送、回复、查询、撤回、已读成员查询和表情回应。
+  请求路径、HTTP 方法、查询字段和消息体由代码固定；工具接收文本，不要求模型拼接 OAPI JSON 字符串。
+- `platform_command`：用 `jianer-plugin-alconna` 解析少量固定的 OneBot 常用命令，没有任意
+  `action {JSON}` 回退。
 
-`send_message` 属于 `ToolRisk.MUTATING`；`call_platform_api` 与 `platform_command`
-属于 `ToolRisk.PRIVILEGED`。**只有群管理员（`sender.role` 为 owner/admin）或机器人
-管理员（runtime 的 `root_users`/`super_users`/`manage_users`/`admins`）才能主动让
-机器人调用平台 API**，普通成员在工具列表层面就看不到这两个工具。向其他会话发送消息
-仅机器人管理员可用。角色缺失时会回退查询群成员信息并缓存 60 秒。
+不向模型暴露任意 action、Milky endpoint 或 Lark path/method/body 透传工具。OneBot、Milky
+和 Lark 静态 API 工具使用精确参数类型并拒绝未声明字段；读取和变更 API 均需要群管理员
+（`sender.role` 为 owner/admin）或机器人管理员（runtime 的 `root_users`/`super_users`/
+`manage_users`/`admins`）权限。角色缺失时会回退查询群成员信息并缓存 60 秒。Sub-Agent
+默认不继承这些平台 API 工具。
 
 ## Sub-Agent
 
@@ -246,7 +258,17 @@ transcription 接口，默认模型为
 每个子任务运行独立的工具循环，父 Agent 等待并汇总结果。子 Agent 复用同一
 `ToolRegistry` 与权限模型，工具白名单为父白名单减去 `spawn_subagents` 与父无权限的
 工具；并发上限 `agent_subagent_max_concurrency`，单任务超时
-`agent_subagent_timeout_seconds`，深度上限 1（子 Agent 不能再派生）。
+`agent_subagent_timeout_seconds`，深度上限 1（子 Agent 不能再派生）。子 Agent 接收当前轮次的
+只读自动记忆快照，结果只回传父 Agent，不会自动刷屏、写长期记忆或向其它会话发送消息。
+
+## Tool 插件
+
+所有内置工具、平台 API 和 Sub-Agent 都通过 `ToolRegistry` 的 ToolPlugin provider 注册。第三方
+插件可以实现 `plugin_id` 与 `provide_tools(context)`，再通过 `setup.py` 导出的
+`register_tool_plugin(plugin)` 动态加载；返回的 `ToolPluginRegistration` 可传给
+`unregister_tool_plugin(...)` 卸载。异步 provider 使用 service 的异步注册接口。每个工具仍经过
+风险级别、协议能力、权限、JSON schema、超时、输出长度和审计校验，插件卸载时会调用 provider
+的 `shutdown()`。
 
 ## Agent 工具
 

@@ -1,0 +1,3046 @@
+{
+  "openapi_version": "3.1.0",
+  "milky_version": "1.3.0",
+  "source": "https://milky.ntqqrev.org/raw/openapi/openapi.json",
+  "apis": [
+    {
+      "name": "get_login_info",
+      "path": "/api/get_login_info",
+      "description": "获取登录信息",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "空对象，用于无输入/输出的 API",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "get_impl_info",
+      "path": "/api/get_impl_info",
+      "description": "获取协议端信息",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "空对象，用于无输入/输出的 API",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "get_user_profile",
+      "path": "/api/get_user_profile",
+      "description": "获取用户个人信息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "用户 QQ 号"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "description": "获取用户个人信息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_friend_list",
+      "path": "/api/get_friend_list",
+      "description": "获取好友列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "no_cache": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否强制不使用缓存"
+          }
+        },
+        "description": "获取好友列表 API 请求参数",
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_friend_info",
+      "path": "/api/get_friend_info",
+      "description": "获取好友信息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号"
+          },
+          "no_cache": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否强制不使用缓存"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "description": "获取好友信息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_list",
+      "path": "/api/get_group_list",
+      "description": "获取群列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "no_cache": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否强制不使用缓存"
+          }
+        },
+        "description": "获取群列表 API 请求参数",
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_info",
+      "path": "/api/get_group_info",
+      "description": "获取群信息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "no_cache": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否强制不使用缓存"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "description": "获取群信息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_member_list",
+      "path": "/api/get_group_member_list",
+      "description": "获取群成员列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "no_cache": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否强制不使用缓存"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "description": "获取群成员列表 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_member_info",
+      "path": "/api/get_group_member_info",
+      "description": "获取群成员信息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群成员 QQ 号"
+          },
+          "no_cache": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否强制不使用缓存"
+          }
+        },
+        "required": [
+          "group_id",
+          "user_id"
+        ],
+        "description": "获取群成员信息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_peer_pins",
+      "path": "/api/get_peer_pins",
+      "description": "获取置顶的好友和群列表",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "空对象，用于无输入/输出的 API",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "set_peer_pin",
+      "path": "/api/set_peer_pin",
+      "description": "设置好友或群的置顶状态",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message_scene": {
+            "type": "string",
+            "enum": [
+              "friend",
+              "group",
+              "temp"
+            ],
+            "description": "要设置的会话的消息场景"
+          },
+          "peer_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "要设置的好友 QQ 号或群号"
+          },
+          "is_pinned": {
+            "anyOf": [
+              {
+                "default": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否置顶, `false` 表示取消置顶"
+          }
+        },
+        "required": [
+          "message_scene",
+          "peer_id"
+        ],
+        "description": "设置好友或群的置顶状态 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_avatar",
+      "path": "/api/set_avatar",
+      "description": "设置 QQ 账号头像",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "uri": {
+            "type": "string",
+            "description": "头像文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+          }
+        },
+        "required": [
+          "uri"
+        ],
+        "description": "设置 QQ 账号头像 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_nickname",
+      "path": "/api/set_nickname",
+      "description": "设置 QQ 账号昵称",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "new_nickname": {
+            "type": "string",
+            "description": "新昵称"
+          }
+        },
+        "required": [
+          "new_nickname"
+        ],
+        "description": "设置 QQ 账号昵称 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_bio",
+      "path": "/api/set_bio",
+      "description": "设置 QQ 账号个性签名",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "new_bio": {
+            "type": "string",
+            "description": "新个性签名"
+          }
+        },
+        "required": [
+          "new_bio"
+        ],
+        "description": "设置 QQ 账号个性签名 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_custom_face_url_list",
+      "path": "/api/get_custom_face_url_list",
+      "description": "获取自定义表情 URL 列表",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "空对象，用于无输入/输出的 API",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "get_cookies",
+      "path": "/api/get_cookies",
+      "description": "获取 Cookies",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string",
+            "description": "需要获取 Cookies 的域名"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "description": "获取 Cookies API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_csrf_token",
+      "path": "/api/get_csrf_token",
+      "description": "获取 CSRF Token",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "空对象，用于无输入/输出的 API",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "send_private_message",
+      "path": "/api/send_private_message",
+      "description": "发送私聊消息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号"
+          },
+          "message": {
+            "type": "array",
+            "items": {
+              "description": "发送消息段",
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "text"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string",
+                          "description": "文本内容"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "文本消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "mention"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user_id": {
+                          "type": "integer",
+                          "minimum": 10001,
+                          "maximum": 4294967295,
+                          "description": "提及的 QQ 号"
+                        }
+                      },
+                      "required": [
+                        "user_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "提及消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "mention_all"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "提及全体消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "face"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "face_id": {
+                          "type": "string",
+                          "description": "表情 ID"
+                        },
+                        "is_large": {
+                          "anyOf": [
+                            {
+                              "default": false,
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "是否为超级表情"
+                        }
+                      },
+                      "required": [
+                        "face_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "表情消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "reply"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "message_seq": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991,
+                          "description": "被引用的消息序列号"
+                        }
+                      },
+                      "required": [
+                        "message_seq"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "回复消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "image"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uri": {
+                          "type": "string",
+                          "description": "文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+                        },
+                        "sub_type": {
+                          "anyOf": [
+                            {
+                              "default": "normal",
+                              "type": "string",
+                              "enum": [
+                                "normal",
+                                "sticker"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "图片类型"
+                        },
+                        "summary": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "图片预览文本"
+                        }
+                      },
+                      "required": [
+                        "uri"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "图片消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "record"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uri": {
+                          "type": "string",
+                          "description": "文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+                        }
+                      },
+                      "required": [
+                        "uri"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "语音消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "video"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uri": {
+                          "type": "string",
+                          "description": "文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+                        },
+                        "thumb_uri": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "封面图片 URI"
+                        }
+                      },
+                      "required": [
+                        "uri"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "视频消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "forward"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "messages": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "user_id": {
+                                "type": "integer",
+                                "minimum": 10001,
+                                "maximum": 4294967295,
+                                "description": "发送者 QQ 号"
+                              },
+                              "sender_name": {
+                                "type": "string",
+                                "description": "发送者名称"
+                              },
+                              "time": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "消息 Unix 时间戳（秒）"
+                              },
+                              "segments": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "text",
+                                        "mention",
+                                        "mention_all",
+                                        "face",
+                                        "reply",
+                                        "image",
+                                        "record",
+                                        "video",
+                                        "forward",
+                                        "light_app"
+                                      ]
+                                    },
+                                    "data": {
+                                      "type": "object",
+                                      "properties": {
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "user_id": {
+                                          "type": "integer",
+                                          "minimum": 10001,
+                                          "maximum": 4294967295
+                                        },
+                                        "face_id": {
+                                          "type": "string"
+                                        },
+                                        "is_large": {
+                                          "type": "boolean"
+                                        },
+                                        "message_seq": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "uri": {
+                                          "type": "string"
+                                        },
+                                        "sub_type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "normal",
+                                            "sticker"
+                                          ]
+                                        },
+                                        "summary": {
+                                          "type": "string"
+                                        },
+                                        "thumb_uri": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "preview": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "prompt": {
+                                          "type": "string"
+                                        },
+                                        "json_payload": {
+                                          "type": "string"
+                                        },
+                                        "messages": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object"
+                                          }
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "data"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "description": "消息段列表"
+                              }
+                            },
+                            "required": [
+                              "user_id",
+                              "sender_name",
+                              "segments"
+                            ],
+                            "description": "发送转发消息"
+                          },
+                          "description": "转发消息内容"
+                        },
+                        "title": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "合并转发标题"
+                        },
+                        "preview": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "合并转发预览文本，若提供，至少 1 条，至多 4 条"
+                        },
+                        "summary": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "合并转发摘要"
+                        },
+                        "prompt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "合并转发的预览外显文本，仅对移动端 QQ 有效"
+                        }
+                      },
+                      "required": [
+                        "messages"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "合并转发消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "light_app"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "json_payload": {
+                          "type": "string",
+                          "description": "小程序 JSON 数据"
+                        }
+                      },
+                      "required": [
+                        "json_payload"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "小程序消息段"
+                }
+              ]
+            },
+            "description": "消息内容"
+          }
+        },
+        "required": [
+          "user_id",
+          "message"
+        ],
+        "description": "发送私聊消息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "send_group_message",
+      "path": "/api/send_group_message",
+      "description": "发送群聊消息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "message": {
+            "type": "array",
+            "items": {
+              "description": "发送消息段",
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "text"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string",
+                          "description": "文本内容"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "文本消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "mention"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user_id": {
+                          "type": "integer",
+                          "minimum": 10001,
+                          "maximum": 4294967295,
+                          "description": "提及的 QQ 号"
+                        }
+                      },
+                      "required": [
+                        "user_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "提及消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "mention_all"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "提及全体消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "face"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "face_id": {
+                          "type": "string",
+                          "description": "表情 ID"
+                        },
+                        "is_large": {
+                          "anyOf": [
+                            {
+                              "default": false,
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "是否为超级表情"
+                        }
+                      },
+                      "required": [
+                        "face_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "表情消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "reply"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "message_seq": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991,
+                          "description": "被引用的消息序列号"
+                        }
+                      },
+                      "required": [
+                        "message_seq"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "回复消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "image"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uri": {
+                          "type": "string",
+                          "description": "文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+                        },
+                        "sub_type": {
+                          "anyOf": [
+                            {
+                              "default": "normal",
+                              "type": "string",
+                              "enum": [
+                                "normal",
+                                "sticker"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "图片类型"
+                        },
+                        "summary": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "图片预览文本"
+                        }
+                      },
+                      "required": [
+                        "uri"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "图片消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "record"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uri": {
+                          "type": "string",
+                          "description": "文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+                        }
+                      },
+                      "required": [
+                        "uri"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "语音消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "video"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uri": {
+                          "type": "string",
+                          "description": "文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+                        },
+                        "thumb_uri": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "封面图片 URI"
+                        }
+                      },
+                      "required": [
+                        "uri"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "视频消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "forward"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "messages": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "user_id": {
+                                "type": "integer",
+                                "minimum": 10001,
+                                "maximum": 4294967295,
+                                "description": "发送者 QQ 号"
+                              },
+                              "sender_name": {
+                                "type": "string",
+                                "description": "发送者名称"
+                              },
+                              "time": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "消息 Unix 时间戳（秒）"
+                              },
+                              "segments": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "text",
+                                        "mention",
+                                        "mention_all",
+                                        "face",
+                                        "reply",
+                                        "image",
+                                        "record",
+                                        "video",
+                                        "forward",
+                                        "light_app"
+                                      ]
+                                    },
+                                    "data": {
+                                      "type": "object",
+                                      "properties": {
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "user_id": {
+                                          "type": "integer",
+                                          "minimum": 10001,
+                                          "maximum": 4294967295
+                                        },
+                                        "face_id": {
+                                          "type": "string"
+                                        },
+                                        "is_large": {
+                                          "type": "boolean"
+                                        },
+                                        "message_seq": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "uri": {
+                                          "type": "string"
+                                        },
+                                        "sub_type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "normal",
+                                            "sticker"
+                                          ]
+                                        },
+                                        "summary": {
+                                          "type": "string"
+                                        },
+                                        "thumb_uri": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "preview": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "prompt": {
+                                          "type": "string"
+                                        },
+                                        "json_payload": {
+                                          "type": "string"
+                                        },
+                                        "messages": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object"
+                                          }
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "data"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "description": "消息段列表"
+                              }
+                            },
+                            "required": [
+                              "user_id",
+                              "sender_name",
+                              "segments"
+                            ],
+                            "description": "发送转发消息"
+                          },
+                          "description": "转发消息内容"
+                        },
+                        "title": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "合并转发标题"
+                        },
+                        "preview": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "合并转发预览文本，若提供，至少 1 条，至多 4 条"
+                        },
+                        "summary": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "合并转发摘要"
+                        },
+                        "prompt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "合并转发的预览外显文本，仅对移动端 QQ 有效"
+                        }
+                      },
+                      "required": [
+                        "messages"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "合并转发消息段"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "light_app"
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "json_payload": {
+                          "type": "string",
+                          "description": "小程序 JSON 数据"
+                        }
+                      },
+                      "required": [
+                        "json_payload"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "data"
+                  ],
+                  "description": "小程序消息段"
+                }
+              ]
+            },
+            "description": "消息内容"
+          }
+        },
+        "required": [
+          "group_id",
+          "message"
+        ],
+        "description": "发送群聊消息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "recall_private_message",
+      "path": "/api/recall_private_message",
+      "description": "撤回私聊消息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号"
+          },
+          "message_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "消息序列号"
+          }
+        },
+        "required": [
+          "user_id",
+          "message_seq"
+        ],
+        "description": "撤回私聊消息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "recall_group_message",
+      "path": "/api/recall_group_message",
+      "description": "撤回群聊消息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "message_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "消息序列号"
+          }
+        },
+        "required": [
+          "group_id",
+          "message_seq"
+        ],
+        "description": "撤回群聊消息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_message",
+      "path": "/api/get_message",
+      "description": "获取消息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message_scene": {
+            "type": "string",
+            "enum": [
+              "friend",
+              "group",
+              "temp"
+            ],
+            "description": "消息场景"
+          },
+          "peer_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号或群号"
+          },
+          "message_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "消息序列号"
+          }
+        },
+        "required": [
+          "message_scene",
+          "peer_id",
+          "message_seq"
+        ],
+        "description": "获取消息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_history_messages",
+      "path": "/api/get_history_messages",
+      "description": "获取历史消息列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message_scene": {
+            "type": "string",
+            "enum": [
+              "friend",
+              "group",
+              "temp"
+            ],
+            "description": "消息场景"
+          },
+          "peer_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号或群号"
+          },
+          "start_message_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "起始消息序列号，由此开始从新到旧查询，不提供则从最新消息开始"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "default": 20,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "期望获取到的消息数量，最多 30 条"
+          }
+        },
+        "required": [
+          "message_scene",
+          "peer_id"
+        ],
+        "description": "获取历史消息列表 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_resource_temp_url",
+      "path": "/api/get_resource_temp_url",
+      "description": "获取临时资源链接",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "resource_id": {
+            "type": "string",
+            "description": "资源 ID"
+          }
+        },
+        "required": [
+          "resource_id"
+        ],
+        "description": "获取临时资源链接 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_forwarded_messages",
+      "path": "/api/get_forwarded_messages",
+      "description": "获取合并转发消息内容",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "forward_id": {
+            "type": "string",
+            "description": "转发消息 ID"
+          }
+        },
+        "required": [
+          "forward_id"
+        ],
+        "description": "获取合并转发消息内容 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "mark_message_as_read",
+      "path": "/api/mark_message_as_read",
+      "description": "标记消息为已读",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message_scene": {
+            "type": "string",
+            "enum": [
+              "friend",
+              "group",
+              "temp"
+            ],
+            "description": "消息场景"
+          },
+          "peer_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号或群号"
+          },
+          "message_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "标为已读的消息序列号，该消息及更早的消息将被标记为已读"
+          }
+        },
+        "required": [
+          "message_scene",
+          "peer_id",
+          "message_seq"
+        ],
+        "description": "标记消息为已读 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "send_friend_nudge",
+      "path": "/api/send_friend_nudge",
+      "description": "发送好友戳一戳",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号"
+          },
+          "is_self": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否戳自己"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "description": "发送好友戳一戳 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "send_profile_like",
+      "path": "/api/send_profile_like",
+      "description": "发送名片点赞",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "default": 1,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "点赞数量"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "description": "发送名片点赞 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_friend",
+      "path": "/api/delete_friend",
+      "description": "删除好友",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "description": "删除好友 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_friend_requests",
+      "path": "/api/get_friend_requests",
+      "description": "获取好友请求列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "anyOf": [
+              {
+                "default": 20,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "获取的最大请求数量"
+          },
+          "is_filtered": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`true` 表示只获取被过滤（由风险账号发起）的通知，`false` 表示只获取未被过滤的通知"
+          }
+        },
+        "description": "获取好友请求列表 API 请求参数",
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "accept_friend_request",
+      "path": "/api/accept_friend_request",
+      "description": "同意好友请求",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "initiator_uid": {
+            "type": "string",
+            "description": "请求发起者 UID"
+          },
+          "is_filtered": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否是被过滤的请求"
+          }
+        },
+        "required": [
+          "initiator_uid"
+        ],
+        "description": "同意好友请求 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "reject_friend_request",
+      "path": "/api/reject_friend_request",
+      "description": "拒绝好友请求",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "initiator_uid": {
+            "type": "string",
+            "description": "请求发起者 UID"
+          },
+          "is_filtered": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否是被过滤的请求"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "拒绝理由"
+          }
+        },
+        "required": [
+          "initiator_uid"
+        ],
+        "description": "拒绝好友请求 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_group_name",
+      "path": "/api/set_group_name",
+      "description": "设置群名称",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "new_group_name": {
+            "type": "string",
+            "description": "新群名称"
+          }
+        },
+        "required": [
+          "group_id",
+          "new_group_name"
+        ],
+        "description": "设置群名称 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_group_avatar",
+      "path": "/api/set_group_avatar",
+      "description": "设置群头像",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "image_uri": {
+            "type": "string",
+            "description": "头像文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+          }
+        },
+        "required": [
+          "group_id",
+          "image_uri"
+        ],
+        "description": "设置群头像 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_group_member_card",
+      "path": "/api/set_group_member_card",
+      "description": "设置群名片",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "被设置的群成员 QQ 号"
+          },
+          "card": {
+            "type": "string",
+            "description": "新群名片"
+          }
+        },
+        "required": [
+          "group_id",
+          "user_id",
+          "card"
+        ],
+        "description": "设置群名片 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_group_member_special_title",
+      "path": "/api/set_group_member_special_title",
+      "description": "设置群成员专属头衔",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "被设置的群成员 QQ 号"
+          },
+          "special_title": {
+            "type": "string",
+            "description": "新专属头衔"
+          }
+        },
+        "required": [
+          "group_id",
+          "user_id",
+          "special_title"
+        ],
+        "description": "设置群成员专属头衔 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_group_member_admin",
+      "path": "/api/set_group_member_admin",
+      "description": "设置群管理员",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "被设置的 QQ 号"
+          },
+          "is_set": {
+            "anyOf": [
+              {
+                "default": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否设置为管理员，`false` 表示取消管理员"
+          }
+        },
+        "required": [
+          "group_id",
+          "user_id"
+        ],
+        "description": "设置群管理员 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_group_member_mute",
+      "path": "/api/set_group_member_mute",
+      "description": "设置群成员禁言",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "被设置的 QQ 号"
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "default": 0,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "禁言持续时间（秒），设为 `0` 为取消禁言"
+          }
+        },
+        "required": [
+          "group_id",
+          "user_id"
+        ],
+        "description": "设置群成员禁言 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_group_whole_mute",
+      "path": "/api/set_group_whole_mute",
+      "description": "设置群全员禁言",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "is_mute": {
+            "anyOf": [
+              {
+                "default": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否开启全员禁言，`false` 表示取消全员禁言"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "description": "设置群全员禁言 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "kick_group_member",
+      "path": "/api/kick_group_member",
+      "description": "踢出群成员",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "被踢的 QQ 号"
+          },
+          "reject_add_request": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否拒绝加群申请，`false` 表示不拒绝"
+          }
+        },
+        "required": [
+          "group_id",
+          "user_id"
+        ],
+        "description": "踢出群成员 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_announcements",
+      "path": "/api/get_group_announcements",
+      "description": "获取群公告列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "description": "获取群公告列表 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "send_group_announcement",
+      "path": "/api/send_group_announcement",
+      "description": "发送群公告",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "content": {
+            "type": "string",
+            "description": "公告内容"
+          },
+          "image_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "公告附带图像文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+          }
+        },
+        "required": [
+          "group_id",
+          "content"
+        ],
+        "description": "发送群公告 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_group_announcement",
+      "path": "/api/delete_group_announcement",
+      "description": "删除群公告",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "announcement_id": {
+            "type": "string",
+            "description": "公告 ID"
+          }
+        },
+        "required": [
+          "group_id",
+          "announcement_id"
+        ],
+        "description": "删除群公告 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_essence_messages",
+      "path": "/api/get_group_essence_messages",
+      "description": "获取群精华消息列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "page_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "页码索引，从 0 开始"
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "每页包含的精华消息数量"
+          }
+        },
+        "required": [
+          "group_id",
+          "page_index",
+          "page_size"
+        ],
+        "description": "获取群精华消息列表 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_group_essence_message",
+      "path": "/api/set_group_essence_message",
+      "description": "设置群精华消息",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "message_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "消息序列号"
+          },
+          "is_set": {
+            "anyOf": [
+              {
+                "default": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否设置为精华消息，`false` 表示取消精华"
+          }
+        },
+        "required": [
+          "group_id",
+          "message_seq"
+        ],
+        "description": "设置群精华消息 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "quit_group",
+      "path": "/api/quit_group",
+      "description": "退出群",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "description": "退出群 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "send_group_message_reaction",
+      "path": "/api/send_group_message_reaction",
+      "description": "发送群消息表情回应",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "message_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "要回应的消息序列号"
+          },
+          "reaction": {
+            "type": "string",
+            "description": "发送的回应的表情 ID"
+          },
+          "reaction_type": {
+            "anyOf": [
+              {
+                "default": "face",
+                "type": "string",
+                "enum": [
+                  "face",
+                  "emoji"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "发送的回应类型"
+          },
+          "is_add": {
+            "anyOf": [
+              {
+                "default": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否添加表情，`false` 表示取消"
+          }
+        },
+        "required": [
+          "group_id",
+          "message_seq",
+          "reaction"
+        ],
+        "description": "发送群消息表情回应 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "send_group_nudge",
+      "path": "/api/send_group_nudge",
+      "description": "发送群戳一戳",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "被戳的群成员 QQ 号"
+          }
+        },
+        "required": [
+          "group_id",
+          "user_id"
+        ],
+        "description": "发送群戳一戳 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_notifications",
+      "path": "/api/get_group_notifications",
+      "description": "获取群通知列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "start_notification_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "起始通知序列号"
+          },
+          "is_filtered": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`true` 表示只获取被过滤（由风险账号发起）的通知，`false` 表示只获取未被过滤的通知"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "default": 20,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "获取的最大通知数量"
+          }
+        },
+        "description": "获取群通知列表 API 请求参数",
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "accept_group_request",
+      "path": "/api/accept_group_request",
+      "description": "同意入群/邀请他人入群请求",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "notification_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "请求对应的通知序列号"
+          },
+          "notification_type": {
+            "type": "string",
+            "enum": [
+              "join_request",
+              "invited_join_request"
+            ],
+            "description": "请求对应的通知类型"
+          },
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "请求所在的群号"
+          },
+          "is_filtered": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否是被过滤的请求"
+          }
+        },
+        "required": [
+          "notification_seq",
+          "notification_type",
+          "group_id"
+        ],
+        "description": "同意入群/邀请他人入群请求 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "reject_group_request",
+      "path": "/api/reject_group_request",
+      "description": "拒绝入群/邀请他人入群请求",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "notification_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "请求对应的通知序列号"
+          },
+          "notification_type": {
+            "type": "string",
+            "enum": [
+              "join_request",
+              "invited_join_request"
+            ],
+            "description": "请求对应的通知类型"
+          },
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "请求所在的群号"
+          },
+          "is_filtered": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否是被过滤的请求"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "拒绝理由"
+          }
+        },
+        "required": [
+          "notification_seq",
+          "notification_type",
+          "group_id"
+        ],
+        "description": "拒绝入群/邀请他人入群请求 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "accept_group_invitation",
+      "path": "/api/accept_group_invitation",
+      "description": "同意他人邀请自身入群",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "invitation_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "邀请序列号"
+          }
+        },
+        "required": [
+          "group_id",
+          "invitation_seq"
+        ],
+        "description": "同意他人邀请自身入群 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "reject_group_invitation",
+      "path": "/api/reject_group_invitation",
+      "description": "拒绝他人邀请自身入群",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "invitation_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "邀请序列号"
+          }
+        },
+        "required": [
+          "group_id",
+          "invitation_seq"
+        ],
+        "description": "拒绝他人邀请自身入群 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "upload_private_file",
+      "path": "/api/upload_private_file",
+      "description": "上传私聊文件",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号"
+          },
+          "file_uri": {
+            "type": "string",
+            "description": "文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+          },
+          "file_name": {
+            "type": "string",
+            "description": "文件名称"
+          }
+        },
+        "required": [
+          "user_id",
+          "file_uri",
+          "file_name"
+        ],
+        "description": "上传私聊文件 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "upload_group_file",
+      "path": "/api/upload_group_file",
+      "description": "上传群文件",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "parent_folder_id": {
+            "anyOf": [
+              {
+                "default": "/",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "目标文件夹 ID"
+          },
+          "file_uri": {
+            "type": "string",
+            "description": "文件 URI，支持 `file://` `http(s)://` `base64://` 三种格式"
+          },
+          "file_name": {
+            "type": "string",
+            "description": "文件名称"
+          }
+        },
+        "required": [
+          "group_id",
+          "file_uri",
+          "file_name"
+        ],
+        "description": "上传群文件 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_private_file_download_url",
+      "path": "/api/get_private_file_download_url",
+      "description": "获取私聊文件下载链接",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "好友 QQ 号"
+          },
+          "file_id": {
+            "type": "string",
+            "description": "文件 ID"
+          },
+          "file_hash": {
+            "type": "string",
+            "description": "文件的 TriSHA1 哈希值"
+          },
+          "is_self_send": {
+            "anyOf": [
+              {
+                "default": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "是否为自己发送的文件"
+          }
+        },
+        "required": [
+          "user_id",
+          "file_id",
+          "file_hash"
+        ],
+        "description": "获取私聊文件下载链接 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_file_download_url",
+      "path": "/api/get_group_file_download_url",
+      "description": "获取群文件下载链接",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "file_id": {
+            "type": "string",
+            "description": "文件 ID"
+          }
+        },
+        "required": [
+          "group_id",
+          "file_id"
+        ],
+        "description": "获取群文件下载链接 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_group_files",
+      "path": "/api/get_group_files",
+      "description": "获取群文件列表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "parent_folder_id": {
+            "anyOf": [
+              {
+                "default": "/",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "父文件夹 ID"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "description": "获取群文件列表 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "move_group_file",
+      "path": "/api/move_group_file",
+      "description": "移动群文件",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "file_id": {
+            "type": "string",
+            "description": "文件 ID"
+          },
+          "parent_folder_id": {
+            "anyOf": [
+              {
+                "default": "/",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "文件所在的文件夹 ID"
+          },
+          "target_folder_id": {
+            "anyOf": [
+              {
+                "default": "/",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "目标文件夹 ID"
+          }
+        },
+        "required": [
+          "group_id",
+          "file_id"
+        ],
+        "description": "移动群文件 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "rename_group_file",
+      "path": "/api/rename_group_file",
+      "description": "重命名群文件",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "file_id": {
+            "type": "string",
+            "description": "文件 ID"
+          },
+          "parent_folder_id": {
+            "anyOf": [
+              {
+                "default": "/",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "文件所在的文件夹 ID"
+          },
+          "new_file_name": {
+            "type": "string",
+            "description": "新文件名称"
+          }
+        },
+        "required": [
+          "group_id",
+          "file_id",
+          "new_file_name"
+        ],
+        "description": "重命名群文件 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_group_file",
+      "path": "/api/delete_group_file",
+      "description": "删除群文件",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "file_id": {
+            "type": "string",
+            "description": "文件 ID"
+          }
+        },
+        "required": [
+          "group_id",
+          "file_id"
+        ],
+        "description": "删除群文件 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "persist_group_file",
+      "path": "/api/persist_group_file",
+      "description": "转存群文件为永久文件",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "file_id": {
+            "type": "string",
+            "description": "文件 ID"
+          }
+        },
+        "required": [
+          "group_id",
+          "file_id"
+        ],
+        "description": "转存群文件为永久文件 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_group_folder",
+      "path": "/api/create_group_folder",
+      "description": "创建群文件夹",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "folder_name": {
+            "type": "string",
+            "description": "文件夹名称"
+          }
+        },
+        "required": [
+          "group_id",
+          "folder_name"
+        ],
+        "description": "创建群文件夹 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "rename_group_folder",
+      "path": "/api/rename_group_folder",
+      "description": "重命名群文件夹",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "folder_id": {
+            "type": "string",
+            "description": "文件夹 ID"
+          },
+          "new_folder_name": {
+            "type": "string",
+            "description": "新文件夹名"
+          }
+        },
+        "required": [
+          "group_id",
+          "folder_id",
+          "new_folder_name"
+        ],
+        "description": "重命名群文件夹 API 请求参数",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_group_folder",
+      "path": "/api/delete_group_folder",
+      "description": "删除群文件夹",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "minimum": 10001,
+            "maximum": 4294967295,
+            "description": "群号"
+          },
+          "folder_id": {
+            "type": "string",
+            "description": "文件夹 ID"
+          }
+        },
+        "required": [
+          "group_id",
+          "folder_id"
+        ],
+        "description": "删除群文件夹 API 请求参数",
+        "additionalProperties": false
+      }
+    }
+  ]
+}

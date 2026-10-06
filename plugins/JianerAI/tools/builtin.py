@@ -264,7 +264,9 @@ def register_builtin_tools(
             name="read_recent_chat",
             description=(
                 "读取当前群或当前私聊最近的客观聊天记录；只能访问当前会话，"
-                "不能指定 QQ 号、群号、表名或其他会话。"
+                "不能指定 QQ 号、群号、表名或其他会话。id 是本地记录 ID；"
+                "platform_message_id 才是协议侧消息 ID，可能为空。Milky 群消息"
+                "还会提供可直接用于 API 的 platform_group_id 和 platform_message_seq。"
             ),
             input_schema={
                 "type": "object",
@@ -490,6 +492,8 @@ async def _current_chat_messages(
         limit=limit,
         max_characters=8000,
     )
+    protocol = str(context.conversation.protocol or "").lower()
+    conversation_id = str(context.conversation.conversation_id)
     return {
         "scope": "current_chat",
         "conversation_kind": kind,
@@ -498,6 +502,15 @@ async def _current_chat_messages(
         "messages": [
             {
                 "id": str(getattr(record, "id", "")),
+                "platform_message_id": str(
+                    getattr(record, "external_message_id", "") or ""
+                ) or None,
+                **_milky_message_reference(
+                    protocol=protocol,
+                    conversation_kind=kind,
+                    conversation_id=conversation_id,
+                    platform_message_id=getattr(record, "external_message_id", None),
+                ),
                 "direction": str(getattr(record, "direction", "incoming")),
                 "sender_name": str(getattr(record, "sender_name", "")),
                 "sender_person_id": str(
@@ -511,6 +524,36 @@ async def _current_chat_messages(
             }
             for record in records
         ],
+    }
+
+
+def _milky_message_reference(
+    *,
+    protocol: str,
+    conversation_kind: str,
+    conversation_id: str,
+    platform_message_id: Any,
+) -> dict[str, int | None]:
+    reference: dict[str, int | None] = {
+        "platform_group_id": None,
+        "platform_message_seq": None,
+    }
+    if protocol != "milky" or conversation_kind != "group":
+        return reference
+    try:
+        encoded_id = int(platform_message_id)
+        if encoded_id < (1 << 128):
+            return reference
+        from jianer.LecAdapters.MilkyLib.translator import msg_deid
+
+        scene, message_seq, group_id = msg_deid(encoded_id)
+        if scene != 1 or group_id != int(conversation_id):
+            return reference
+    except (ImportError, TypeError, ValueError, OverflowError):
+        return reference
+    return {
+        "platform_group_id": group_id,
+        "platform_message_seq": message_seq,
     }
 
 

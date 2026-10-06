@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import inspect
 import json
@@ -294,6 +295,13 @@ class ProviderResponse:
     turn: AssistantTurn
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderStreamEvent:
+    kind: str
+    text: str = ""
+    response: ProviderResponse | None = None
+
+
 class ProviderRegistry:
     """Loads model configs and dispatches async chat requests.
 
@@ -364,6 +372,275 @@ class ProviderRegistry:
 
     def mark_tools_unsupported(self, key: str) -> None:
         self._tool_unsupported.add(self.get(key).key)
+
+    async def complete_agent_turn(
+        self,
+        key: str,
+        request: ChatRequest,
+        *,
+        request_id: str | None = None,
+    ) -> ProviderResponse:
+        """Complete one structured Agent turn.
+
+        This explicit alias gives the Agent Kernel and plugin tools a stable
+        provider contract while keeping ``complete_request`` available for
+        existing integrations.  ``request_id`` is accepted for transports
+        that implement cancellation at a lower layer.
+        """
+
+        return await self.complete_request(key, request)
+
+    async def stream_agent_turn(
+        self,
+        key: str,
+        request: ChatRequest,
+        *,
+        request_id: str | None = None,
+    ):
+        """Stream supported chat providers and yield one completed turn."""
+
+        config = self.get(key)
+        if request.tools and not self.supports_tools(key):
+            raise ToolsUnsupportedError(
+                f"function tools are disabled for model {config.key!r}"
+            )
+        if config.provider == "openai_chat_completions":
+            request = await self._prepare_openai_chat_request(request)
+            payload = _build_openai_payload(config, request)
+            payload["stream"] = True
+            source = await self._stream_request("openai", config, payload)
+            async for event in self._stream_openai_response(
+                source,
+                config,
+                has_tools=bool(request.tools),
+            ):
+                yield event
+            return
+        if config.provider == "google_generate_content":
+            payload = _build_gemini_payload(config, request)
+            source = await self._stream_request("gemini", config, payload)
+            async for event in self._stream_gemini_response(
+                source,
+                config,
+                has_tools=bool(request.tools),
+            ):
+                yield event
+            return
+        yield ProviderStreamEvent(
+            "completed",
+            response=await self.complete_agent_turn(
+                key,
+                request,
+                request_id=request_id,
+            ),
+        )
+
+    async def _stream_request(
+        self,
+        provider: str,
+        config: ModelConfig,
+        payload: Mapping[str, Any],
+    ) -> Any:
+        try:
+            if self._transport is not None:
+                value = self._transport(provider, config, payload)
+                return await value if inspect.isawaitable(value) else value
+            if provider == "openai":
+                return _default_openai_stream_request(config, payload)
+            if provider == "gemini":
+                return _default_gemini_stream_request(config, payload)
+            return await self._request(provider, config, payload)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            if payload.get("tools") and _is_tools_unsupported_exception(exc):
+                raise ToolsUnsupportedError(
+                    f"{provider} endpoint rejected function tools for model {config.key!r}"
+                ) from exc
+            raise ProviderRequestError(
+                f"{provider} request failed for model {config.key!r}"
+            ) from exc
+
+    async def _stream_openai_response(
+        self,
+        source: Any,
+        config: ModelConfig,
+        *,
+        has_tools: bool,
+    ):
+        if not _is_async_or_sync_stream(source):
+            response = await _extract_openai_response(source)
+            yield ProviderStreamEvent(
+                "completed",
+                response=_normalize_agent_response(response, config),
+            )
+            return
+
+        text_parts: list[str] = []
+        tool_parts: dict[int, dict[str, str]] = {}
+        tool_activity_sent = False
+        dsml_text = False
+        emitted_text_length = 0
+        try:
+            async for chunk in _iterate_stream(source):
+                delta = _extract_openai_chunk_delta(chunk)
+                text = _normalize_content_text(_get_value(delta, "content"))
+                if text:
+                    text_parts.append(text)
+                    accumulated = "".join(text_parts)
+                    normalized_start = _normalize_dsml_markup(accumulated).lstrip().casefold()
+                    if _looks_like_dsml_tool_call(accumulated):
+                        dsml_text = True
+                    if not dsml_text and not _is_dsml_prefix(normalized_start):
+                        visible_delta = accumulated[emitted_text_length:]
+                        emitted_text_length = len(accumulated)
+                        if visible_delta:
+                            yield ProviderStreamEvent("text_delta", text=visible_delta)
+                for item in _get_value(delta, "tool_calls") or ():
+                    index = int(_get_value(item, "index") or 0)
+                    function = _get_value(item, "function") or {}
+                    part = tool_parts.setdefault(
+                        index,
+                        {"id": "", "name": "", "arguments": ""},
+                    )
+                    call_id = str(_get_value(item, "id") or "")
+                    if call_id:
+                        part["id"] = call_id
+                    name = str(_get_value(function, "name") or "")
+                    arguments = _get_value(function, "arguments")
+                    if name:
+                        part["name"] += name
+                    if arguments is not None:
+                        part["arguments"] += (
+                            arguments
+                            if isinstance(arguments, str)
+                            else _arguments_json(arguments)
+                        )
+                    if not tool_activity_sent:
+                        tool_activity_sent = True
+                        yield ProviderStreamEvent("tool_call_delta")
+        except ProviderError:
+            raise
+        except Exception as exc:
+            if has_tools and _is_tools_unsupported_exception(exc):
+                raise ToolsUnsupportedError(
+                    f"openai endpoint rejected function tools for model {config.key!r}"
+                ) from exc
+            raise ProviderRequestError(
+                f"openai stream failed for model {config.key!r}"
+            ) from exc
+        finally:
+            await _close_async_stream(source)
+
+        calls = tuple(
+            ProviderToolCall(
+                id=part["id"] or f"tool-call-{index}",
+                name=part["name"].strip(),
+                arguments=part["arguments"] or "{}",
+            )
+            for index, part in sorted(tool_parts.items())
+            if part["name"].strip()
+        )
+        text = "".join(text_parts)
+        response = ProviderResponse(
+            text=text,
+            tool_calls=calls,
+            turn=AssistantTurn(text=text, tool_calls=calls),
+        )
+        if not calls and not dsml_text and emitted_text_length < len(text):
+            yield ProviderStreamEvent(
+                "text_delta",
+                text=text[emitted_text_length:],
+            )
+        yield ProviderStreamEvent(
+            "completed",
+            response=_normalize_agent_response(response, config),
+        )
+
+    async def _stream_gemini_response(
+        self,
+        source: Any,
+        config: ModelConfig,
+        *,
+        has_tools: bool,
+    ):
+        if not _is_async_or_sync_stream(source):
+            response = _extract_gemini_response(_google_sdk_response_payload(source))
+            if not response.text and not response.tool_calls:
+                raise _gemini_empty_response_error(source)
+            yield ProviderStreamEvent(
+                "completed",
+                response=_normalize_agent_response(response, config),
+            )
+            return
+
+        parts: list[Mapping[str, Any]] = []
+        text_parts: list[str] = []
+        tool_activity_sent = False
+        try:
+            async for chunk in _iterate_stream(source):
+                payload = _google_sdk_response_payload(chunk)
+                candidates = payload.get("candidates") or ()
+                first = candidates[0] if candidates else None
+                content = first.get("content") if isinstance(first, Mapping) else None
+                chunk_parts = content.get("parts") if isinstance(content, Mapping) else ()
+                for part in chunk_parts or ():
+                    if not isinstance(part, Mapping):
+                        continue
+                    plain_part = dict(part)
+                    parts.append(plain_part)
+                    text = plain_part.get("text")
+                    if isinstance(text, str) and plain_part.get("thought") is not True:
+                        text_parts.append(text)
+                        if text:
+                            yield ProviderStreamEvent("text_delta", text=text)
+                    if (
+                        not tool_activity_sent
+                        and isinstance(
+                            plain_part.get("functionCall")
+                            or plain_part.get("function_call"),
+                            Mapping,
+                        )
+                    ):
+                        tool_activity_sent = True
+                        yield ProviderStreamEvent("tool_call_delta")
+        except ProviderError:
+            raise
+        except Exception as exc:
+            if has_tools and _is_tools_unsupported_exception(exc):
+                raise ToolsUnsupportedError(
+                    f"gemini endpoint rejected function tools for model {config.key!r}"
+                ) from exc
+            raise ProviderRequestError(
+                f"gemini stream failed for model {config.key!r}"
+            ) from exc
+        finally:
+            await _close_async_stream(source)
+
+        response_payload = {
+            "candidates": [
+                {"content": {"role": "model", "parts": parts}}
+            ]
+        }
+        response = _extract_gemini_response(response_payload)
+        if not response.text and not response.tool_calls:
+            raise EmptyProviderResponseError(
+                "Google GenerateContent stream returned no text or function call"
+            )
+        yield ProviderStreamEvent(
+            "completed",
+            response=_normalize_agent_response(response, config),
+        )
+
+    async def cancel_request(self, request_id: str) -> bool:
+        """Best-effort cancellation hook for provider implementations.
+
+        The built-in transports are request-scoped and are cancelled by the
+        Agent Kernel task itself.  Custom registries may override this hook
+        to cancel an HTTP request by ID.
+        """
+
+        return False
 
     async def chat(
         self,
@@ -1275,6 +1552,35 @@ async def _default_openai_request(
                 await result
 
 
+async def _default_openai_stream_request(
+    config: ModelConfig,
+    payload: Mapping[str, Any],
+):
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as exc:
+        raise ProviderRequestError(
+            "OpenAI provider requires the 'openai' package"
+        ) from exc
+    client = AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url or DEFAULT_OPENAI_BASE_URL,
+        timeout=config.request_timeout_seconds,
+    )
+    stream = None
+    try:
+        stream = await client.chat.completions.create(**dict(payload))
+        async for item in stream:
+            yield item
+    finally:
+        await _close_async_stream(stream)
+        close = getattr(client, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+
+
 async def _default_responses_request(
     config: ModelConfig,
     payload: Mapping[str, Any],
@@ -1390,6 +1696,41 @@ async def _default_gemini_request(
         )
         return _google_sdk_response_payload(response)
     finally:
+        await async_client.aclose()
+
+
+async def _default_gemini_stream_request(
+    config: ModelConfig,
+    payload: Mapping[str, Any],
+):
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as exc:
+        raise ProviderRequestError(
+            "Google GenerateContent requires the 'google-genai' package"
+        ) from exc
+    contents = _google_sdk_contents(payload, types)
+    generate_config = _google_sdk_generate_config(payload, types)
+    http_options = _google_sdk_http_options(config, types)
+    client = genai.Client(
+        api_key=config.api_key,
+        http_options=http_options,
+    )
+    async_client = client.aio
+    stream = None
+    try:
+        stream = async_client.models.generate_content_stream(
+            model=config.model,
+            contents=contents,
+            config=generate_config,
+        )
+        if inspect.isawaitable(stream):
+            stream = await stream
+        async for item in stream:
+            yield item
+    finally:
+        await _close_async_stream(stream)
         await async_client.aclose()
 
 
@@ -1578,6 +1919,69 @@ async def _extract_openai_response(response: Any) -> ProviderResponse:
         )
     turn = AssistantTurn(text=text, tool_calls=tuple(calls))
     return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
+
+
+def _extract_openai_chunk_delta(chunk: Any) -> Any:
+    choices = _get_value(chunk, "choices") or ()
+    if not choices:
+        return {}
+    return _get_value(choices[0], "delta") or {}
+
+
+def _normalize_agent_response(
+    response: ProviderResponse,
+    config: ModelConfig,
+) -> ProviderResponse:
+    text = str(response.text or "").rstrip()
+    calls = tuple(response.tool_calls or ())
+    if not calls:
+        textual_calls = _parse_dsml_tool_calls(text)
+        if textual_calls:
+            calls = textual_calls
+            text = ""
+        elif _looks_like_dsml_tool_call(text):
+            raise ProviderRequestError(
+                "provider returned malformed textual tool calls"
+            )
+    if not text and not calls:
+        text = str(config.empty_response_text or "")
+        if not text:
+            raise EmptyProviderResponseError("provider returned no assistant text")
+    turn = AssistantTurn(
+        text=text,
+        tool_calls=calls,
+        provider_content=response.turn.provider_content,
+    )
+    return ProviderResponse(text=text, tool_calls=calls, turn=turn)
+
+
+def _is_async_or_sync_stream(value: Any) -> bool:
+    if hasattr(value, "__aiter__"):
+        return True
+    return _is_sync_stream(value)
+
+
+async def _iterate_stream(source: Any):
+    if hasattr(source, "__aiter__"):
+        async for item in source:
+            yield item
+        return
+    for item in source:
+        yield item
+
+
+async def _close_async_stream(source: Any) -> None:
+    if source is None:
+        return
+    close = getattr(source, "aclose", None)
+    if not callable(close):
+        close = getattr(source, "close", None)
+    if not callable(close):
+        return
+    with contextlib.suppress(Exception):
+        value = close()
+        if inspect.isawaitable(value):
+            await value
 
 
 def _extract_responses_response(response: Any) -> ProviderResponse:
@@ -1787,6 +2191,11 @@ def _looks_like_dsml_tool_call(text: str) -> bool:
     )
 
 
+def _is_dsml_prefix(text: str) -> bool:
+    opener = "<DSML:tool_calls>"
+    return bool(text) and opener.startswith(text)
+
+
 def _normalize_dsml_markup(text: str) -> str:
     normalized = str(text).replace("｜", "|")
     marker = r"(?:\|\s*)+DSML\s*(?:\|\s*)+"
@@ -1807,10 +2216,7 @@ def _normalize_dsml_markup(text: str) -> str:
 def _extract_openai_chunk_text(chunk: Any) -> str:
     if isinstance(chunk, str):
         return chunk
-    choices = _get_value(chunk, "choices") or ()
-    if not choices:
-        return ""
-    delta = _get_value(choices[0], "delta") or {}
+    delta = _extract_openai_chunk_delta(chunk)
     return _normalize_content_text(_get_value(delta, "content"))
 
 

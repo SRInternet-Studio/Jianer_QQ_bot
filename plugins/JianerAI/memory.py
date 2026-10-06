@@ -249,6 +249,7 @@ class ChatMessage:
     occurred_at: int
     message_type: str
     active_preset: str
+    external_message_id: str = ""
 
     @property
     def id(self) -> str:
@@ -4823,6 +4824,7 @@ class JianerMemoryStore:
                         occurred_at=int(row["occurred_at"]),
                         message_type=str(row["message_type"]),
                         active_preset=str(row["preset_key"] or "default"),
+                        external_message_id=str(row["external_message_id"] or ""),
                     )
                 )
             return tuple(reversed(selected))

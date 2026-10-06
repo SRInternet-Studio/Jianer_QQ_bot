@@ -1,16 +1,7 @@
-"""Model-callable platform API tools.
+"""Model-callable messaging tools and statically declared platform APIs.
 
-Three tools are exposed:
-
-* ``send_message`` -- high level, protocol-agnostic send that builds a message
-  from text / At / reply / image segments and reuses the adapter's ``send``.
-* ``call_platform_api`` -- raw passthrough for arbitrary OneBot actions,
-  Milky endpoints, or Lark OAPI requests (privileged).
-* ``platform_command`` -- natural command parser backed by Alconna that maps
-  common operations onto the adapter, with a raw ``action {json}`` fallback.
-
-Everything that mutates remote state requires the acting user to be a group
-owner/administrator or a bot administrator.
+OneBot and Milky use endpoint-specific API catalogs. Lark exposes a fixed set
+of message operations. Mutating platform APIs require an authorized actor.
 """
 
 from __future__ import annotations
@@ -19,7 +10,9 @@ import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from arclet.alconna import Alconna, Args, MultiVar
 from jianer import common as Manager, segments as Segments
@@ -30,15 +23,31 @@ from plugins.JianerAI.tools.contracts import (
     ToolRisk,
     ToolSpec,
 )
+from plugins.JianerAI.tools.onebot_api_catalog import (
+    ONEBOT_API_CATALOG,
+    ONEBOT_API_ENDPOINTS,
+    ONEBOT_API_TOOL_NAMES,
+)
+from plugins.JianerAI.tools.lark_api_catalog import (
+    LARK_API_CATALOG,
+    LARK_API_TOOL_NAMES,
+)
 
 SEND_MESSAGE_TOOL_NAME = "send_message"
-CALL_PLATFORM_API_TOOL_NAME = "call_platform_api"
 PLATFORM_COMMAND_TOOL_NAME = "platform_command"
+_MILKY_CATALOG_PATH = Path(__file__).with_name("milky_api_catalog.json")
+with _MILKY_CATALOG_PATH.open("r", encoding="utf-8") as _catalog_file:
+    _MILKY_CATALOG = json.load(_catalog_file)
+MILKY_API_CATALOG = tuple(_MILKY_CATALOG["apis"])
+MILKY_API_ENDPOINTS = frozenset(str(item["name"]) for item in MILKY_API_CATALOG)
+MILKY_API_TOOL_NAMES = frozenset(f"milky_{name}" for name in MILKY_API_ENDPOINTS)
 PLATFORM_API_TOOL_NAMES = frozenset(
     {
         SEND_MESSAGE_TOOL_NAME,
-        CALL_PLATFORM_API_TOOL_NAME,
         PLATFORM_COMMAND_TOOL_NAME,
+        *MILKY_API_TOOL_NAMES,
+        *ONEBOT_API_TOOL_NAMES,
+        *LARK_API_TOOL_NAMES,
     }
 )
 
@@ -126,7 +135,10 @@ class PlatformTransport:
         if self.protocol == "milky":
             return await self._milky(name, payload)
         if self.protocol in {"feishu", "lark"}:
-            return await self._lark(name, payload)
+            raise ToolExecutionError(
+                "static_api_only",
+                "Lark OAPI 必须通过对应的静态 lark_* 工具调用。",
+            )
         raise ToolExecutionError(
             "unsupported_protocol",
             f"当前协议 {self.protocol or '未知'} 不支持平台 API 调用。",
@@ -137,6 +149,11 @@ class PlatformTransport:
         action: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
+        if action not in ONEBOT_API_ENDPOINTS:
+            raise ToolExecutionError(
+                "unknown_action",
+                f"未注册的 OneBot V11 API：{action}",
+            )
         custom = getattr(self.actions, "custom", None)
         if custom is None:
             raise ToolExecutionError(
@@ -156,65 +173,74 @@ class PlatformTransport:
         try:
             response = await reports.get_async(echo, self.timeout_seconds)
         except TimeoutError:
-            return {
-                "echo": echo,
-                "submitted": True,
-                "timeout": True,
-                "message": f"等待 {action} 响应超时。",
-            }
-        return _as_dict(response)
+            raise ToolExecutionError(
+                "onebot_api_timeout",
+                f"等待 OneBot API {action} 的响应超时。",
+            )
+        result = _as_dict(response)
+        status = str(result.get("status") or "")
+        retcode = result.get("retcode")
+        if status == "async" and retcode == 1:
+            return {**result, "completed": False, "submitted": True}
+        if status != "ok" or isinstance(retcode, bool) or retcode != 0:
+            message = str(
+                result.get("msg") or result.get("wording") or "接口返回失败"
+            )[:300]
+            raise ToolExecutionError(
+                "onebot_api_failed",
+                f"OneBot API {action} 失败（status={status or 'missing'}, "
+                f"retcode={retcode!r}）：{message}",
+            )
+        return result
 
     async def _milky(
         self,
         endpoint: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
+        if endpoint not in MILKY_API_ENDPOINTS:
+            raise ToolExecutionError(
+                "unknown_action",
+                f"未注册的 Milky API：{endpoint}",
+            )
         connection = getattr(self.actions, "connection", None)
         sender = getattr(connection, "http_send", None)
-        if callable(sender):
-            result = await asyncio.to_thread(
+        if not callable(sender):
+            raise ToolExecutionError(
+                "unsupported_protocol",
+                "当前 Milky 连接不支持 HTTP API 调用。",
+            )
+        try:
+            response = await asyncio.to_thread(
                 sender,
                 endpoint,
                 params,
                 timeout_seconds=self.timeout_seconds,
                 attempts=3,
             )
-            return _as_dict(result)
-        custom = getattr(self.actions, "custom", None)
-        if custom is None:
-            raise ToolExecutionError(
-                "unsupported_protocol",
-                "当前 Milky 连接不支持自定义 endpoint。",
-            )
-        wrapper = getattr(custom, endpoint, None)
-        if not callable(wrapper):
-            raise ToolExecutionError(
-                "unknown_action",
-                f"未知的 Milky endpoint：{endpoint}",
-            )
-        echo = str(await wrapper(**params))
-        reports = _milky_reports()
-        if reports is None:
-            return {"echo": echo, "submitted": True}
-        try:
-            response = await asyncio.to_thread(
-                reports.get,
-                echo,
-                self.timeout_seconds,
-            )
         except TimeoutError:
-            return {
-                "echo": echo,
-                "submitted": True,
-                "timeout": True,
-                "message": f"等待 {endpoint} 响应超时。",
-            }
-        return _as_dict(response)
+            raise
+        except Exception as exc:  # noqa: BLE001 - return a model-safe API error
+            raise ToolExecutionError(
+                "milky_api_failed",
+                f"Milky API {endpoint} 请求失败：{str(exc)[:300]}",
+            ) from exc
+        result = _as_dict(response)
+        status = str(result.get("status") or "")
+        retcode = result.get("retcode")
+        if status != "ok" or isinstance(retcode, bool) or retcode != 0:
+            message = str(result.get("message") or "接口返回失败")[:300]
+            raise ToolExecutionError(
+                "milky_api_failed",
+                f"Milky API {endpoint} 失败（status={status or 'missing'}, "
+                f"retcode={retcode!r}）：{message}",
+            )
+        return result
 
     async def _lark(
         self,
-        action: str,
-        params: dict[str, Any],
+        api: Mapping[str, Any],
+        arguments: Mapping[str, Any],
     ) -> dict[str, Any]:
         client = getattr(self.actions, "client", None)
         request = getattr(client, "_request", None)
@@ -223,47 +249,66 @@ class PlatformTransport:
                 "unsupported_protocol",
                 "当前飞书连接不支持原始 OAPI 调用。",
             )
-        method = str(params.pop("method", "POST") or "POST").upper()
-        path = str(params.pop("path", "") or action).strip()
-        query = params.pop("params", None)
-        body = params.pop("json", None)
-        if body is None:
-            body = params.pop("body", None)
-        if body is None and params:
-            body = params
-        if not path.startswith("/"):
-            raise ToolExecutionError(
-                "invalid_action",
-                "Lark OAPI 需要以 / 开头的接口路径，例如 "
-                "/open-apis/im/v1/messages。",
+        method = str(api["method"])
+        path = str(api["path"])
+        for name in api.get("path_parameters", ()):
+            path = path.replace(
+                "{" + str(name) + "}",
+                quote(str(arguments[name]), safe=""),
             )
+        query = {
+            str(name): arguments[name]
+            for name in api.get("query_parameters", ())
+            if name in arguments
+        }
+        if api["name"] == "lark_send_message":
+            body = {
+                "msg_type": "text",
+                "content": json.dumps({"text": arguments["text"]}, ensure_ascii=False),
+            }
+            if "uuid" in arguments:
+                body["uuid"] = arguments["uuid"]
+        elif api["name"] == "lark_reply_message":
+            body = {
+                "msg_type": "text",
+                "content": json.dumps({"text": arguments["text"]}, ensure_ascii=False),
+            }
+            for name in ("reply_in_thread", "uuid"):
+                if name in arguments:
+                    body[name] = arguments[name]
+        elif api["name"] == "lark_add_reaction":
+            body = {"reaction_type": {"emoji_type": arguments["emoji_type"]}}
+        else:
+            body = None
+        if api["name"] == "lark_list_messages":
+            query["container_id_type"] = "chat"
         try:
             result = await asyncio.to_thread(
                 request,
                 method,
                 path,
-                params=query if isinstance(query, Mapping) else None,
-                json_body=body if isinstance(body, Mapping) else None,
+                params=query or None,
+                json_body=body,
             )
         except Exception as exc:  # noqa: BLE001 - surface the API error to the model
-            return {
-                "status": "failed",
-                "message": str(exc)[:500],
-            }
-        return _as_dict(result)
+            raise ToolExecutionError(
+                "lark_api_failed",
+                f"Lark API {api['name']} 请求失败：{str(exc)[:300]}",
+            ) from exc
+        response = _as_dict(result)
+        code = response.get("code")
+        if isinstance(code, bool) or code != 0:
+            message = str(response.get("msg") or "接口返回失败")[:300]
+            raise ToolExecutionError(
+                "lark_api_failed",
+                f"Lark API {api['name']} 失败（code={code!r}）：{message}",
+            )
+        return response
 
 
 def _onebot_reports() -> Any | None:
     try:
         from jianer.LecAdapters.OneBotLib.Manager import reports
-    except Exception:
-        return None
-    return reports
-
-
-def _milky_reports() -> Any | None:
-    try:
-        from jianer.LecAdapters.MilkyLib.Manager import reports
     except Exception:
         return None
     return reports
@@ -347,6 +392,27 @@ async def _send_message(
     context: ToolContext,
     arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
+    sink = getattr(context, "message_sink", None)
+    if sink is not None and callable(getattr(sink, "send", None)):
+        target = _resolve_target(
+            context,
+            arguments.get("group_id"),
+            arguments.get("user_id"),
+        )
+        result = await sink.send(
+            str(arguments.get("text") or ""),
+            at_user_ids=arguments.get("at_user_ids") or (),
+            reply_to_message_id=arguments.get("reply_to_message_id"),
+            image_urls=arguments.get("image_urls") or (),
+            target=target,
+            source="tool",
+        )
+        message_ids = result if isinstance(result, (list, tuple)) else []
+        return {
+            "sent": True,
+            "target": target,
+            "message_ids": [str(item) for item in message_ids if str(item)],
+        }
     message = _build_message(arguments)
     target = _resolve_target(
         context,
@@ -369,24 +435,6 @@ async def _send_message(
     }
 
 
-async def _call_platform_api(
-    context: ToolContext,
-    arguments: Mapping[str, Any],
-) -> dict[str, Any]:
-    _require_privilege(context, "call_platform_api")
-    action = str(arguments.get("action") or "").strip()
-    params = arguments.get("params") or {}
-    if not isinstance(params, Mapping):
-        raise ToolExecutionError("invalid_params", "params 必须是 JSON 对象。")
-    transport = PlatformTransport(context.actions)
-    result = await transport.call(action, params)
-    return {
-        "protocol": transport.protocol,
-        "action": action,
-        "result": result,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Alconna command parsing
 # ---------------------------------------------------------------------------
@@ -401,7 +449,7 @@ class ParsedCommand:
 _COMMANDS: tuple[tuple[Alconna, str], ...] = (
     (
         Alconna("发送群消息", Args["group_id", str], Args["text", MultiVar(str)]),
-        "send_group_message",
+        "send_group_msg",
     ),
     (
         Alconna(
@@ -409,7 +457,7 @@ _COMMANDS: tuple[tuple[Alconna, str], ...] = (
             Args["user_id", str],
             Args["text", MultiVar(str)],
         ),
-        "send_private_message",
+        "send_private_msg",
     ),
     (
         Alconna("撤回消息", Args["message_id", str]),
@@ -420,7 +468,7 @@ _COMMANDS: tuple[tuple[Alconna, str], ...] = (
             "禁言成员",
             Args["group_id", str],
             Args["user_id", str],
-            Args["duration", int, 60],
+            Args["duration", int, 1800],
         ),
         "set_group_ban",
     ),
@@ -451,25 +499,16 @@ def parse_platform_command(text: str) -> ParsedCommand | None:
             continue
         params = dict(result.main_args or {})
         return ParsedCommand(action=action, params=_normalize_params(params))
-    head, _, tail = value.partition(" ")
-    tail = tail.strip()
-    if tail.startswith("{"):
-        try:
-            params = json.loads(tail)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(params, Mapping):
-            return ParsedCommand(action=head, params=dict(params))
     return None
 
 
 def _normalize_params(params: Mapping[str, Any]) -> dict[str, Any]:
     output: dict[str, Any] = {}
     for key, value in params.items():
-        if key == "duration":
-            output["duration"] = int(value)
+        if key in {"duration", "group_id", "user_id", "message_id"}:
+            output[key] = int(value)
         elif key == "text" and isinstance(value, (tuple, list)):
-            output["text"] = " ".join(str(item) for item in value)
+            output["message"] = " ".join(str(item) for item in value)
         else:
             output[key] = value
     return output
@@ -480,6 +519,11 @@ async def _platform_command(
     arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
     _require_privilege(context, "platform_command")
+    if _protocol(context.actions) != "onebot":
+        raise ToolExecutionError(
+            "unsupported_protocol",
+            "platform_command 仅支持 OneBot V11 的固定命令。",
+        )
     command = str(arguments.get("command") or "").strip()
     if not command:
         raise ToolExecutionError("invalid_command", "command 不能为空。")
@@ -487,7 +531,7 @@ async def _platform_command(
     if parsed is None:
         raise ToolExecutionError(
             "unparsed_command",
-            "无法解析该命令；可改用 call_platform_api 直接传 action 与 params。",
+            "无法解析该命令；请使用对应的静态 OneBot API 工具。",
         )
     transport = PlatformTransport(context.actions)
     result = await transport.call(parsed.action, parsed.params)
@@ -556,40 +600,6 @@ def send_message_tool() -> ToolSpec:
     )
 
 
-def call_platform_api_tool() -> ToolSpec:
-    return ToolSpec(
-        name=CALL_PLATFORM_API_TOOL_NAME,
-        description=(
-            "直接调用当前协议的原始接口（需要群管理员或机器人管理员）。"
-            "OneBot 传 action 与 params；Milky 传 endpoint 与 params；"
-            "Lark 传 /open-apis/... 路径，可用 method/params/json 指定请求细节。"
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "OneBot action、Milky endpoint 或 Lark OAPI 路径。",
-                    "minLength": 1,
-                    "maxLength": _MAX_ACTION_CHARS,
-                },
-                "params": {
-                    "type": "object",
-                    "description": "传给接口的参数对象。",
-                    "additionalProperties": True,
-                },
-            },
-            "required": ["action"],
-            "additionalProperties": False,
-        },
-        handler=_call_platform_api,
-        risk=ToolRisk.MUTATING,
-        required_privilege=True,
-        timeout_seconds=20.0,
-        max_output_chars=8000,
-    )
-
-
 def platform_command_tool() -> ToolSpec:
     return ToolSpec(
         name=PLATFORM_COMMAND_TOOL_NAME,
@@ -597,7 +607,7 @@ def platform_command_tool() -> ToolSpec:
             "用自然语言命令调用常用平台能力（需要群管理员或机器人管理员），"
             "例如：发送群消息 12345 你好；撤回消息 678；"
             "禁言成员 12345 678 60；查询群成员 12345 678。"
-            "无法解析时会尝试 action {json} 形式的原始调用。"
+            "命令仅映射到固定的 OneBot V11 API。"
         ),
         input_schema={
             "type": "object",
@@ -615,30 +625,196 @@ def platform_command_tool() -> ToolSpec:
         handler=_platform_command,
         risk=ToolRisk.MUTATING,
         required_privilege=True,
+        supported_protocols=frozenset({"onebot"}),
         timeout_seconds=20.0,
         max_output_chars=8000,
     )
 
 
 def register_platform_api_tools(registry: Any) -> tuple[ToolSpec, ...]:
-    specs = (
+    specs = [
         send_message_tool(),
-        call_platform_api_tool(),
         platform_command_tool(),
-    )
+    ]
+    for api in MILKY_API_CATALOG:
+        endpoint = str(api["name"])
+        risk = ToolRisk.READ_ONLY if endpoint.startswith("get_") else ToolRisk.MUTATING
+
+        async def invoke_milky_api(
+            context: ToolContext,
+            arguments: Mapping[str, Any],
+            *,
+            endpoint: str = endpoint,
+        ) -> dict[str, Any]:
+            _require_privilege(context, f"milky_{endpoint}")
+            transport = PlatformTransport(context.actions)
+            result = await transport.call(endpoint, arguments)
+            return {
+                "protocol": transport.protocol,
+                "endpoint": endpoint,
+                "result": result,
+            }
+
+        specs.append(
+            ToolSpec(
+                name=f"milky_{endpoint}",
+                description=(
+                    f"Milky 1.3 API：{api['description']}。"
+                    f"固定调用 POST {api['path']}；只接受声明的参数。"
+                ),
+                input_schema=api["input_schema"],
+                handler=invoke_milky_api,
+                risk=risk,
+                required_privilege=True,
+                supported_protocols=frozenset({"milky"}),
+                timeout_seconds=20.0,
+                max_output_chars=8000,
+            )
+        )
+    for api in LARK_API_CATALOG:
+        risk = ToolRisk.READ_ONLY if api["method"] == "GET" else ToolRisk.MUTATING
+
+        async def invoke_lark_api(
+            context: ToolContext,
+            arguments: Mapping[str, Any],
+            *,
+            api: Mapping[str, Any] = api,
+        ) -> dict[str, Any]:
+            _require_privilege(context, str(api["name"]))
+            transport = PlatformTransport(context.actions)
+            result = await transport._lark(api, arguments)
+            return {
+                "protocol": transport.protocol,
+                "api": api["name"],
+                "method": api["method"],
+                "path": api["path"],
+                "result": result,
+            }
+
+        specs.append(
+            ToolSpec(
+                name=str(api["name"]),
+                description=(
+                    f"Lark OAPI：{api['description']}"
+                    f"固定调用 {api['method']} {api['path']}。"
+                ),
+                input_schema=api["input_schema"],
+                handler=invoke_lark_api,
+                risk=risk,
+                required_privilege=True,
+                supported_protocols=frozenset({"feishu", "lark"}),
+                timeout_seconds=20.0,
+                max_output_chars=8000,
+            )
+        )
+    for api in ONEBOT_API_CATALOG:
+        action = str(api["name"])
+        risk = (
+            ToolRisk.READ_ONLY
+            if action.startswith("get_") or action.startswith("can_send_")
+            else ToolRisk.MUTATING
+        )
+
+        async def invoke_onebot_api(
+            context: ToolContext,
+            arguments: Mapping[str, Any],
+            *,
+            action: str = action,
+        ) -> dict[str, Any]:
+            _require_privilege(context, f"onebot_{action}")
+            _validate_onebot_special_arguments(action, arguments)
+            transport = PlatformTransport(context.actions)
+            result = await transport.call(action, arguments)
+            return {
+                "protocol": transport.protocol,
+                "action": action,
+                "result": result,
+            }
+
+        specs.append(
+            ToolSpec(
+                name=f"onebot_{action}",
+                description=(
+                    f"OneBot V11 API：{api['description']}"
+                    "参数类型和可选值按公开 API 文档固定。"
+                ),
+                input_schema=api["input_schema"],
+                handler=invoke_onebot_api,
+                risk=risk,
+                required_privilege=True,
+                supported_protocols=frozenset({"onebot"}),
+                timeout_seconds=35.0,
+                max_output_chars=8000,
+            )
+        )
     for spec in specs:
         registry.register(spec)
-    return specs
+    return tuple(specs)
+
+
+def _validate_onebot_special_arguments(
+    action: str,
+    arguments: Mapping[str, Any],
+) -> None:
+    if action == "send_msg":
+        message_type = arguments.get("message_type")
+        user_id = arguments.get("user_id")
+        group_id = arguments.get("group_id")
+        if user_id is not None and group_id is not None:
+            raise ToolExecutionError(
+                "invalid_params",
+                "send_msg 的 user_id 和 group_id 只能提供一个。",
+            )
+        if message_type == "private" and user_id is None:
+            raise ToolExecutionError("invalid_params", "private 消息必须提供 user_id。")
+        if message_type == "group" and group_id is None:
+            raise ToolExecutionError("invalid_params", "group 消息必须提供 group_id。")
+        if message_type is None and user_id is None and group_id is None:
+            raise ToolExecutionError(
+                "invalid_params",
+                "send_msg 必须提供 user_id 或 group_id。",
+            )
+        return
+    if action == "set_group_anonymous_ban":
+        supplied = sum(
+            arguments.get(name) is not None
+            for name in ("anonymous", "anonymous_flag", "flag")
+        )
+        if supplied != 1:
+            raise ToolExecutionError(
+                "invalid_params",
+                "anonymous、anonymous_flag、flag 三者必须且只能提供一个。",
+            )
+        return
+    if action == "set_group_add_request":
+        subtype = arguments.get("sub_type")
+        alias = arguments.get("type")
+        if subtype is None and alias is None:
+            raise ToolExecutionError(
+                "invalid_params",
+                "set_group_add_request 必须提供 sub_type 或 type。",
+            )
+        if subtype is not None and alias is not None and subtype != alias:
+            raise ToolExecutionError(
+                "invalid_params",
+                "sub_type 和 type 同时提供时必须一致。",
+            )
 
 
 __all__ = [
-    "CALL_PLATFORM_API_TOOL_NAME",
+    "MILKY_API_CATALOG",
+    "MILKY_API_ENDPOINTS",
+    "MILKY_API_TOOL_NAMES",
+    "LARK_API_CATALOG",
+    "LARK_API_TOOL_NAMES",
+    "ONEBOT_API_CATALOG",
+    "ONEBOT_API_ENDPOINTS",
+    "ONEBOT_API_TOOL_NAMES",
     "PLATFORM_API_TOOL_NAMES",
     "PLATFORM_COMMAND_TOOL_NAME",
     "SEND_MESSAGE_TOOL_NAME",
     "ParsedCommand",
     "PlatformTransport",
-    "call_platform_api_tool",
     "parse_platform_command",
     "platform_command_tool",
     "register_platform_api_tools",

@@ -13,6 +13,7 @@ from plugins.JianerAI.tools.contracts import (
     ToolContext,
     ToolExecutionError,
     ToolRegistration,
+    ToolPluginRegistration,
     ToolResult,
     ToolRisk,
     ToolSpec,
@@ -35,6 +36,8 @@ class ToolRegistry:
             else frozenset(str(name) for name in allowed_mutating_tools)
         )
         self._tools: dict[str, tuple[str, ToolSpec]] = {}
+        self._plugins: dict[str, ToolPluginRegistration] = {}
+        self._plugin_providers: dict[str, Any] = {}
         self._active_tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
 
@@ -59,6 +62,42 @@ class ToolRegistry:
                 return True
         return False
 
+    def registration_for(self, name: str) -> ToolRegistration | None:
+        """Return the opaque registration for a loaded tool, if present."""
+
+        stored = self._tools.get(str(name))
+        if stored is None:
+            return None
+        return ToolRegistration(token=stored[0], name=stored[1].name)
+
+    @property
+    def specs(self) -> tuple[ToolSpec, ...]:
+        """Snapshot of registered specs for composing a tool provider."""
+
+        return tuple(spec for _, spec in self._tools.values())
+
+    def register_plugin(
+        self,
+        plugin: Any,
+        *,
+        context: Mapping[str, Any] | None = None,
+        plugin_id: str | None = None,
+    ) -> ToolPluginRegistration:
+        """Load a ToolPlugin and attach all of its tools to this registry."""
+
+        from plugins.JianerAI.tools.plugin_registry import ToolPluginManager
+
+        manager = ToolPluginManager(self)
+        return manager.load(plugin, context=context, plugin_id=plugin_id)
+
+    def unregister_plugin(self, plugin: ToolPluginRegistration | str) -> bool:
+        """Unload a plugin previously loaded through ``register_plugin``."""
+
+        from plugins.JianerAI.tools.plugin_registry import ToolPluginManager
+
+        manager = ToolPluginManager(self)
+        return manager.unload(plugin)
+
     def available(
         self,
         context: ToolContext,
@@ -72,6 +111,9 @@ class ToolRegistry:
         capabilities = frozenset(getattr(context.actions, "capabilities", ()))
         output: list[ToolSpec] = []
         for _, spec in sorted(self._tools.values(), key=lambda item: item[1].name):
+            permissions = getattr(context, "tool_permissions", None)
+            if permissions is not None and spec.name not in permissions:
+                continue
             if spec.risk not in self._allowed_risks:
                 continue
             if (
@@ -147,11 +189,13 @@ class ToolRegistry:
 
     def close(self) -> None:
         self._closed = True
+        self._plugins.clear()
         self._tools.clear()
         for task in tuple(self._active_tasks):
             task.cancel()
 
     async def shutdown(self) -> None:
+        plugin_providers = tuple(self._plugin_providers.values())
         callbacks = tuple(
             spec.shutdown
             for _, spec in self._tools.values()
@@ -175,6 +219,23 @@ class ToolRegistry:
                 await _invoke_shutdown(callback)
             except Exception:
                 continue
+        for provider in plugin_providers:
+            callback = getattr(provider, "shutdown", None)
+            if not callable(callback):
+                continue
+            try:
+                value = callback()
+                if inspect.isawaitable(value):
+                    await value
+            except Exception:
+                continue
+        self._plugin_providers.clear()
+
+    @property
+    def plugins(self) -> tuple[str, ...]:
+        """Loaded plugin IDs, useful for diagnostics and reload UIs."""
+
+        return tuple(sorted(item.plugin_id for item in self._plugins.values()))
 
 
 def _normalize_arguments(arguments: Any) -> Mapping[str, Any]:
@@ -301,6 +362,7 @@ def _validate_value(
         "required",
         "additionalProperties",
         "enum",
+        "anyOf",
         "minimum",
         "maximum",
         "minLength",
@@ -314,7 +376,16 @@ def _validate_value(
     if unsupported:
         raise ValueError(f"{path} uses unsupported schema keywords: {sorted(unsupported)}")
     expected = schema.get("type")
-    if expected not in {"object", "array", "string", "integer", "number", "boolean", None}:
+    if expected not in {
+        "object",
+        "array",
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "null",
+        None,
+    }:
         raise ValueError(f"{path} has unsupported type: {expected}")
     if definition:
         properties = schema.get("properties", {})
@@ -325,6 +396,17 @@ def _validate_value(
         items = schema.get("items")
         if items is not None:
             _validate_value(None, items, path=f"{path}[]", definition=True, check_required=False)
+        any_of = schema.get("anyOf", ())
+        if not isinstance(any_of, Sequence) or isinstance(any_of, (str, bytes)):
+            raise TypeError(f"{path}.anyOf must be an array")
+        for index, child in enumerate(any_of):
+            _validate_value(
+                None,
+                child,
+                path=f"{path}.anyOf[{index}]",
+                definition=True,
+                check_required=False,
+            )
         required = schema.get("required", ())
         if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
             raise TypeError(f"{path}.required must be an array")
@@ -371,6 +453,20 @@ def _validate_value(
         _check_numeric_bound(value, schema, path, "minimum", "maximum")
     elif expected == "boolean" and not isinstance(value, bool):
         raise TypeError(f"{path} must be a boolean")
+    elif expected == "null" and value is not None:
+        raise TypeError(f"{path} must be null")
+    any_of = schema.get("anyOf")
+    if any_of is not None:
+        errors = []
+        for child in any_of:
+            try:
+                _validate_value(value, child, path=path, definition=False)
+                break
+            except (TypeError, ValueError) as exc:
+                errors.append(str(exc))
+        else:
+            detail = "; ".join(errors[:3])
+            raise ValueError(f"{path} does not match any allowed schema: {detail}")
     if "enum" in schema and value not in schema["enum"]:
         raise ValueError(f"{path} is not one of the allowed values")
 

@@ -12,15 +12,18 @@ so a sub-agent can never spawn further sub-agents.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from plugins.JianerAI.agent import (
     AgentError,
     AgentInterrupted,
+    AgentKernel,
     AgentOptions,
-    AgentRunner,
 )
 from plugins.JianerAI.tools.contracts import (
     ToolContext,
@@ -106,9 +109,28 @@ def _child_allowed_names(
     context: ToolContext,
     parent_allowed_names: frozenset[str] | None,
     requested: tuple[str, ...] | None,
+    can_send_message: bool = False,
+    can_mutate: bool = False,
 ) -> frozenset[str]:
     available = {spec.name for spec in tools.available(context)}
-    available.discard(SPAWN_SUBAGENTS_TOOL_NAME)
+    denied = {
+        SPAWN_SUBAGENTS_TOOL_NAME,
+        "call_platform_api",
+        "platform_command",
+        "list_my_memories",
+        "read_recent_chat",
+        "search_current_chat",
+    }
+    denied.update(
+        name
+        for name in available
+        if name.startswith(("onebot_", "milky_", "lark_"))
+    )
+    if not can_send_message:
+        denied.add("send_message")
+    if not can_mutate:
+        denied.update({"create_my_memory", "update_my_memory"})
+    available.difference_update(denied)
     if parent_allowed_names is not None:
         available &= set(parent_allowed_names)
     if requested is not None:
@@ -129,41 +151,80 @@ async def _run_task(
     default_timeout_seconds: float,
     max_depth: int,
     semaphore: asyncio.Semaphore,
+    runner_factory: Callable[..., Any] | None = None,
+    agent_kernel: Any | None = None,
+    can_send_message: bool = False,
+    can_mutate: bool = False,
 ) -> dict[str, Any]:
     async with semaphore:
+        started_at = time.perf_counter()
         if max_depth <= 0:
             return {
                 "index": index,
                 "goal": task.goal,
                 "ok": False,
+                "status": "rejected",
                 "error": "max_depth_reached",
+                "duration_ms": 0,
             }
         timeout = task.timeout_seconds or default_timeout_seconds
-        runner = AgentRunner(
-            providers,
-            tools,
-            options=AgentOptions(
-                total_timeout_seconds=timeout,
-                max_depth=max_depth - 1,
-            ),
-            allowed_tool_names=_child_allowed_names(
+        allowed_names = _child_allowed_names(
+            tools=tools,
+            context=context,
+            parent_allowed_names=parent_allowed_names,
+            requested=task.tools,
+            can_send_message=can_send_message,
+            can_mutate=can_mutate,
+        )
+        if agent_kernel is not None:
+            runner = agent_kernel
+        elif runner_factory is not None:
+            runner = runner_factory(
+                providers=providers,
                 tools=tools,
-                context=context,
-                parent_allowed_names=parent_allowed_names,
-                requested=task.tools,
-            ),
-            logger=logger,
+                timeout_seconds=timeout,
+                allowed_tool_names=allowed_names,
+                depth=max_depth - 1,
+                logger=logger,
+            )
+        else:
+            runner = AgentKernel(
+                providers,
+                tools,
+                options=AgentOptions(
+                    total_timeout_seconds=timeout,
+                    max_depth=max_depth - 1,
+                ),
+                allowed_tool_names=allowed_names,
+                logger=logger,
+            )
+        child_memory = getattr(context, "memory_snapshot", None)
+        if child_memory is None:
+            child_memory = _readonly_memory_snapshot(getattr(context, "memory", None))
+        child_context = dataclasses.replace(
+            context,
+            memory=child_memory,
+            memory_snapshot=child_memory,
+            tool_permissions=allowed_names,
+            depth=getattr(context, "depth", 0) + 1,
+            agent=runner,
         )
         interrupt_event = getattr(context, "interrupt_event", None)
+        child_system_prompt = _SUBAGENT_SYSTEM_PROMPT
+        snapshot_prompt = getattr(child_memory, "as_prompt", None)
+        if callable(snapshot_prompt):
+            rendered_memory = str(snapshot_prompt() or "").strip()
+            if rendered_memory:
+                child_system_prompt += "\n\n" + rendered_memory
         try:
             async with asyncio.timeout(timeout):
                 answer = await runner.run(
                     model=model,
                     message=task.goal,
                     history=(),
-                    system_prompt=_SUBAGENT_SYSTEM_PROMPT,
+                    system_prompt=child_system_prompt,
                     attachments=(),
-                    context=context,
+                    context=child_context,
                     enabled=True,
                     observer=None,
                     depth=1,
@@ -174,21 +235,28 @@ async def _run_task(
                 "index": index,
                 "goal": task.goal,
                 "ok": False,
+                "status": "timeout",
                 "error": "timeout",
+                "duration_ms": _duration_ms(started_at),
             }
         except AgentInterrupted:
             return {
                 "index": index,
                 "goal": task.goal,
                 "ok": False,
+                "status": "cancelled",
                 "error": "cancelled",
+                "cancelled": True,
+                "duration_ms": _duration_ms(started_at),
             }
         except AgentError as exc:
             return {
                 "index": index,
                 "goal": task.goal,
                 "ok": False,
+                "status": "failed",
                 "error": exc.code,
+                "duration_ms": _duration_ms(started_at),
             }
         except asyncio.CancelledError:
             raise
@@ -197,13 +265,17 @@ async def _run_task(
                 "index": index,
                 "goal": task.goal,
                 "ok": False,
+                "status": "failed",
                 "error": "subagent_failed",
+                "duration_ms": _duration_ms(started_at),
             }
         return {
             "index": index,
             "goal": task.goal,
             "ok": True,
+            "status": "completed",
             "output": str(answer or "").strip()[:_MAX_OUTPUT_CHARS],
+            "duration_ms": _duration_ms(started_at),
         }
 
 
@@ -218,6 +290,10 @@ def subagent_tool(
     default_timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
     max_depth: int = 1,
     enabled: bool = True,
+    runner_factory: Callable[..., Any] | None = None,
+    agent_kernel: Any | None = None,
+    can_send_message: bool = False,
+    can_mutate: bool = False,
 ) -> ToolSpec:
     cap = max(1, min(_MAX_TASKS, int(max_concurrency)))
     default_timeout = max(
@@ -261,6 +337,10 @@ def subagent_tool(
                     default_timeout_seconds=default_timeout,
                     max_depth=max_depth,
                     semaphore=semaphore,
+                    runner_factory=runner_factory,
+                    agent_kernel=agent_kernel,
+                    can_send_message=can_send_message,
+                    can_mutate=can_mutate,
                 )
                 for index, task in enumerate(tasks)
             )
@@ -333,3 +413,49 @@ __all__ = [
     "SubAgentTask",
     "subagent_tool",
 ]
+
+
+def _readonly_memory_snapshot(memory: Any) -> Any:
+    if isinstance(memory, Mapping):
+        return MappingProxyType(dict(memory))
+    snapshot = getattr(memory, "snapshot", None)
+    if callable(snapshot):
+        value = snapshot()
+        if isinstance(value, Mapping):
+            return MappingProxyType(dict(value))
+        return value
+    if memory is None:
+        return None
+    return _ReadOnlyMemoryProxy(memory)
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((time.perf_counter() - started_at) * 1000))
+
+
+class _ReadOnlyMemoryProxy:
+    """Forward memory reads while making common mutation APIs unavailable."""
+
+    _MUTATORS = frozenset(
+        {
+            "create_memory",
+            "update_memory",
+            "delete_memory",
+            "create_scoped_memory",
+            "update_scoped_memory",
+            "delete_scoped_memory",
+            "add_scoped_memory_evidence",
+            "redact_transcript_values",
+        }
+    )
+
+    def __init__(self, target: Any) -> None:
+        object.__setattr__(self, "_target", target)
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._MUTATORS:
+            raise AttributeError(f"memory mutation is unavailable to Sub-Agent: {name}")
+        return getattr(self._target, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("Sub-Agent memory context is read-only")

@@ -6,19 +6,38 @@ from plugins.JianerAI.tools.contracts import (
     ToolCall,
     ToolContext,
     ToolExecutionError,
+    ToolPlugin,
+    ToolPluginRegistration,
+    ToolProvider,
     ToolRegistration,
     ToolResult,
     ToolRisk,
     ToolSpec,
 )
 from plugins.JianerAI.tools.registry import ToolRegistry, duplicate_call_result
+from plugins.JianerAI.tools.plugin_registry import (
+    StaticToolPlugin,
+    ToolPluginError,
+    ToolPluginManager,
+    load_tool_plugin,
+)
+from plugins.JianerAI.tools.lark_api_catalog import (
+    LARK_API_CATALOG,
+    LARK_API_TOOL_NAMES,
+)
+from plugins.JianerAI.tools.onebot_api_catalog import (
+    ONEBOT_API_CATALOG,
+    ONEBOT_API_ENDPOINTS,
+    ONEBOT_API_TOOL_NAMES,
+)
 from plugins.JianerAI.tools.platform_api import (
-    CALL_PLATFORM_API_TOOL_NAME,
+    MILKY_API_CATALOG,
+    MILKY_API_ENDPOINTS,
+    MILKY_API_TOOL_NAMES,
     PLATFORM_API_TOOL_NAMES,
     PLATFORM_COMMAND_TOOL_NAME,
     SEND_MESSAGE_TOOL_NAME,
     PlatformTransport,
-    call_platform_api_tool,
     parse_platform_command,
     platform_command_tool,
     register_platform_api_tools,
@@ -45,7 +64,9 @@ from plugins.JianerAI.tools.web_browser import (
 
 __all__ = [
     "BUILTIN_MUTATING_TOOL_NAMES",
-    "CALL_PLATFORM_API_TOOL_NAME",
+    "MILKY_API_CATALOG",
+    "MILKY_API_ENDPOINTS",
+    "MILKY_API_TOOL_NAMES",
     "PLATFORM_API_TOOL_NAMES",
     "PLATFORM_COMMAND_TOOL_NAME",
     "SEND_MESSAGE_TOOL_NAME",
@@ -53,6 +74,17 @@ __all__ = [
     "ToolCall",
     "ToolContext",
     "ToolExecutionError",
+    "ToolPlugin",
+    "ToolPluginError",
+    "ToolPluginManager",
+    "StaticToolPlugin",
+    "ToolPluginRegistration",
+    "ToolProvider",
+    "LARK_API_CATALOG",
+    "LARK_API_TOOL_NAMES",
+    "ONEBOT_API_CATALOG",
+    "ONEBOT_API_ENDPOINTS",
+    "ONEBOT_API_TOOL_NAMES",
     "ToolRegistration",
     "ToolRegistry",
     "ToolResult",
@@ -60,7 +92,6 @@ __all__ = [
     "ToolSpec",
     "BrowserManager",
     "BrowserOptions",
-    "call_platform_api_tool",
     "parse_platform_command",
     "platform_command_tool",
     "register_platform_api_tools",
@@ -77,4 +108,5 @@ __all__ = [
     "qweather_tools",
     "validate_public_http_url",
     "web_browser_tool",
+    "load_tool_plugin",
 ]

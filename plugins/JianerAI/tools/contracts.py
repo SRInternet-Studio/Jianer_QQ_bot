@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from jianer.adapters import Capabilities, ConversationKey
 
@@ -53,6 +53,14 @@ class ToolContext:
     model: str = field(default="", compare=False)
     depth: int = field(default=0, compare=False)
     interrupt_event: Any = field(default=None, repr=False, compare=False)
+    # A run-scoped, immutable view used by Sub-Agents.  Keeping this separate
+    # from ``memory`` lets existing tools remain source compatible while child
+    # runs can never accidentally mutate the parent's memory store.
+    memory_snapshot: Any = field(default=None, repr=False, compare=False)
+    message_sink: Any = field(default=None, repr=False, compare=False)
+    tool_permissions: frozenset[str] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 ToolHandler = Callable[
@@ -137,3 +145,40 @@ class ToolResult:
 class ToolRegistration:
     token: str
     name: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolPluginRegistration:
+    """Opaque handle returned when a tool plugin is loaded."""
+
+    token: str
+    plugin_id: str
+    tool_registrations: tuple[ToolRegistration, ...] = ()
+
+
+@runtime_checkable
+class ToolProvider(Protocol):
+    """Provider contract implemented by a tool plugin.
+
+    Providers may expose ``provide_tools`` or ``tools``.  The registry accepts
+    either spelling so third-party plugins can keep a small, dependency-free
+    surface.  A provider may also implement an optional asynchronous
+    ``shutdown`` method.
+    """
+
+    def provide_tools(
+        self, context: Mapping[str, Any] | None = None
+    ) -> Iterable[ToolSpec]:
+        ...
+
+
+@runtime_checkable
+class ToolPlugin(Protocol):
+    """Plugin contract for dynamically loaded model tools."""
+
+    plugin_id: str
+
+    def provide_tools(
+        self, context: Mapping[str, Any] | None = None
+    ) -> Iterable[ToolSpec]:
+        ...

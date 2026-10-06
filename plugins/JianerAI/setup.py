@@ -7,7 +7,11 @@ from jianer.plugins.builtin.alconna import Command
 
 from bot import plugin_state
 from plugins.JianerAI.service import JianerAIService
-from plugins.JianerAI.tools import ToolRegistration, ToolSpec
+from plugins.JianerAI.tools import (
+    ToolPluginRegistration,
+    ToolRegistration,
+    ToolSpec,
+)
 
 
 __plugin_meta__ = PluginMetadata(
@@ -43,6 +47,25 @@ def register_tool(spec: ToolSpec) -> ToolRegistration:
 
 def unregister_tool(registration: ToolRegistration | str) -> bool:
     return _require_service().unregister_tool(registration)
+
+
+def register_tool_plugin(
+    plugin: Any,
+    *,
+    context: dict[str, Any] | None = None,
+    plugin_id: str | None = None,
+) -> ToolPluginRegistration:
+    """Register a third-party provider of model-callable tools."""
+
+    return _require_service().register_tool_plugin(
+        plugin,
+        context=context,
+        plugin_id=plugin_id,
+    )
+
+
+def unregister_tool_plugin(plugin: ToolPluginRegistration | str) -> bool:
+    return _require_service().unregister_tool_plugin(plugin)
 
 
 def setup(client: Any, manager: Any) -> None:

@@ -134,6 +134,42 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
         else:
             self._set_runtime_capability("embedding", True)
 
+        # Confirm the real embedding endpoint before inspecting persisted
+        # vectors.  A configured model name is not enough to validate a vector
+        # generation: the adapter must observe a successful response first.
+        if self.embedding_manager is not None:
+            try:
+                startup_report = await self._refresh_runtime_self_check(
+                    sample_text="Jianer Memory startup embedding probe"
+                )
+            except Exception as exc:
+                logger.warning(f"[sdk] 启动 Embedding 探测异常，将降级启动: {exc}")
+                self._set_embedding_degraded(
+                    active=True,
+                    reason=f"embedding startup probe failed: {exc}",
+                    checked_at=time.time(),
+                )
+            else:
+                checked_at = float(startup_report.get("checked_at") or time.time())
+                dimension_mismatch = self._apply_self_check_dimension_result(startup_report)
+                if dimension_mismatch:
+                    self._set_embedding_degraded(
+                        active=True,
+                        reason=dimension_mismatch,
+                        checked_at=checked_at,
+                    )
+                elif bool(startup_report.get("ok", False)):
+                    self._set_embedding_degraded(active=False, checked_at=checked_at)
+                else:
+                    self._set_embedding_degraded(
+                        active=True,
+                        reason=str(
+                            startup_report.get("message", "embedding startup probe failed")
+                            or "embedding startup probe failed"
+                        ),
+                        checked_at=checked_at,
+                    )
+
         try:
             stored_dimension = self._stored_vector_dimension()
         except Exception as exc:
@@ -245,6 +281,7 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
                 self._graph_vector_dir(),
                 dimension=provisional_dimension,
             )
+
             self._cleanup_stale_dual_vector_build_dirs()
             self._resume_vector_recovery_if_needed()
 
@@ -310,8 +347,6 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
                 "[sdk] 记忆运行时初始化完成，向量通道尚不可用: "
                 f"state={self._vector_health['state']}, code={self._vector_health['error_code']}"
             )
-
-        self._mark_startup_self_check_deferred()
 
         self._initialized = True
         await self._start_background_tasks()
