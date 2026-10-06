@@ -61,6 +61,8 @@ class ToolContext:
     tool_permissions: frozenset[str] | None = field(
         default=None, repr=False, compare=False
     )
+    subagent_registry: Any = field(default=None, repr=False, compare=False)
+    subagent_tracking_id: str = field(default="", repr=False, compare=False)
 
 
 ToolHandler = Callable[

@@ -91,7 +91,17 @@
         "agent_platform_api_cross_conversation_admin_only": true,
         "agent_subagent_enabled": true,
         "agent_subagent_max_concurrency": 3,
-        "agent_subagent_timeout_seconds": 300
+        "agent_subagent_timeout_seconds": 300,
+        "agent_skills_enabled": true,
+        "agent_skills_dirs": [
+            ".agents/skills"
+        ],
+        "agent_skills_max_file_bytes": 65536,
+        "agent_mcp_enabled": false,
+        "agent_mcp_servers": {},
+        "agent_bash_enabled": true,
+        "agent_bash_approval_timeout_seconds": 120,
+        "agent_bash_command_timeout_seconds": 60
     },
     "log_level": "INFO"
 }

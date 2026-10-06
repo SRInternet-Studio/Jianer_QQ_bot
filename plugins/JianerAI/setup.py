@@ -27,7 +27,8 @@ __plugin_meta__ = PluginMetadata(
         "{reminder}注销 —> 清空当前会话的短期上下文\n"
         "{reminder}简儿记忆 [子命令] —> 管理长期记忆\n"
         "{reminder}TTS [开启|关闭|状态] —> 管理当前会话语音回复\n"
-        "{reminder}Agent [开启|关闭|自动|状态|工具] —> 管理当前会话 Agent"
+        "{reminder}Agent [开启|关闭|自动|状态|工具|子代理] —> 管理当前会话 Agent\n"
+        "{reminder}批准Shell / {reminder}拒绝Shell [请求ID] —> 审核 Agent 的 Shell 命令"
     ),
     requires={"jianerbot-plugin-alconna"},
 )
@@ -253,6 +254,36 @@ async def _configure_agent(
     actions: Any = None,
 ) -> bool:
     return await _invoke("configure_agent", event, actions, state)
+
+
+@Command(f"{_REMINDER}批准Shell <request_id>").handle()
+async def _approve_shell_command(
+    request_id: str,
+    event: Any,
+    actions: Any,
+) -> bool:
+    return await _invoke(
+        "resolve_shell_review",
+        event,
+        actions,
+        request_id,
+        True,
+    )
+
+
+@Command(f"{_REMINDER}拒绝Shell <request_id>").handle()
+async def _reject_shell_command(
+    request_id: str,
+    event: Any,
+    actions: Any,
+) -> bool:
+    return await _invoke(
+        "resolve_shell_review",
+        event,
+        actions,
+        request_id,
+        False,
+    )
 
 
 @Command(f"{_REMINDER}注销").handle()

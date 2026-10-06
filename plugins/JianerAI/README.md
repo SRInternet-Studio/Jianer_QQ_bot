@@ -87,6 +87,16 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
   移除发送消息、原始平台 API、记忆读写和递归派生能力
 - `agent_subagent_can_send_message` / `agent_subagent_can_mutate`：是否允许 Sub-Agent 主动发消息或
   执行变更操作，默认关闭
+- `~Agent 子代理`：查看当前会话正在排队或运行的 Sub-Agent；命令前缀以运行时 `reminder`
+  配置为准
+- `agent_skills_enabled`：加载 Agent Skills，默认 `true`
+- `agent_skills_dirs`：`SKILL.md` 技能目录列表，相对路径以项目根目录为基准，默认 `.agents/skills`
+- `agent_skills_max_file_bytes`：单个 `SKILL.md` 最大字节数，默认 65536
+- `agent_mcp_enabled`：启用配置的 MCP 服务，默认 `false`
+- `agent_mcp_servers`：管理员配置的 MCP server 映射；支持 stdio 和 Streamable HTTP
+- `agent_bash_enabled`：注册人工审核的 `bash` 工具，默认 `true`；只对机器人管理员开放
+- `agent_bash_approval_timeout_seconds`：等待发言人审核的秒数，默认 120，范围 5–600
+- `agent_bash_command_timeout_seconds`：命令最长执行秒数，默认 60，范围 1–300
 - `memory_auto_inject`：每个 Agent 轮次是否自动注入相关个人记忆、群记忆、近期聊天和对话片段，默认开启
 - `memory_auto_inject_max_chars`：自动记忆资料字符预算，默认 16000
 - `memory_auto_inject_recent_chat` / `memory_auto_inject_episodes` / `memory_auto_inject_group`：分别控制近期聊天、
@@ -260,6 +270,8 @@ transcription 接口，默认模型为
 工具；并发上限 `agent_subagent_max_concurrency`，单任务超时
 `agent_subagent_timeout_seconds`，深度上限 1（子 Agent 不能再派生）。子 Agent 接收当前轮次的
 只读自动记忆快照，结果只回传父 Agent，不会自动刷屏、写长期记忆或向其它会话发送消息。
+状态查询只返回当前协议、机器人账号、会话和角色预设范围内的任务；任务完成、取消、超时或
+插件重载后会从运行中列表移除。
 
 ## Tool 插件
 
@@ -269,6 +281,85 @@ transcription 接口，默认模型为
 `unregister_tool_plugin(...)` 卸载。异步 provider 使用 service 的异步注册接口。每个工具仍经过
 风险级别、协议能力、权限、JSON schema、超时、输出长度和审计校验，插件卸载时会调用 provider
 的 `shutdown()`。
+
+## Agent Skills 与 MCP
+
+Agent Skills 按 `<技能目录>/SKILL.md` 加载，文件需包含 YAML frontmatter 的 `name` 与
+`description`，且 `name` 必须与目录名相同。默认扫描 `.agents/skills/`，也可用
+`agent_skills_dirs` 配置多个目录。模型只会先看到技能名称与描述；需要时调用
+`load_agent_skill` 读取正文，再用 `read_agent_skill_resource` 读取该技能目录下的 UTF-8
+文本资源。读取路径会限制在对应技能目录内，技能文本不会执行；frontmatter 中的
+`allowed-tools` 等字段不能授予运行权限，所有工具仍按 `ToolRegistry` 的权限和风险规则过滤。
+示例：
+
+```text
+.agents/skills/
+  code-review/
+    SKILL.md
+    references/checklist.md
+```
+
+MCP server 由管理员在 `config.others.agent_mcp_servers` 配置，模型不能添加或修改 server。
+将 `agent_mcp_enabled` 设为 `true` 后启用，支持 stdio 与 Streamable HTTP transport。配置键
+就是 server 名称，例如：
+
+```json
+"agent_mcp_enabled": true,
+"agent_mcp_servers": {
+  "docs": {
+    "transport": "stdio",
+    "command": "uvx",
+    "args": ["--from", "example-mcp-server", "example-mcp-server"]
+  },
+  "internal_api": {
+    "transport": "streamable_http",
+    "url": "https://mcp.example.invalid/mcp",
+    "headers": {"Authorization": "Bearer ..."}
+  }
+}
+```
+
+MCP 工具名会加 server 命名空间，例如 `mcp_docs_search`，并注册进同一
+`ToolRegistry`；工具参数仍经 JSON Schema 校验，工具超时、风险级别、`agent_allowed_tools`
+白名单和 shutdown 清理仍由 JianerAI 管理。MCP 工具默认只读；有副作用的工具必须列入该
+server 的 `mutating_tools`，并在 `agent_allowed_tools` 中加入其完整工具名。stdio 命令会在
+本机启动子进程；HTTP server 会收到工具参数，只应连接可信服务。
+
+`bash` 是机器人管理员专用工具。每次调用都会把完整命令和工作目录直接发到当前会话；
+命令保持待执行状态，直到同一会话的原发言人使用当前 `reminder` 前缀发送
+`批准Shell <请求ID>` 或 `拒绝Shell <请求ID>`。普通“同意”消息不构成授权；拒绝、过期、插话或插件关闭都会取消
+待执行命令。每次批准只对应一条命令，命令输出有长度上限，Shell 进程超时或取消时会被终止。
+若设置了 `agent_allowed_tools` 白名单，需把 `bash` 加入白名单才能交给模型调用。
+
+其他已加载的 JianerCore 插件可显式导出 `create_agent_tool_provider(context)` 或
+`provide_agent_tools(context)`，返回 JianerAI 的 `ToolSpec`（或实现 `provide_tools(context)`
+的 provider）。JianerAI 只识别这两个约定，不反射调用任意插件函数。导出的工具会加上
+`plugin_<插件ID>_` 前缀；每次调用持有当前插件代的运行租约，并继续经过 JSON Schema、风险、
+协议、能力、权限和超时检查。示例：
+
+```python
+from plugins.JianerAI.tools import ToolRisk, ToolSpec
+
+
+def provide_agent_tools(context):
+    async def handle(tool_context, arguments):
+        return await plugin_service.lookup(arguments["query"])
+
+    return (
+        ToolSpec(
+            name="lookup",
+            description="查询此插件提供的数据。",
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            handler=handle,
+            risk=ToolRisk.READ_ONLY,
+        ),
+    )
+```
 
 ## Agent 工具
 

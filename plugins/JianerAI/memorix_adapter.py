@@ -365,6 +365,52 @@ class JianerMemoryAdapter:
 
         return self._call_kernel(operation)
 
+    def get_person_profile_context(self, canonical_user_id: str) -> str:
+        """Return the latest cached profile block for one canonical person.
+
+        Context assembly must not start profile generation: profile snapshots are
+        refreshed by the memory lifecycle, and a chat turn should only perform a
+        bounded local read here.
+        """
+
+        person_id = _text(canonical_user_id)
+        if not person_id:
+            return ""
+
+        async def operation(kernel: Any) -> str:
+            service = getattr(kernel, "person_profile_service", None)
+            if service is None:
+                return ""
+            config_getter = getattr(service, "_cfg", None)
+            if callable(config_getter) and not bool(
+                config_getter("person_profile.enabled", True)
+            ):
+                return ""
+
+            metadata_store = getattr(service, "metadata_store", None)
+            get_snapshot = getattr(metadata_store, "get_latest_person_profile_snapshot", None)
+            if not callable(get_snapshot):
+                return ""
+            snapshot = get_snapshot(person_id)
+            if not isinstance(snapshot, Mapping):
+                return ""
+
+            payload: dict[str, Any] = {
+                "success": True,
+                "person_id": person_id,
+                **dict(snapshot),
+            }
+            apply_override = getattr(service, "_apply_manual_override", None)
+            if callable(apply_override):
+                payload = apply_override(person_id, payload)
+
+            formatter = getattr(service, "format_persona_profile_block", None)
+            if not callable(formatter):
+                return str(payload.get("profile_text", "") or "").strip()
+            return str(formatter(payload) or "").strip()
+
+        return self._call_kernel(operation)
+
     def _scope_payload(
         self,
         *,

@@ -13,18 +13,20 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from plugins.JianerAI.agent import (
-    AgentError,
-    AgentInterrupted,
-    AgentKernel,
-    AgentOptions,
-)
+if TYPE_CHECKING:
+    from plugins.JianerAI.agent import (
+        AgentError,
+        AgentInterrupted,
+        AgentKernel,
+        AgentOptions,
+    )
 from plugins.JianerAI.tools.contracts import (
     ToolContext,
     ToolExecutionError,
@@ -54,6 +56,109 @@ class SubAgentTask:
     goal: str
     tools: tuple[str, ...] | None = None
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
+
+
+@dataclass(frozen=True, slots=True)
+class SubAgentRecord:
+    """A small, non-sensitive snapshot of one active sub-agent task."""
+
+    request_id: str
+    scope: tuple[str, str, str, str, str]
+    goal: str
+    status: str
+    started_at: float
+    monotonic_started_at: float
+
+
+class SubAgentRegistry:
+    """Track active child tasks without retaining completed prompts/results."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._records: dict[str, SubAgentRecord] = {}
+        self._counter = 0
+
+    def start(
+        self,
+        scope: tuple[str, str, str, str, str],
+        goal: str,
+    ) -> str:
+        with self._lock:
+            self._counter += 1
+            request_id = f"subagent-{self._counter:04d}"
+            now = time.time()
+            self._records[request_id] = SubAgentRecord(
+                request_id=request_id,
+                scope=tuple(str(item) for item in scope),
+                goal=_preview_goal(goal),
+                status="queued",
+                started_at=now,
+                monotonic_started_at=time.monotonic(),
+            )
+            return request_id
+
+    def update(self, request_id: str, *, status: str) -> None:
+        with self._lock:
+            record = self._records.get(str(request_id))
+            if record is None:
+                return
+            self._records[record.request_id] = dataclasses.replace(
+                record,
+                status=str(status),
+            )
+
+    def finish(self, request_id: str) -> None:
+        with self._lock:
+            self._records.pop(str(request_id), None)
+
+    def list_active(
+        self,
+        scope: tuple[str, str, str, str, str],
+    ) -> tuple[Mapping[str, Any], ...]:
+        wanted = tuple(str(item) for item in scope)
+        now = time.monotonic()
+        with self._lock:
+            records = tuple(
+                record
+                for record in self._records.values()
+                if record.scope == wanted
+                and record.status in {"queued", "running"}
+            )
+        return tuple(
+            {
+                "request_id": record.request_id,
+                "status": record.status,
+                "goal": record.goal,
+                "elapsed_seconds": round(
+                    max(0.0, now - record.monotonic_started_at), 1
+                ),
+                "started_at": record.started_at,
+            }
+            for record in records
+        )
+
+    def clear(self) -> None:
+        with self._lock:
+            self._records.clear()
+
+
+def _preview_goal(value: Any, limit: int = 160) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _context_scope(context: ToolContext) -> tuple[str, str, str, str, str]:
+    conversation = context.conversation
+    kind = getattr(conversation, "kind", "")
+    return (
+        str(getattr(conversation, "protocol", "")),
+        str(getattr(conversation, "self_id", "")),
+        str(getattr(kind, "value", kind)),
+        str(getattr(conversation, "conversation_id", "")),
+        str(getattr(conversation, "preset", "default")),
+    )
 
 
 def _parse_tasks(raw: Any) -> list[SubAgentTask]:
@@ -115,6 +220,7 @@ def _child_allowed_names(
     available = {spec.name for spec in tools.available(context)}
     denied = {
         SPAWN_SUBAGENTS_TOOL_NAME,
+        "list_subagents",
         "call_platform_api",
         "platform_command",
         "list_my_memories",
@@ -129,7 +235,7 @@ def _child_allowed_names(
     if not can_send_message:
         denied.add("send_message")
     if not can_mutate:
-        denied.update({"create_my_memory", "update_my_memory"})
+        denied.update({"bash", "create_my_memory", "update_my_memory"})
     available.difference_update(denied)
     if parent_allowed_names is not None:
         available &= set(parent_allowed_names)
@@ -156,7 +262,22 @@ async def _run_task(
     can_send_message: bool = False,
     can_mutate: bool = False,
 ) -> dict[str, Any]:
+    # ``tools`` is imported while ``agent.py`` is still defining its public
+    # classes.  Importing AgentError/AgentKernel at module scope would make
+    # the generation loader observe a partially initialized agent module.
+    # Resolve the runtime classes only once a child task is actually started.
+    from plugins.JianerAI.agent import (
+        AgentError,
+        AgentInterrupted,
+        AgentKernel,
+        AgentOptions,
+    )
+
     async with semaphore:
+        registry = getattr(context, "subagent_registry", None)
+        tracking_id = str(getattr(context, "subagent_tracking_id", "") or "")
+        if registry is not None and tracking_id:
+            registry.update(tracking_id, status="running")
         started_at = time.perf_counter()
         if max_depth <= 0:
             return {
@@ -294,6 +415,7 @@ def subagent_tool(
     agent_kernel: Any | None = None,
     can_send_message: bool = False,
     can_mutate: bool = False,
+    registry: SubAgentRegistry | None = None,
 ) -> ToolSpec:
     cap = max(1, min(_MAX_TASKS, int(max_concurrency)))
     default_timeout = max(
@@ -323,15 +445,25 @@ def subagent_tool(
         if not model:
             raise ToolExecutionError("model_unavailable", "当前会话没有可用模型。")
         semaphore = asyncio.Semaphore(concurrency)
-        results = await asyncio.gather(
-            *(
-                _run_task(
+        async def tracked(index: int, task: SubAgentTask) -> dict[str, Any]:
+            tracking_id = (
+                registry.start(_context_scope(context), task.goal)
+                if registry is not None
+                else ""
+            )
+            child_context = dataclasses.replace(
+                context,
+                subagent_registry=registry,
+                subagent_tracking_id=tracking_id,
+            )
+            try:
+                return await _run_task(
                     index,
                     task,
                     providers=providers,
                     tools=tools,
                     logger=logger,
-                    context=context,
+                    context=child_context,
                     model=model,
                     parent_allowed_names=parent_allowed_names,
                     default_timeout_seconds=default_timeout,
@@ -342,8 +474,12 @@ def subagent_tool(
                     can_send_message=can_send_message,
                     can_mutate=can_mutate,
                 )
-                for index, task in enumerate(tasks)
-            )
+            finally:
+                if registry is not None and tracking_id:
+                    registry.finish(tracking_id)
+
+        results = await asyncio.gather(
+            *(tracked(index, task) for index, task in enumerate(tasks))
         )
         return {
             "tasks": len(tasks),
@@ -408,9 +544,36 @@ def subagent_tool(
     )
 
 
+def list_subagents_tool(registry: SubAgentRegistry) -> ToolSpec:
+    async def _list(
+        context: ToolContext,
+        arguments: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del arguments
+        active = registry.list_active(_context_scope(context))
+        return {"active": list(active), "count": len(active)}
+
+    return ToolSpec(
+        name="list_subagents",
+        description="查看当前会话正在排队或运行的 Sub-Agent，只返回当前会话的状态。",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        handler=_list,
+        risk=ToolRisk.READ_ONLY,
+        timeout_seconds=5.0,
+        max_output_chars=12000,
+    )
+
+
 __all__ = [
+    "SubAgentRecord",
+    "SubAgentRegistry",
     "SPAWN_SUBAGENTS_TOOL_NAME",
     "SubAgentTask",
+    "list_subagents_tool",
     "subagent_tool",
 ]
 

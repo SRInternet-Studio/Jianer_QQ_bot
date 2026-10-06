@@ -13,6 +13,8 @@ aiohttp
 psutil
 pillow
 pydantic>=2,<3
+PyYAML>=6,<7
+mcp>=1.9,<2
 pyecharts>=2,<3
 numpy>=2,<3
 faiss-cpu>=1.8,<2

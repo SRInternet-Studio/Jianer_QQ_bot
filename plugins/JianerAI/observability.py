@@ -98,6 +98,12 @@ def _sanitize(value: Any, *, secrets: tuple[str, ...], tool_name: str) -> Any:
             raw_html = str(source.get("html") or "")
             digest = hashlib.sha256(raw_html.encode("utf-8")).hexdigest()[:12]
             source["html"] = f"<html:{len(raw_html)} chars sha256:{digest}>"
+        if tool_name == "bash":
+            for key in ("command", "output"):
+                raw_value = source.get(key)
+                if isinstance(raw_value, str):
+                    digest = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()[:12]
+                    source[key] = f"<{key}:{len(raw_value)} chars sha256:{digest}>"
         output: dict[str, Any] = {}
         for key, item in source.items():
             key_text = str(key)
@@ -123,6 +129,9 @@ def _sanitize(value: Any, *, secrets: tuple[str, ...], tool_name: str) -> Any:
         decoded = _decode_json_container(value)
         if decoded is not None:
             return _sanitize(decoded, secrets=secrets, tool_name=tool_name)
+        if tool_name == "bash":
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+            return f"<bash payload:{len(value)} chars sha256:{digest}>"
         output = value
         for secret in secrets:
             for variant in {secret, quote(secret, safe=""), quote_plus(secret)}:

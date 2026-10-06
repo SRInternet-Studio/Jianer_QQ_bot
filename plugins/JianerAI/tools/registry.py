@@ -118,8 +118,10 @@ class ToolRegistry:
                 continue
             if (
                 getattr(spec, "required_privilege", False)
-                and actor is not None
-                and not getattr(actor, "is_privileged", False)
+                and (
+                    actor is None
+                    or not getattr(actor, "is_privileged", False)
+                )
             ):
                 continue
             if (

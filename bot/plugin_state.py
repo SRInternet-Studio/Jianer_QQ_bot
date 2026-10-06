@@ -264,6 +264,23 @@ def plugin_dispatch_pipeline(
     return PluginDispatchPipeline(event, actions)
 
 
+@contextlib.asynccontextmanager
+async def plugin_manager_lease(manager: PluginManager):
+    """Keep one active plugin generation alive for an async capability call."""
+
+    client = get_plugin_client()
+    if client is None:
+        raise RuntimeError("plugin runtime is unavailable")
+    with client._lifecycle_lock:
+        active_manager = client.plugin_manager
+        if active_manager is not manager or not manager._acquire_dispatch():
+            raise RuntimeError("plugin generation is no longer active")
+    try:
+        yield manager
+    finally:
+        manager._release_dispatch()
+
+
 def reload_plugins(logger: Any | None = None):
     """Load plugins synchronously outside an event loop.
 

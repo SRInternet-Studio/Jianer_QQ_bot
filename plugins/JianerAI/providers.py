@@ -430,14 +430,20 @@ class ProviderRegistry:
                 yield event
             return
         if config.provider == "google_generate_content":
-            payload = _build_gemini_payload(config, request)
-            source = await self._stream_request("gemini", config, payload)
-            async for event in self._stream_gemini_response(
-                source,
-                config,
-                has_tools=bool(request.tools),
-            ):
-                yield event
+            # Gemini is intentionally kept on the complete request path.  The
+            # Google SDK does not support ``should_return_http_response`` for
+            # streaming calls, and streamed tool/function parts are less
+            # reliable across SDK versions.  ``stream_agent_turn`` remains
+            # the Agent-facing contract, so expose the completed response as
+            # one event while other providers continue to stream.
+            yield ProviderStreamEvent(
+                "completed",
+                response=await self.complete_agent_turn(
+                    key,
+                    request,
+                    request_id=request_id,
+                ),
+            )
             return
         yield ProviderStreamEvent(
             "completed",
@@ -712,7 +718,7 @@ class ProviderRegistry:
             result = await self._complete_responses(config, request)
         elif config.provider == "google_generate_content":
             payload = _build_gemini_payload(config, request)
-            response = await self._request("gemini", config, payload)
+            response = await self._request_gemini(config, payload)
             result = _extract_gemini_response(response)
             if not result.text and not result.tool_calls:
                 response, result = await self._recover_gemini_empty_response(
@@ -771,15 +777,38 @@ class ProviderRegistry:
             # Keep enough output budget for a visible answer after hidden
             # reasoning. Lower thinking levels avoid the thought-only and
             # malformed-call responses seen with the default tool setting.
-            generation_config["thinkingConfig"] = {
-                "thinkingLevel": "low" if has_tools else "minimal"
-            }
-        recovery_response = await self._request(
-            "gemini",
-            config,
-            recovery_payload,
-        )
+            # Gemini gateways do not all implement the MINIMAL enum. Keep a
+            # low level for tool recovery, while plain-text recovery uses the
+            # model default by omitting thinkingConfig entirely.
+            if has_tools:
+                generation_config["thinkingConfig"] = {"thinkingLevel": "low"}
+            else:
+                generation_config.pop("thinkingConfig", None)
+        recovery_response = await self._request_gemini(config, recovery_payload)
         return recovery_response, _extract_gemini_response(recovery_response)
+
+    async def _request_gemini(
+        self,
+        config: ModelConfig,
+        payload: Mapping[str, Any],
+    ) -> Any:
+        """Request Gemini and retry once without an unsupported thinking level.
+
+        Gemini-compatible gateways expose different subsets of the
+        ``thinkingLevel`` enum. The SDK surfaces an HTTP 400, which is wrapped
+        by :meth:`_request`; retrying without ``thinkingConfig`` lets the
+        model's default reasoning mode apply without hiding other failures.
+        """
+
+        try:
+            return await self._request("gemini", config, payload)
+        except ProviderRequestError as exc:
+            if not _is_gemini_thinking_level_error(exc):
+                raise
+            fallback_payload = _without_gemini_thinking_config(payload)
+            if fallback_payload == payload:
+                raise
+            return await self._request("gemini", config, fallback_payload)
 
     async def _complete_responses(
         self,
@@ -1205,9 +1234,10 @@ def _build_gemini_payload(
             contents.append({"role": "user", "parts": pending_results})
             pending_results = []
         if turn.provider_content is not None:
-            provider_content = dict(turn.provider_content)
-            provider_content.setdefault("role", "model")
-            contents.append(provider_content)
+            provider_content = _sanitize_gemini_content(turn.provider_content)
+            if provider_content is not None:
+                provider_content.setdefault("role", "model")
+                contents.append(provider_content)
             continue
         model_parts: list[dict[str, Any]] = []
         if turn.text:
@@ -1222,7 +1252,8 @@ def _build_gemini_payload(
             }
             for call in turn.tool_calls
         )
-        contents.append({"role": "model", "parts": model_parts})
+        if model_parts:
+            contents.append({"role": "model", "parts": model_parts})
     if pending_results:
         contents.append({"role": "user", "parts": pending_results})
     generation_config: dict[str, Any] = {
@@ -1276,6 +1307,38 @@ def _build_gemini_payload(
 def _is_gemini_3_model(model: str) -> bool:
     normalized = str(model or "").strip().casefold().replace("_", "-")
     return "gemini-3" in normalized
+
+
+def _without_gemini_thinking_config(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a Gemini payload with optional reasoning controls removed."""
+
+    fallback = dict(payload)
+    generation_config = fallback.get("generationConfig")
+    if not isinstance(generation_config, Mapping):
+        return fallback
+    cleaned_config = dict(generation_config)
+    if "thinkingConfig" not in cleaned_config:
+        return fallback
+    cleaned_config.pop("thinkingConfig", None)
+    fallback["generationConfig"] = cleaned_config
+    return fallback
+
+
+def _is_gemini_thinking_level_error(error: BaseException) -> bool:
+    """Detect an upstream rejection of the configured Gemini thinking level."""
+
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current).casefold()
+        if (
+            "thinking level" in message
+            and ("not supported" in message or "unsupported" in message)
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _gemini_plain_text_retry_message(message: str) -> str:
@@ -1732,7 +1795,11 @@ async def _default_gemini_request(
             "Google GenerateContent requires the 'google-genai' package"
         ) from exc
     contents = _google_sdk_contents(payload, types)
-    generate_config = _google_sdk_generate_config(payload, types)
+    generate_config = _google_sdk_generate_config(
+        payload,
+        types,
+        include_http_response=True,
+    )
     http_options = _google_sdk_http_options(config, types)
     client = genai.Client(
         api_key=config.api_key,
@@ -1762,7 +1829,11 @@ async def _default_gemini_stream_request(
             "Google GenerateContent requires the 'google-genai' package"
         ) from exc
     contents = _google_sdk_contents(payload, types)
-    generate_config = _google_sdk_generate_config(payload, types)
+    generate_config = _google_sdk_generate_config(
+        payload,
+        types,
+        include_http_response=False,
+    )
     http_options = _google_sdk_http_options(config, types)
     client = genai.Client(
         api_key=config.api_key,
@@ -1794,15 +1865,116 @@ def _google_sdk_contents(payload: Mapping[str, Any], types: Any) -> list[Any]:
         raise ProviderRequestError(
             "Google GenerateContent request is missing contents"
         )
+    cleaned_contents = []
+    for item in raw_contents:
+        if not isinstance(item, Mapping):
+            continue
+        cleaned = _sanitize_gemini_content(item)
+        if cleaned is not None:
+            cleaned_contents.append(cleaned)
+    if not cleaned_contents:
+        raise ProviderRequestError(
+            "Google GenerateContent request contains no usable contents"
+        )
     try:
-        return [types.Content.model_validate(item) for item in raw_contents]
+        return [types.Content.model_validate(item) for item in cleaned_contents]
     except (TypeError, ValueError) as exc:
         raise ProviderRequestError(
             "Google GenerateContent request contains invalid content"
         ) from exc
 
 
-def _google_sdk_generate_config(payload: Mapping[str, Any], types: Any) -> Any:
+_GEMINI_PART_PAYLOAD_KEYS = (
+    "text",
+    "inlineData",
+    "inline_data",
+    "fileData",
+    "file_data",
+    "functionCall",
+    "function_call",
+    "functionResponse",
+    "function_response",
+    "executableCode",
+    "executable_code",
+    "codeExecutionResult",
+    "code_execution_result",
+    "toolCall",
+    "tool_call",
+    "toolResponse",
+    "tool_response",
+    "mediaResolution",
+    "media_resolution",
+)
+
+
+def _gemini_part_has_payload(part: Mapping[str, Any]) -> bool:
+    """Return whether a Gemini part contains an initialized oneof field.
+
+    Gemini responses may contain a standalone ``thoughtSignature`` part. The
+    SDK accepts that shape locally, but the GenerateContent API rejects it
+    when it is echoed back because no content oneof is initialized. Empty
+    inline/file data has the same problem. Signatures remain attached to a
+    real text or function part and are therefore preserved.
+    """
+
+    for key in _GEMINI_PART_PAYLOAD_KEYS:
+        if key not in part or part[key] is None:
+            continue
+        value = part[key]
+        if key == "text":
+            return isinstance(value, str)
+        if key in {"inlineData", "inline_data"}:
+            return (
+                isinstance(value, Mapping)
+                and bool(value.get("data"))
+                and bool(value.get("mimeType") or value.get("mime_type"))
+            )
+        if key in {"fileData", "file_data"}:
+            return (
+                isinstance(value, Mapping)
+                and bool(value.get("fileUri") or value.get("file_uri"))
+                and bool(value.get("mimeType") or value.get("mime_type"))
+            )
+        if isinstance(value, Mapping):
+            if key in {
+                "functionCall",
+                "function_call",
+                "functionResponse",
+                "function_response",
+            }:
+                return bool(value.get("name"))
+            return bool(value)
+        return True
+    return False
+
+
+def _sanitize_gemini_content(content: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Drop response-only/empty Gemini parts before replaying a turn."""
+
+    raw_parts = content.get("parts")
+    if not isinstance(raw_parts, Sequence) or isinstance(
+        raw_parts,
+        (str, bytes, bytearray),
+    ):
+        return None
+    parts = [
+        dict(part)
+        for part in raw_parts
+        if isinstance(part, Mapping) and _gemini_part_has_payload(part)
+    ]
+    if not parts:
+        return None
+    cleaned = dict(content)
+    cleaned["parts"] = parts
+    return cleaned
+
+
+def _google_sdk_generate_config(
+    payload: Mapping[str, Any],
+    types: Any,
+    *,
+    include_http_response: bool = False,
+) -> Any:
     raw_generation = payload.get("generationConfig")
     if not isinstance(raw_generation, Mapping):
         raise ProviderRequestError(
@@ -1816,7 +1988,8 @@ def _google_sdk_generate_config(payload: Mapping[str, Any], types: Any) -> Any:
     if tools is not None:
         raw_config["tools"] = _google_sdk_tools(tools)
     raw_config["automatic_function_calling"] = {"disable": True}
-    raw_config["should_return_http_response"] = True
+    if include_http_response:
+        raw_config["should_return_http_response"] = True
     try:
         return types.GenerateContentConfig.model_validate(raw_config)
     except (TypeError, ValueError) as exc:

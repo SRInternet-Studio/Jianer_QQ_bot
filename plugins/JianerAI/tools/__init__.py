@@ -50,6 +50,7 @@ from plugins.JianerAI.tools.qweather import (
     qweather_tools,
     register_qweather_tools,
 )
+from plugins.JianerAI.tools.mcp_client import MCPServerConfig, MCPToolPlugin
 from plugins.JianerAI.tools.html_card import (
     HtmlCardRenderer,
     RenderedCard,
@@ -67,6 +68,8 @@ __all__ = [
     "MILKY_API_CATALOG",
     "MILKY_API_ENDPOINTS",
     "MILKY_API_TOOL_NAMES",
+    "MCPServerConfig",
+    "MCPToolPlugin",
     "PLATFORM_API_TOOL_NAMES",
     "PLATFORM_COMMAND_TOOL_NAME",
     "SEND_MESSAGE_TOOL_NAME",

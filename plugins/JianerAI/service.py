@@ -90,8 +90,15 @@ from plugins.JianerAI.tools import (
     register_builtin_tools,
     register_platform_api_tools,
 )
-from plugins.JianerAI.tools.subagent import subagent_tool
+from plugins.JianerAI.tools.subagent import (
+    SubAgentRegistry,
+    list_subagents_tool,
+    subagent_tool,
+)
 from plugins.JianerAI.tools.web_browser import BrowserOptions
+from plugins.JianerAI.tools.agent_skills import AgentSkillManager
+from plugins.JianerAI.tools.loaded_plugins import load_active_plugin_tools
+from plugins.JianerAI.tools.bash import ShellApprovalManager
 
 
 _LOGGER = logging.getLogger("jianer_ai")
@@ -331,6 +338,14 @@ class RuntimeOptions:
     agent_browser_audit_path: Path = Path("data/jianer_browser/audit.jsonl")
     agent_browser_max_pages: int = 16
     agent_browser_idle_seconds: float = 900.0
+    agent_skills_enabled: bool = True
+    agent_skills_dirs: tuple[Path, ...] = ()
+    agent_skills_max_file_bytes: int = 65536
+    agent_mcp_enabled: bool = False
+    agent_mcp_servers: tuple[Mapping[str, Any], ...] = ()
+    agent_bash_enabled: bool = True
+    agent_bash_approval_timeout_seconds: float = 120.0
+    agent_bash_command_timeout_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         moderation_model = str(
@@ -417,6 +432,39 @@ class RuntimeOptions:
         )
         if not browser_audit_path.is_absolute():
             browser_audit_path = project_root / browser_audit_path
+        configured_skill_dirs = others.get("agent_skills_dirs", [".agents/skills"])
+        if isinstance(configured_skill_dirs, str):
+            configured_skill_dirs = [
+                item.strip()
+                for item in configured_skill_dirs.split(",")
+                if item.strip()
+            ]
+        if not isinstance(configured_skill_dirs, Sequence) or isinstance(
+            configured_skill_dirs, (str, bytes)
+        ):
+            configured_skill_dirs = [".agents/skills"]
+        skill_dirs = tuple(
+            _resolve_runtime_path(project_root, value)
+            for value in configured_skill_dirs
+            if str(value).strip()
+        )
+        configured_mcp_servers = others.get("agent_mcp_servers", ())
+        if isinstance(configured_mcp_servers, Mapping):
+            mcp_servers = tuple(
+                {**dict(server), "name": str(server_name)}
+                for server_name, server in configured_mcp_servers.items()
+                if isinstance(server, Mapping)
+            )
+        elif isinstance(configured_mcp_servers, Sequence) and not isinstance(
+            configured_mcp_servers, (str, bytes)
+        ):
+            mcp_servers = tuple(
+                dict(server)
+                for server in configured_mcp_servers
+                if isinstance(server, Mapping)
+            )
+        else:
+            mcp_servers = ()
         return cls(
             project_root=project_root,
             reminder=str(runtime.get("reminder") or "~"),
@@ -636,6 +684,29 @@ class RuntimeOptions:
             agent_browser_idle_seconds=max(
                 30.0,
                 float(others.get("agent_browser_idle_seconds", 900)),
+            ),
+            agent_skills_enabled=_runtime_bool(
+                others.get("agent_skills_enabled", True), default=True
+            ),
+            agent_skills_dirs=skill_dirs,
+            agent_skills_max_file_bytes=max(
+                1024,
+                min(262144, int(others.get("agent_skills_max_file_bytes", 65536))),
+            ),
+            agent_mcp_enabled=_runtime_bool(
+                others.get("agent_mcp_enabled", False), default=False
+            ),
+            agent_mcp_servers=mcp_servers,
+            agent_bash_enabled=_runtime_bool(
+                others.get("agent_bash_enabled", True), default=True
+            ),
+            agent_bash_approval_timeout_seconds=max(
+                5.0,
+                min(600.0, float(others.get("agent_bash_approval_timeout_seconds", 120))),
+            ),
+            agent_bash_command_timeout_seconds=max(
+                1.0,
+                min(300.0, float(others.get("agent_bash_command_timeout_seconds", 60))),
             ),
         )
 
@@ -993,6 +1064,17 @@ class JianerAIService:
         self.suffixes = suffixes or SuffixStore(
             options.project_root / "suffix_config.json"
         )
+        self.agent_skills = AgentSkillManager(
+            options.agent_skills_dirs if options.agent_skills_enabled else (),
+            max_file_bytes=options.agent_skills_max_file_bytes,
+        )
+        self.shell_approvals = ShellApprovalManager(
+            project_root=options.project_root,
+            reminder=options.reminder,
+            approval_timeout_seconds=options.agent_bash_approval_timeout_seconds,
+            command_timeout_seconds=options.agent_bash_command_timeout_seconds,
+        )
+        self.subagent_registry = SubAgentRegistry()
         allowed_risks = {
             ToolRisk.READ_ONLY,
             ToolRisk.PRESENTATION,
@@ -1001,12 +1083,13 @@ class JianerAIService:
         if options.agent_browser_enabled:
             allowed_risks.add(ToolRisk.PRIVILEGED)
         explicitly_allowed = options.agent_allowed_tools or frozenset()
+        mutating_tool_names = BUILTIN_MUTATING_TOOL_NAMES | explicitly_allowed
+        if options.agent_bash_enabled:
+            mutating_tool_names |= frozenset({"bash"})
         self.tools = tools or ToolRegistry(
             allowed_risks=frozenset(allowed_risks),
             allowed_mutating_tools=(
-                BUILTIN_MUTATING_TOOL_NAMES
-                | explicitly_allowed
-                | PLATFORM_API_TOOL_NAMES
+                mutating_tool_names | PLATFORM_API_TOOL_NAMES
             ),
         )
         if tools is None:
@@ -1065,9 +1148,25 @@ class JianerAIService:
                 default_timeout_seconds=options.agent_subagent_timeout_seconds,
                 can_send_message=options.agent_subagent_can_send_message,
                 can_mutate=options.agent_subagent_can_mutate,
+                registry=self.subagent_registry,
             )
             self.tools.register_plugin(
-                StaticToolPlugin("jianerbot-tool-subagent", (subagent_spec,))
+                StaticToolPlugin(
+                    "jianerbot-tool-subagent",
+                    (subagent_spec, list_subagents_tool(self.subagent_registry)),
+                )
+            )
+        if options.agent_skills_enabled:
+            self.tools.register_plugin(
+                self.agent_skills,
+                plugin_id="jianerbot-tool-agent-skills",
+            )
+        if options.agent_bash_enabled:
+            self.tools.register_plugin(
+                StaticToolPlugin(
+                    "jianerbot-tool-bash",
+                    (self.shell_approvals.tool(),),
+                )
             )
         self.agent = AgentKernel(
             self.providers,
@@ -1108,6 +1207,7 @@ class JianerAIService:
         self._closed = False
         self._start_lock = asyncio.Lock()
         self._memory_console_thread: threading.Thread | None = None
+        self._external_agent_tools_loaded = False
 
     @classmethod
     def from_runtime(cls, runtime: Mapping[str, Any]) -> "JianerAIService":
@@ -1725,15 +1825,52 @@ class JianerAIService:
     ) -> bool:
         key = await self._conversation_key(event, actions)
         normalized = str(state or "status").strip().casefold()
-        if normalized in {"tools", "工具"}:
-            canonical = await asyncio.to_thread(
-                self._canonical_identity, event, actions
+        if normalized in {
+            "tools",
+            "工具",
+            "subagent",
+            "subagents",
+            "sub-agent",
+            "子代理",
+            "子agent",
+        }:
+            if normalized not in {"tools", "工具"}:
+                active = self.subagent_registry.list_active(
+                    (
+                        key.protocol,
+                        key.self_id,
+                        key.kind.value,
+                        key.conversation_id,
+                        key.preset,
+                    )
+                )
+                if not active:
+                    text = "当前会话没有正在运行的 Sub-Agent。"
+                else:
+                    lines = [f"当前会话 Sub-Agent（{len(active)} 个）："]
+                    for item in active:
+                        lines.append(
+                            "- "
+                            f"{item['request_id']} "
+                            f"[{item['status']}] "
+                            f"已运行 {item['elapsed_seconds']} 秒："
+                            f"{item['goal']}"
+                        )
+                    text = "\n".join(lines)
+                await self._send_text(event, actions, text, reply=False)
+                return True
+            actor = await self._actor_resolver.resolve(
+                event, actions, self.runtime
             )
             context = self._tool_context(
                 event,
                 actions,
                 key,
-                canonical,
+                await asyncio.to_thread(
+                    self._canonical_identity, event, actions
+                ),
+                actor=actor,
+                model=self._model_for(key),
             )
             names = [
                 spec.name
@@ -1790,6 +1927,46 @@ class JianerAIService:
                 f"当前会话 Agent：{'开启' if effective else '关闭'}"
                 f"（模式：{mode}，工具能力：{availability}）。"
             ),
+            reply=False,
+        )
+        return True
+
+    async def resolve_shell_review(
+        self,
+        event: Any,
+        actions: Any,
+        request_id: str,
+        approve: bool,
+    ) -> bool:
+        key = await self._conversation_key(event, actions)
+        # Shell approval is tied to the exact platform account that started
+        # the request.  Canonical person IDs may intentionally merge accounts
+        # across protocols, but that must not grant another account approval.
+        speaker = str(getattr(event, "user_id", "") or "")
+        scope = (
+            key.protocol,
+            key.self_id,
+            key.kind.value,
+            key.conversation_id,
+        )
+        status = self.shell_approvals.resolve(
+            request_id=request_id,
+            scope=scope,
+            speaker_external_id=speaker,
+            approve=approve,
+        )
+        messages = {
+            "approved": "已批准该 Shell 命令。",
+            "rejected": "已拒绝该 Shell 命令，命令没有执行。",
+            "not_found": "找不到该待审核请求，或它已过期。",
+            "wrong_conversation": "该审核请求不属于当前会话。",
+            "not_requester": "只有发起该请求的发言人可以审核。",
+            "already_resolved": "该审核请求已经处理。",
+        }
+        await self._send_text(
+            event,
+            actions,
+            messages.get(status, "无法处理该审核请求。"),
             reply=False,
         )
         return True
@@ -1975,6 +2152,8 @@ class JianerAIService:
                         self._memory_console_thread = console_thread
                         raise
             self._closed = True
+        self.shell_approvals.close()
+        self.subagent_registry.clear()
         task, self._maintenance_task = self._maintenance_task, None
         if task is not None:
             task.cancel()
@@ -2078,6 +2257,16 @@ class JianerAIService:
             system_prompt = (
                 f"{persona}\n\n{memory_context}" if persona else memory_context
             )
+        if agent_enabled and any(
+            spec.name == "load_agent_skill" for spec in available_tools
+        ):
+            skill_catalog = self.agent_skills.catalog_prompt()
+            if skill_catalog:
+                system_prompt = (
+                    f"{system_prompt}\n\n{skill_catalog}"
+                    if system_prompt
+                    else skill_catalog
+                )
         system_prompt = (
             f"{system_prompt}\n\n{_RESPONSE_SYSTEM_RULES}"
             if system_prompt
@@ -3383,6 +3572,11 @@ class JianerAIService:
     ) -> ToolContext:
         with self._state_lock:
             history = tuple(self._histories.get(key, ()))
+        tool_permissions = None
+        if not bool(getattr(actor, "is_bot_admin", False)):
+            tool_permissions = frozenset(
+                spec.name for spec in self.tools.specs if spec.name != "bash"
+            )
         return ToolContext(
             event=event,
             actions=actions,
@@ -3402,6 +3596,7 @@ class JianerAIService:
             memory_snapshot=memory_snapshot,
             message_sink=MessageSink(self, event, actions),
             interrupt_event=interrupt_event,
+            tool_permissions=tool_permissions,
         )
 
     async def _redact_sensitive_state(
@@ -4714,7 +4909,58 @@ class JianerAIService:
             await asyncio.sleep(0.1)
 
         if not self._closed and state_of(manager) == "active":
+            await self._load_external_agent_tools(manager)
             await self._ensure_started()
+
+    async def _load_external_agent_tools(self, manager: Any) -> None:
+        if self._external_agent_tools_loaded or self._closed:
+            return
+        logger = self._logger
+        loaded_plugins = await load_active_plugin_tools(
+            self.tools,
+            manager,
+            runtime=self.runtime,
+            service=self,
+            logger=logger,
+        )
+        if loaded_plugins:
+            self._log_info(
+                "JianerAI loaded opt-in plugin tools | "
+                + format_log_data({"plugins": list(loaded_plugins)})
+            )
+        if self.options.agent_mcp_enabled and self.options.agent_mcp_servers:
+            try:
+                from plugins.JianerAI.tools.mcp_client import (
+                    MCPServerConfig,
+                    MCPToolPlugin,
+                )
+
+                valid_servers = []
+                invalid_servers = 0
+                for server in self.options.agent_mcp_servers:
+                    try:
+                        valid_servers.append(MCPServerConfig.from_value(server))
+                    except (TypeError, ValueError):
+                        invalid_servers += 1
+                provider = MCPToolPlugin(valid_servers)
+                registration = await self.register_tool_plugin_async(provider)
+                if provider.errors or invalid_servers:
+                    self._log_info(
+                        "JianerAI MCP servers initialized with unavailable tools | "
+                        + format_log_data(
+                            {
+                                "configured_servers": len(self.options.agent_mcp_servers),
+                                "loaded_tools": len(registration.tool_registrations),
+                                "server_errors": len(provider.errors) + invalid_servers,
+                            }
+                        )
+                    )
+            except Exception as exc:
+                self._log_info(
+                    "JianerAI MCP provider startup failed | "
+                    + format_log_data({"error_type": type(exc).__name__})
+                )
+        self._external_agent_tools_loaded = True
 
     async def _start_memory_console(self) -> None:
         if not self.options.memory_console_enabled or self._memory_console_thread is not None:

@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from plugins.JianerAI import providers
 from plugins.JianerAI.agent import AgentKernel
 from plugins.JianerAI.providers import (
     AssistantTurn,
@@ -120,35 +121,30 @@ def test_openai_stream_preserves_text_and_joins_split_tool_arguments(tmp_path):
     assert response.tool_calls[0].arguments == '{"query":"flux"}'
 
 
-def test_gemini_stream_yields_text_and_complete_function_call(tmp_path):
+def test_gemini_agent_turn_uses_non_streaming_request(tmp_path):
+    seen_payloads = []
+
     async def transport(provider, config, payload):
         assert provider == "gemini"
-
-        async def chunks():
-            yield {
-                "candidates": [
-                    {"content": {"role": "model", "parts": [{"text": "我先查一下。"}]}}
-                ]
-            }
-            yield {
-                "candidates": [
-                    {
-                        "content": {
-                            "role": "model",
-                            "parts": [
-                                {
-                                    "functionCall": {
-                                        "name": "lookup",
-                                        "args": {"query": "flux"},
-                                    }
+        seen_payloads.append(dict(payload))
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {"text": "我先查一下。"},
+                            {
+                                "functionCall": {
+                                    "name": "lookup",
+                                    "args": {"query": "flux"},
                                 }
-                            ],
-                        }
+                            },
+                        ],
                     }
-                ]
-            }
-
-        return chunks()
+                }
+            ]
+        }
 
     async def run():
         registry = _registry(tmp_path, "gemini", transport)
@@ -161,11 +157,8 @@ def test_gemini_stream_yields_text_and_complete_function_call(tmp_path):
         ]
 
     events = asyncio.run(run())
-    assert [event.kind for event in events] == [
-        "text_delta",
-        "tool_call_delta",
-        "completed",
-    ]
+    assert [event.kind for event in events] == ["completed"]
+    assert "stream" not in seen_payloads[0]
     response = events[-1].response
     assert response is not None
     assert response.text == "我先查一下。"
@@ -175,6 +168,168 @@ def test_gemini_stream_yields_text_and_complete_function_call(tmp_path):
         "parts": [
             {"text": "我先查一下。"},
             {"functionCall": {"name": "lookup", "args": {"query": "flux"}}},
+        ],
+    }
+
+
+def test_gemini_stream_config_does_not_request_raw_http_response():
+    class GenerateContentConfig:
+        @classmethod
+        def model_validate(cls, value):
+            return dict(value)
+
+    types = SimpleNamespace(GenerateContentConfig=GenerateContentConfig)
+    payload = {
+        "generationConfig": {"temperature": 0.5},
+        "systemInstruction": {"role": "system", "parts": [{"text": "test"}]},
+    }
+
+    stream_config = providers._google_sdk_generate_config(
+        payload,
+        types,
+        include_http_response=False,
+    )
+    request_config = providers._google_sdk_generate_config(
+        payload,
+        types,
+        include_http_response=True,
+    )
+
+    assert "should_return_http_response" not in stream_config
+    assert request_config["should_return_http_response"] is True
+
+
+def test_gemini_empty_response_recovery_does_not_force_minimal_thinking(tmp_path):
+    seen_payloads = []
+
+    async def transport(provider, config, payload):
+        assert provider == "gemini"
+        seen_payloads.append(dict(payload))
+        if len(seen_payloads) == 1:
+            return {
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {"role": "model", "parts": [{"text": ""}]},
+                    }
+                ]
+            }
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "恢复后的回答"}],
+                    }
+                }
+            ]
+        }
+
+    async def run():
+        registry = _registry(tmp_path, "gemini", transport)
+        config = registry.get("demo")
+        config = providers.ModelConfig(
+            key=config.key,
+            friendly_name=config.friendly_name,
+            provider=config.provider,
+            model="gemini-3.8-flash",
+            api_key=config.api_key,
+        )
+        registry._configs["demo"] = config
+        return await registry.chat_request("demo", ChatRequest(message="回答"))
+
+    assert asyncio.run(run()) == "恢复后的回答"
+    assert len(seen_payloads) == 2
+    assert "thinkingConfig" not in seen_payloads[1]["generationConfig"]
+    assert seen_payloads[1]["generationConfig"].get("maxOutputTokens")
+
+
+def test_gemini_unsupported_thinking_level_retries_without_config(tmp_path):
+    seen_payloads = []
+
+    async def transport(provider, config, payload):
+        assert provider == "gemini"
+        seen_payloads.append(dict(payload))
+        if len(seen_payloads) == 1:
+            raise RuntimeError(
+                "400 Thinking level MINIMAL is not supported for this model"
+            )
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "兼容回答"}],
+                    }
+                }
+            ]
+        }
+
+    async def run():
+        registry = _registry(tmp_path, "gemini", transport)
+        registry._configs["demo"] = providers.ModelConfig(
+            key="demo",
+            friendly_name="Demo",
+            provider="gemini",
+            model="gemini-3.8-flash",
+            api_key="test-key",
+            thinking_level="minimal",
+        )
+        return await registry.chat_request("demo", ChatRequest(message="回答"))
+
+    assert asyncio.run(run()) == "兼容回答"
+    assert len(seen_payloads) == 2
+    assert seen_payloads[0]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "minimal"
+    }
+    assert "thinkingConfig" not in seen_payloads[1]["generationConfig"]
+
+
+def test_gemini_replay_drops_empty_parts_from_previous_provider_content():
+    config = providers.ModelConfig(
+        key="demo",
+        friendly_name="Demo",
+        provider="google_generate_content",
+        model="gemini",
+        api_key="test-key",
+    )
+    previous_turn = AssistantTurn(
+        provider_content={
+            "role": "model",
+            "parts": [
+                # Gemini may return a signature-only part. It cannot be sent
+                # back because Part.data is a required oneof on the wire.
+                {"thoughtSignature": "signature-only"},
+                {"inlineData": {"mimeType": "image/png", "data": ""}},
+                {"inlineData": {"mimeType": "image/png"}},
+                {"text": "先前的可见文本"},
+                {"functionCall": {"name": "lookup", "args": {}}},
+            ],
+        }
+    )
+    request = providers.ChatRequest(
+        message="继续",
+        turns=(previous_turn,),
+    )
+
+    payload = providers._build_gemini_payload(config, request)
+
+    class Content:
+        @classmethod
+        def model_validate(cls, value):
+            return value
+
+    contents = providers._google_sdk_contents(
+        payload,
+        SimpleNamespace(Content=Content),
+    )
+
+    assert contents[0]["parts"] == [{"text": "继续"}]
+    assert contents[1] == {
+        "role": "model",
+        "parts": [
+            {"text": "先前的可见文本"},
+            {"functionCall": {"name": "lookup", "args": {}}},
         ],
     }
 
