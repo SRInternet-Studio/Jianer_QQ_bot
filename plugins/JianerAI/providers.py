@@ -34,6 +34,8 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "contents",
         "systemInstruction",
         "generationConfig",
+        "response_format",
+        "text",
         "system",
         "tools",
         "tool_choice",
@@ -228,6 +230,9 @@ class ChatRequest:
     attachments: tuple[MediaAttachment, ...] = ()
     tools: tuple["FunctionTool", ...] = ()
     turns: tuple["AssistantTurn | ToolResultTurn", ...] = ()
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+    json_mode: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "message", str(self.message or ""))
@@ -247,6 +252,14 @@ class ChatRequest:
         if any(not isinstance(item, (AssistantTurn, ToolResultTurn)) for item in turns):
             raise TypeError("turns must contain AssistantTurn or ToolResultTurn objects")
         object.__setattr__(self, "turns", turns)
+        if self.max_output_tokens is not None and (
+            isinstance(self.max_output_tokens, bool)
+            or int(self.max_output_tokens) <= 0
+        ):
+            raise ValueError("max_output_tokens must be a positive integer")
+        if self.max_output_tokens is not None:
+            object.__setattr__(self, "max_output_tokens", int(self.max_output_tokens))
+        object.__setattr__(self, "json_mode", bool(self.json_mode))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1130,12 +1143,22 @@ def _build_openai_payload(
     payload: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
-        "temperature": config.temperature,
-        "max_tokens": config.max_tokens,
+        "temperature": (
+            request.temperature
+            if request.temperature is not None
+            else config.temperature
+        ),
+        "max_tokens": (
+            request.max_output_tokens
+            if request.max_output_tokens is not None
+            else config.max_tokens
+        ),
         "top_p": config.top_p,
     }
     _merge_safe_extra(payload, config.extra_parameters)
     _merge_safe_extra(payload, config.extra_body)
+    if request.json_mode:
+        payload["response_format"] = {"type": "json_object"}
     if request.tools:
         payload["tools"] = [
             {
@@ -1203,10 +1226,20 @@ def _build_gemini_payload(
     if pending_results:
         contents.append({"role": "user", "parts": pending_results})
     generation_config: dict[str, Any] = {
-        "temperature": config.temperature,
+        "temperature": (
+            request.temperature
+            if request.temperature is not None
+            else config.temperature
+        ),
         "topP": config.top_p,
-        "maxOutputTokens": config.max_tokens,
+        "maxOutputTokens": (
+            request.max_output_tokens
+            if request.max_output_tokens is not None
+            else config.max_tokens
+        ),
     }
+    if request.json_mode:
+        generation_config["responseMimeType"] = "application/json"
     thinking_level = config.thinking_level
     if not thinking_level and request.tools and _is_gemini_3_model(config.model):
         thinking_level = "medium"
@@ -1268,15 +1301,25 @@ def _build_responses_payload(
         "model": config.model,
         "input": _responses_full_input(config, request),
         "store": False,
-        "temperature": config.temperature,
+        "temperature": (
+            request.temperature
+            if request.temperature is not None
+            else config.temperature
+        ),
         "top_p": config.top_p,
-        "max_output_tokens": config.max_tokens,
+        "max_output_tokens": (
+            request.max_output_tokens
+            if request.max_output_tokens is not None
+            else config.max_tokens
+        ),
     }
     system_prompt = _final_system_prompt(config, request)
     if system_prompt:
         payload["instructions"] = system_prompt
     _merge_safe_extra(payload, config.extra_parameters)
     _merge_safe_extra(payload, config.extra_body)
+    if request.json_mode:
+        payload["text"] = {"format": {"type": "json_object"}}
     if request.tools:
         payload["tools"] = [
             {
@@ -1460,9 +1503,17 @@ def _build_anthropic_payload(
     payload: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
-        "temperature": config.temperature,
+        "temperature": (
+            request.temperature
+            if request.temperature is not None
+            else config.temperature
+        ),
         "top_p": config.top_p,
-        "max_tokens": config.max_tokens,
+        "max_tokens": (
+            request.max_output_tokens
+            if request.max_output_tokens is not None
+            else config.max_tokens
+        ),
     }
     system_prompt = _final_system_prompt(config, request)
     if system_prompt:

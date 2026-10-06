@@ -209,13 +209,23 @@ class LLMServiceClient:
                 selected = candidates[0]
                 model_cfg = registry.get(selected)
                 opts = options or LLMGenerationOptions()
+                is_episode_segmentation = self.request_type.casefold().startswith(
+                    "a_memorix.episodesegmentation"
+                )
                 request = ChatRequest(
                     message=str(prompt),
-                    system_prompt="You are the Jianer Memory memory processing service. Return only the requested structured result.",
+                    system_prompt=(
+                        "You are the Jianer Memory episode segmentation service. "
+                        "Return exactly one valid JSON object and no surrounding text."
+                        if is_episode_segmentation
+                        else "You are the Jianer Memory memory processing service. Return only the requested structured result."
+                    ),
+                    temperature=opts.temperature,
+                    max_output_tokens=opts.max_tokens,
+                    json_mode=is_episode_segmentation,
                 )
-                # ProviderRegistry uses model-file defaults when options are
-                # omitted. For Jianer Memory requests, task settings are encoded
-                # by the selected model file; request_type remains in logs.
+                # ProviderRegistry uses model-file defaults unless the request
+                # provides task-specific generation options.
                 response = await registry.chat_request(selected, request)
                 if not response:
                     raise RuntimeError("text model returned an empty response")
@@ -234,11 +244,16 @@ class LLMServiceClient:
         opts = options or LLMGenerationOptions()
         temperature = opts.temperature if opts.temperature is not None else task_cfg.temperature
         max_tokens = opts.max_tokens if opts.max_tokens is not None else task_cfg.max_tokens
+        is_episode_segmentation = self.request_type.casefold().startswith(
+            "a_memorix.episodesegmentation"
+        )
         if _provider in {"gemini", "google", "googleai"}:
             url = f"{base_url}/v1beta/models/{selected}:generateContent?key={api_key}"
             body = {"contents": [{"parts": [{"text": str(prompt)}]}]}
             if temperature is not None or max_tokens is not None:
                 body["generationConfig"] = {k: v for k, v in (("temperature", temperature), ("maxOutputTokens", max_tokens)) if v is not None}
+            if is_episode_segmentation:
+                body.setdefault("generationConfig", {})["responseMimeType"] = "application/json"
             headers = {"Content-Type": "application/json"}
         else:
             url = f"{base_url}/chat/completions"
@@ -247,6 +262,8 @@ class LLMServiceClient:
                 body["temperature"] = temperature
             if max_tokens is not None:
                 body["max_tokens"] = max_tokens
+            if is_episode_segmentation:
+                body["response_format"] = {"type": "json_object"}
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
         def _request() -> str:
