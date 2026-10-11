@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from plugins.JianerAI.media_input import (
     MediaProcessingError,
     normalize_audio,
+    normalize_image,
     process_video,
 )
 
@@ -834,6 +835,9 @@ class ProviderRegistry:
                     "OpenAI Chat Completions 不支持视频输入，请切换到 "
                     "OpenAI Responses 或 Google GenerateContent。"
                 )
+            if attachment.mime.startswith("image/"):
+                prepared.append(await _normalized_image_attachment(attachment))
+                continue
             if not attachment.mime.startswith("audio/") or attachment.mime in {
                 "audio/mpeg",
                 "audio/mp3",
@@ -868,7 +872,7 @@ class ProviderRegistry:
         video_count = 0
         for attachment in request.attachments:
             if attachment.mime.startswith("image/"):
-                prepared.append(attachment)
+                prepared.append(await _normalized_image_attachment(attachment))
                 continue
             if attachment.mime.startswith("audio/"):
                 try:
@@ -1098,6 +1102,28 @@ def _final_system_prompt(config: ModelConfig, request: ChatRequest) -> str:
     if request.system_prompt.strip():
         return request.system_prompt.strip()
     return config.personality.strip()
+
+
+async def _normalized_image_attachment(
+    attachment: MediaAttachment,
+) -> MediaAttachment:
+    """Return an image attachment that every OpenAI endpoint accepts.
+
+    OpenAI-compatible gateways reject animated GIF with an upstream 400 and
+    stall on multi-megabyte base64 bodies. Forwarding the resolved bytes
+    untouched therefore turns a single sticker or camera photo into a failed
+    whole turn, so the image is transcoded to one static, size-bounded frame.
+    """
+
+    try:
+        normalized = await normalize_image(attachment.data, attachment.mime)
+    except MediaProcessingError as exc:
+        raise MediaCapabilityError(exc.safe_message) from exc
+    return MediaAttachment(
+        data=normalized.data,
+        mime=normalized.mime,
+        source=attachment.source,
+    )
 
 
 def _build_openai_payload(

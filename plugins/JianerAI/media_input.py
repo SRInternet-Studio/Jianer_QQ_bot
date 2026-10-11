@@ -4,12 +4,18 @@ import asyncio
 import json
 import shutil
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 
 MAX_MEDIA_DURATION_SECONDS = 5 * 60
 MAX_VIDEO_FRAMES = 8
+MAX_IMAGE_EDGE = 2048
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
+_STATIC_IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp"})
 _PROCESS_TIMEOUT_SECONDS = 60.0
 
 
@@ -156,6 +162,113 @@ async def process_video(data: bytes, mime: str) -> ProcessedVideo:
             audio=audio,
             duration_seconds=duration,
         )
+
+
+async def normalize_image(data: bytes, mime: str) -> ProcessedMedia:
+    """Return one static, size-bounded frame the chat providers accept.
+
+    OpenAI-compatible gateways reject animated GIF with an upstream 400 and
+    stall on multi-megabyte base64 bodies, so forwarding the resolved bytes
+    untouched turns a single sticker or camera photo into a failed turn. Only
+    images that are already safe static bitmaps inside the provider budget are
+    passed through unchanged.
+    """
+
+    return await asyncio.to_thread(_normalize_image, data, mime)
+
+
+def _normalize_image(data: bytes, mime: str) -> ProcessedMedia:
+    normalized_mime = str(mime or "").split(";", 1)[0].strip().casefold()
+    image = _open_image(data)
+    try:
+        animated = bool(getattr(image, "is_animated", False))
+        if (
+            not animated
+            and normalized_mime in _STATIC_IMAGE_MIMES
+            and max(image.size) <= MAX_IMAGE_EDGE
+            and len(data) <= MAX_IMAGE_BYTES
+        ):
+            return ProcessedMedia(data=data, mime=normalized_mime)
+        with suppress(AttributeError, EOFError, OSError, ValueError):
+            image.seek(0)
+        return _transcode_image(image)
+    except MediaProcessingError:
+        raise
+    except Exception as exc:
+        raise MediaProcessingError("无法解析该图片附件。") from exc
+    finally:
+        with suppress(Exception):
+            image.close()
+
+
+def _open_image(data: bytes) -> Any:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise MediaProcessingError(
+            "服务器未安装 Pillow，暂时无法处理图片附件。"
+        ) from exc
+    try:
+        image = Image.open(BytesIO(data))
+        image.load()
+    except Exception as exc:
+        raise MediaProcessingError("无法解析该图片附件。") from exc
+    return image
+
+
+def _transcode_image(image: Any) -> ProcessedMedia:
+    from PIL import Image, ImageOps
+
+    frame = ImageOps.exif_transpose(image) or image
+    if max(frame.size) > MAX_IMAGE_EDGE:
+        frame = frame.copy()
+        frame.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.LANCZOS)
+    if _has_alpha(frame):
+        payload = _encode_png(frame.convert("RGBA"))
+        if len(payload) <= MAX_IMAGE_BYTES:
+            return ProcessedMedia(data=payload, mime="image/png")
+        frame = _flatten_alpha(frame)
+    rgb = frame.convert("RGB")
+    for quality in (85, 75, 65):
+        payload = _encode_jpeg(rgb, quality)
+        if len(payload) <= MAX_IMAGE_BYTES:
+            return ProcessedMedia(data=payload, mime="image/jpeg")
+    while max(rgb.size) > 320:
+        rgb = rgb.resize(
+            (max(1, rgb.width // 2), max(1, rgb.height // 2)),
+            Image.LANCZOS,
+        )
+        payload = _encode_jpeg(rgb, 70)
+        if len(payload) <= MAX_IMAGE_BYTES:
+            return ProcessedMedia(data=payload, mime="image/jpeg")
+    raise MediaProcessingError("图片附件太大，无法转换后交给模型。")
+
+
+def _has_alpha(image: Any) -> bool:
+    return image.mode in {"RGBA", "LA"} or (
+        image.mode == "P" and "transparency" in image.info
+    )
+
+
+def _flatten_alpha(image: Any) -> Any:
+    from PIL import Image
+
+    rgba = image.convert("RGBA")
+    background = Image.new("RGB", rgba.size, (255, 255, 255))
+    background.paste(rgba, mask=rgba.getchannel("A"))
+    return background
+
+
+def _encode_png(image: Any) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
+
+
+def _encode_jpeg(image: Any, quality: int) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+    return buffer.getvalue()
 
 
 def _require_ffmpeg() -> tuple[str, str]:

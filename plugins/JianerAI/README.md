@@ -179,8 +179,8 @@ Function Calling；兼容端点明确拒绝 tools 参数时，本 generation 会
 
 | ResponseType | 请求协议 | 附件能力 |
 | --- | --- | --- |
-| `OpenAI Chat Completions` | OpenAI `chat.completions` | 图片；模型支持时可读 MP3/WAV 语音，其他音频先转 WAV；不支持视频 |
-| `OpenAI Responses` | OpenAI `responses` | 原生图片；语音先走转写；视频抽取最多 8 帧并转写音轨 |
+| `OpenAI Chat Completions` | OpenAI `chat.completions` | 图片，发送前统一为静态 PNG/JPEG；模型支持时可读 MP3/WAV 语音，其他音频先转 WAV；不支持视频 |
+| `OpenAI Responses` | OpenAI `responses` | 图片，发送前统一为静态 PNG/JPEG；语音先走转写；视频抽取最多 8 帧并转写音轨 |
 | `Google GenerateContent` | Google GenAI SDK `generate_content` | 原生图片、语音和视频 |
 | `Anthropic Messages` | Anthropic SDK `messages` | 图片；当前 Anthropic 协议不接收语音或视频 |
 
@@ -205,6 +205,11 @@ transcription 接口，默认模型为
 上限为 20 MiB、5 分钟，每次 OpenAI Responses 请求最多一个视频。JianerAI 只处理
 适配器通过 `RESOLVE_MEDIA` 安全解析后返回的固定字节，不会把聊天中的原始 URL 或本地
 路径直接交给 FFmpeg 或模型提供商。
+
+OpenAI 协议的图片由 Pillow 归一化后再发送：动图（GIF、动态 PNG/WebP）只取第一帧，
+最长边压缩到 2048 像素，编码为静态 PNG 或 JPEG，单张编码上限 2 MiB；已经是合规静态
+图片时保持原字节不变。部分 OpenAI 兼容中转站会以上游 400 拒收 GIF，或在多兆字节
+base64 请求上超时，归一化后这类图片不会再让整轮对话失败。其他协议按各自能力原样内联。
 
 示例：
 
