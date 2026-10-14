@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from urllib.parse import urlparse
 from dataclasses import dataclass
@@ -75,6 +76,36 @@ async def _download(
     *,
     client_factory: Callable[..., Any] = httpx.AsyncClient,
 ) -> Path:
+    def log_progress(
+        downloaded: int,
+        total: int | None,
+        started_at: float,
+        *,
+        force: bool = False,
+        bucket: int | None = None,
+    ) -> int | None:
+        if total and total > 0:
+            percent = min(downloaded / total * 100, 100.0)
+            current_bucket = int(percent // 5) * 5
+            if not force and bucket is not None and current_bucket <= bucket:
+                return bucket
+            elapsed = max(time.monotonic() - started_at, 0.001)
+            speed = downloaded / elapsed / 1024 / 1024
+            log.info(
+                "MaimaiDX 资源下载 "
+                f"{percent:5.1f}% "
+                f"({downloaded / 1024 / 1024:.1f}/"
+                f"{total / 1024 / 1024:.1f} MiB, "
+                f"{speed:.1f} MiB/s) {destination.name}"
+            )
+            return current_bucket
+        if force:
+            log.info(
+                "MaimaiDX 资源下载 "
+                f"({downloaded / 1024 / 1024:.1f} MiB) {destination.name}"
+            )
+        return bucket
+
     if archive.url.startswith("file://"):
         source = Path(archive.url[7:])
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -88,9 +119,11 @@ async def _download(
 
     if destination.exists():
         if not archive.sha256:
+            log.info(f"MaimaiDX 资源包已缓存：{destination.name}")
             return destination
         digest = await asyncio.to_thread(_sha256, destination)
         if digest.casefold() == archive.sha256.casefold():
+            log.info(f"MaimaiDX 资源包已缓存且校验通过：{destination.name}")
             return destination
         destination.unlink(missing_ok=True)
 
@@ -103,22 +136,55 @@ async def _download(
     if partial.exists():
         headers["Range"] = f"bytes={partial.stat().st_size}-"
 
+    started_at = time.monotonic()
+    downloaded = partial.stat().st_size if partial.exists() else 0
+    progress_bucket: int | None = None
+    if downloaded:
+        log.info(
+            "MaimaiDX 检测到下载断点，将从 "
+            f"{downloaded / 1024 / 1024:.1f} MiB 继续：{destination.name}"
+        )
+
     timeout = httpx.Timeout(connect=30, read=None, write=60, pool=30)
     async with client_factory(timeout=timeout, follow_redirects=True) as client:
         async with client.stream("GET", archive.url, headers=headers) as response:
             if partial.exists() and response.status_code != 206:
                 partial.unlink(missing_ok=True)
+                downloaded = 0
                 response = await client.get(archive.url)
                 response.raise_for_status()
                 payload = response.iter_bytes()
             else:
                 response.raise_for_status()
                 payload = response.aiter_bytes()
+            content_length = int(response.headers.get("content-length", 0) or 0)
+            total = downloaded + content_length if content_length else None
+            progress_bucket = log_progress(
+                downloaded,
+                total,
+                started_at,
+                force=True,
+                bucket=progress_bucket,
+            )
             mode = "ab" if partial.exists() else "wb"
             with partial.open(mode) as stream:
                 async for chunk in payload:
                     if chunk:
                         stream.write(chunk)
+                        downloaded += len(chunk)
+                        progress_bucket = log_progress(
+                            downloaded,
+                            total,
+                            started_at,
+                            bucket=progress_bucket,
+                        )
+            log_progress(
+                downloaded,
+                total,
+                started_at,
+                force=True,
+                bucket=progress_bucket,
+            )
 
     if archive.sha256:
         digest = await asyncio.to_thread(_sha256, partial)
