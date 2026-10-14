@@ -75,13 +75,22 @@ def _event(text: str, *, user_id: str = "9", group_id: str = "10001"):
 async def _dispatch(
     text: str, *, user_id: str = "9", group_id: str = "10001"
 ) -> _Actions:
+    _handled, actions = await _dispatch_handled(
+        text, user_id=user_id, group_id=group_id
+    )
+    return actions
+
+
+async def _dispatch_handled(
+    text: str, *, user_id: str = "9", group_id: str = "10001"
+) -> tuple[bool, _Actions]:
     actions = _Actions()
-    await plugin_state.dispatch_normal(
+    handled = await plugin_state.dispatch_normal(
         _event(text, user_id=user_id, group_id=group_id),
         actions,
         message_text=text,
     )
-    return actions
+    return handled, actions
 
 
 def _text(actions: _Actions) -> str:
@@ -198,3 +207,48 @@ def test_guess_without_game_is_guided():
     _reload()
     body = _text(asyncio.run(_dispatch("~wordle 猜 apple", group_id="20006")))
     assert "还没有进行中的游戏" in body
+
+
+def test_bare_word_is_a_guess_for_the_owning_player():
+    _reload()
+    module = _wordle_module()
+    gid = "20010"
+    asyncio.run(_dispatch("~wordle -l 5", group_id=gid))
+
+    event = _event("x", user_id="9", group_id=gid)
+    secret = module._GAMES[module._conversation_key(event)].game.word
+    filler = next(
+        word
+        for word in ("about", "brain", "crisp", "drain", "eagle")
+        if word != secret
+    )
+
+    handled, actions = asyncio.run(_dispatch_handled(filler, group_id=gid))
+    assert handled is True
+    assert "剩余" in _text(actions)
+
+    # The bare hint/stop aliases are recognized too.
+    handled_hint, hint_actions = asyncio.run(
+        _dispatch_handled("提示", group_id=gid)
+    )
+    assert handled_hint is True
+    assert hint_actions.sent
+
+
+def test_bare_word_does_not_hijack_other_players_or_idle_users():
+    _reload()
+    gid = "20011"
+    # No game at all -> bare word is not handled.
+    handled_idle, idle = asyncio.run(
+        _dispatch_handled("crane", user_id="7", group_id="20012")
+    )
+    assert handled_idle is False
+    assert idle.sent == []
+
+    # Another member's word is untouched while user 9 owns a game.
+    asyncio.run(_dispatch("~wordle -l 5", group_id=gid))
+    handled_other, other = asyncio.run(
+        _dispatch_handled("crane", user_id="42", group_id=gid)
+    )
+    assert handled_other is False
+    assert other.sent == []
