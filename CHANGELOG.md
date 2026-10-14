@@ -3,7 +3,7 @@
 ## 未发布
 
 ### 新增
-- 新增目录插件 `plugins/Wordle/`（参考 `nonebot-plugin-wordle`，MIT）：`~wordle [-l 长度] [-d 词典]` 开局、`~wordle 猜 <单词>` 竞猜、`~wordle 提示/状态/结束`；开局后也可直接发送单词、提示、结束（无需前缀，仅对本人当前对局生效），支持群聊多人各自开局；用 PIL 渲染 🟩/🟨/⬜ 方块棋盘（无 Pillow 时回退文本），内置 CET4/CET6/专四/专八/考研/GRE/GMAT/TOEFL/SAT/IELTS 词典与释义，长度 3~8、最多“长度+1”次机会，10 分钟超时自动结束。
+- 新增目录插件 `plugins/Wordle/`（参考 `nonebot-plugin-wordle`，MIT）：`~wordle [-l 长度] [-d 词典]` 开局、`~wordle 猜 <单词>` 竞猜、`~wordle 提示/状态/结束`；**群内共享一局、任何成员都可猜**，开局后也可直接发送单词、提示、结束（无需前缀），答对者会被 @（私聊则各自一局）；用 PIL 渲染 🟩/🟨/⬜ 方块棋盘（无 Pillow 时回退文本），内置 CET4/CET6/专四/专八/考研/GRE/GMAT/TOEFL/SAT/IELTS 词典与释义，长度 3~8、最多“长度+1”次机会，10 分钟超时自动结束。
 - 移植 `nonebot-plugin-maimaidx` v3.0.13 为 JianerCore 目录插件 `plugins/MaimaiDX/`，覆盖成绩、曲目、别名、猜歌、表格、数据源和主题等命令，并保留上游 MIT 许可与绘图署名。
 - 新增水鱼查分器、落雪查分器 OAuth 与 Yuri-YuzuChaN 别名数据源适配；OAuth Token 使用 Windows DPAPI 和受限 ACL 保护，运行时凭据统一从未跟踪的 `.env` 读取。
 - 为 JianerAI 注册 MaimaiDX B50、曲目搜索/详情、单曲成绩与 Rating 排行榜工具；图片工具按当前适配器能力过滤，并限制他人查询只能使用公开数据。

@@ -209,7 +209,7 @@ def test_guess_without_game_is_guided():
     assert "还没有进行中的游戏" in body
 
 
-def test_bare_word_is_a_guess_for_the_owning_player():
+def test_bare_word_is_a_guess_while_a_game_is_running():
     _reload()
     module = _wordle_module()
     gid = "20010"
@@ -235,20 +235,45 @@ def test_bare_word_is_a_guess_for_the_owning_player():
     assert hint_actions.sent
 
 
-def test_bare_word_does_not_hijack_other_players_or_idle_users():
+def test_group_game_is_shared_by_all_members():
     _reload()
+    module = _wordle_module()
     gid = "20011"
-    # No game at all -> bare word is not handled.
+
+    # Idle user (no game in their scene) -> bare word is not handled.
     handled_idle, idle = asyncio.run(
         _dispatch_handled("crane", user_id="7", group_id="20012")
     )
     assert handled_idle is False
     assert idle.sent == []
 
-    # Another member's word is untouched while user 9 owns a game.
-    asyncio.run(_dispatch("~wordle -l 5", group_id=gid))
+    # User 9 opens a game; any member of the group can now guess it.
+    asyncio.run(_dispatch("~wordle -l 5", user_id="9", group_id=gid))
+    event = _event("x", user_id="9", group_id=gid)
+    secret = module._GAMES[module._conversation_key(event)].game.word
+    filler = next(
+        word
+        for word in ("about", "brain", "crisp", "drain", "eagle")
+        if word != secret
+    )
+    # Another member guesses with the command form.
+    handled_b, actions_b = asyncio.run(
+        _dispatch_handled(f"~wordle 猜 {filler}", user_id="42", group_id=gid)
+    )
+    assert handled_b is True
+    assert "剩余" in _text(actions_b)
+    # A third member guesses with a bare word and wins.
+    handled_c, actions_c = asyncio.run(
+        _dispatch_handled(secret, user_id="77", group_id=gid)
+    )
+    assert handled_c is True
+    body = _text(actions_c)
+    assert "猜出了单词" in body
+    assert "@77" in body  # the winner is mentioned in groups
+
+    # A different group with no game is untouched.
     handled_other, other = asyncio.run(
-        _dispatch_handled("crane", user_id="42", group_id=gid)
+        _dispatch_handled("crane", user_id="42", group_id="20013")
     )
     assert handled_other is False
     assert other.sent == []
