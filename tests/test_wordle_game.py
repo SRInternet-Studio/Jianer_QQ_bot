@@ -84,7 +84,7 @@ def test_wordle_hint_reveals_found_letters_only():
     play = game.Wordle("crane")
     assert play.get_hint() == "*****"
     play.guess("about")  # a is present but misplaced
-    assert play.get_hint() == "*****"  # 'a' is not in "crane"
+    assert play.get_hint() == "**a**"  # only the 'a' found so far is revealed
     play.guess("nacre")  # n/a/c/r present, e exact
     assert play.get_hint() == "crane"
 

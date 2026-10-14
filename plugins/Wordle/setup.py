@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 import uuid
 from contextlib import suppress
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from arclet.alconna import Alconna, Args, MultiVar, Option
 from jianer.plugins import PluginMetadata
-from jianer.plugins.builtin.alconna import Command, Target, UniMessage
+from jianer.plugins.builtin.alconna import Command, UniMessage
 
 from bot import plugin_state
 
@@ -46,10 +47,11 @@ __plugin_meta__ = PluginMetadata(
     usage=(
         "{reminder}wordle [-l 长度] [-d 词典] —> 开始猜单词，默认为 5 字母 CET4\n"
         "{reminder}wordle 猜 <单词> —> 猜一个单词\n"
+        "开局后群内任何人都可直接发送单词 / 提示 / 结束 —> 无需前缀\n"
         "{reminder}wordle 提示 —> 查看已猜中的字母\n"
         "{reminder}wordle 状态 —> 查看当前棋盘\n"
         "{reminder}wordle 结束 —> 结束当前游戏\n"
-        "支持词典：" + "、".join(list_dictionaries())
+        "可用词典：CET4、CET6、专四、专八、考研、GRE、GMAT、TOEFL、SAT、IELTS"
     ),
     requires={"jianerbot-plugin-alconna"},
 )
@@ -112,41 +114,57 @@ _RNG = random.Random()
 
 
 def _conversation_key(event) -> str | None:
+    """Scene key: a group shares one game, a private chat is its own game.
+
+    Mirrors nonebot-plugin-wordle, whose key is
+    ``scope_self_id_scene_path`` (scene path is the group id for groups and the
+    other user's id for private chats) so every member of a group guesses the
+    same word.
+    """
+
     self_id = str(getattr(event, "self_id", "") or "")
-    user_id = str(getattr(event, "user_id", "") or "")
     group_id = getattr(event, "group_id", None)
-    scene = f"group:{group_id}" if group_id is not None else "private"
+    if group_id is not None:
+        return f"{self_id}:group:{group_id}"
+    user_id = str(getattr(event, "user_id", "") or "")
     if not user_id:
         return None
-    return f"{self_id}:{scene}:{user_id}"
+    return f"{self_id}:private:{user_id}"
 
 
 def _route_key(event) -> str | None:
     return _conversation_key(event)
 
 
-def _target(event) -> Target:
-    return Target.from_event(event)
+async def _send(
+    event,
+    actions,
+    text: str = "",
+    image: bytes | None = None,
+    mention: str | None = None,
+) -> None:
+    """Send one reply through ``UniMessage`` (text and/or a rendered image)."""
 
-
-async def _send(event, actions, text: str = "", image: bytes | None = None) -> None:
     message = UniMessage()
     message_id = getattr(event, "message_id", None)
     if message_id is not None:
-        message.append(UniMessage.reply(str(message_id)))
+        message += UniMessage.reply(str(message_id))
+    if mention:
+        message += UniMessage.at(str(mention))
     if text:
-        message.append(UniMessage.text(text))
+        message += UniMessage.text(text)
     temp_path: Path | None = None
     if image:
         try:
             _TEMP_DIR.mkdir(parents=True, exist_ok=True)
             temp_path = _TEMP_DIR / f"wordle_{uuid.uuid4().hex}.png"
             temp_path.write_bytes(image)
-            message.append(UniMessage.image(str(temp_path)))
+            message += UniMessage.image(str(temp_path))
         except OSError:
             temp_path = None
     try:
-        await message.send(target=_target(event), actions=actions)
+        # Let UniMessage resolve the target from the event.
+        await message.send(event=event, actions=actions)
     finally:
         if temp_path is not None:
             with suppress(OSError):
@@ -156,9 +174,11 @@ async def _send(event, actions, text: str = "", image: bytes | None = None) -> N
 def _help_text() -> str:
     dictionaries = "、".join(list_dictionaries())
     return (
-        "◤ 猜单词 Wordle ◢\n"
+        "◤ 猜单词 Wordle ◢ 群里所有人一起猜同一个单词\n"
         f"{_REMINDER}wordle [-l 长度] [-d 词典]　开始游戏（长度 3~8，默认 5 / CET4）\n"
         f"{_REMINDER}wordle 猜 <单词>　猜一个单词\n"
+        "开局后也可以直接发送单词、提示、结束（不用带前缀）\n"
+        "任何群成员都可以猜、看提示和结束这一局；答对的人会被 @\n"
         f"{_REMINDER}wordle 提示　查看已经猜中的字母\n"
         f"{_REMINDER}wordle 状态　查看棋盘\n"
         f"{_REMINDER}wordle 结束　结束游戏\n"
@@ -218,10 +238,16 @@ async def _handle_start(
     word, meaning = await asyncio.to_thread(_pick_entry, dictionary, length)
     game = Wordle(word, meaning)
     _GAMES[key] = _GameSlot(game, now + _GAME_TIMEOUT_SECONDS)
-    header = (
-        f"你有 {game.rows} 次机会猜出单词，长度 {game.length}，"
-        f"词典 {dictionary}，请发送你的猜测。"
-    )
+    if getattr(event, "group_id", None) is not None:
+        header = (
+            f"本局单词长度 {game.length}，共 {game.rows} 次机会，词典 {dictionary}。"
+            f"群里的任何人都可以直接发送单词来猜，一起加油～"
+        )
+    else:
+        header = (
+            f"你有 {game.rows} 次机会猜出单词，长度 {game.length}，"
+            f"词典 {dictionary}，请发送你的猜测。"
+        )
     image = await asyncio.to_thread(render.render_board, game)
     if image is None:
         header += "\n" + game.text_board()
@@ -284,15 +310,19 @@ async def _handle_guess(event, actions, word: str) -> None:
 
     if result in (GuessResult.WIN, GuessResult.LOSS):
         _GAMES.pop(key, None)
+        mention: str | None = None
         if result is GuessResult.WIN:
-            head = "🎉 恭喜你猜出了单词！"
+            head = "🎉 恭喜猜出了单词！"
+            if getattr(event, "group_id", None) is not None:
+                guesser = str(getattr(event, "user_id", "") or "")
+                mention = guesser or None
         else:
             head = "💥 很遗憾，次数用完啦～"
         image = await asyncio.to_thread(render.render_board, game)
         text = f"{head}\n{game.result_text()}"
         if image is None:
             text += "\n" + game.text_board()
-        await _send(event, actions, text, image)
+        await _send(event, actions, text, image, mention=mention)
         return
 
     progress = f"第 {game.used}/{game.rows} 次　剩余 {game.remaining} 次"
@@ -384,6 +414,18 @@ def _route(rest: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
     return "help", tuple(tokens)
 
 
+_ALPHA_WORD = re.compile(r"^[A-Za-z]+$")
+
+
+def _plain_message_text(event) -> str:
+    """Best-effort single-line text of the incoming message."""
+
+    value = getattr(event, "msg_str", None)
+    if value is None:
+        value = getattr(event, "message", "")
+    return str(value or "").strip()
+
+
 _WORDLE_COMMAND = Alconna(
     f"{_REMINDER}wordle",
     Option("-l|--length", Args["length", int], help_text="单词长度 3~8"),
@@ -457,6 +499,42 @@ async def _handle_wordle(
     else:
         await _send(event, actions, _help_text())
     return True
+
+
+async def on_message(event, actions) -> bool:
+    """Catch a bare guess (and 提示/结束/状态) while a game is running.
+
+    Command messages like ``~wordle 猜 crane`` are handled by the Alconna
+    matcher before this hook runs; here we mirror the reference plugin, where a
+    player can simply send the word itself.  A group shares one game, so any
+    member's message is intercepted while that group's game is running; chats
+    without an active game are never touched.
+    """
+
+    key = _route_key(event)
+    if key is None:
+        return False
+    slot = _GAMES.get(key)
+    if slot is None:
+        return False
+    text = _plain_message_text(event)
+    if not text:
+        return False
+    head = text.strip()
+    lowered = head.casefold()
+    if head in _HINT_ALIASES or lowered in _HINT_ALIASES:
+        await _handle_hint(event, actions)
+        return True
+    if head in _STOP_ALIASES or lowered in _STOP_ALIASES:
+        await _handle_stop(event, actions)
+        return True
+    if head in _STATUS_ALIASES or lowered in _STATUS_ALIASES:
+        await _handle_status(event, actions)
+        return True
+    if _ALPHA_WORD.fullmatch(head) and len(head) == slot.game.length:
+        await _handle_guess(event, actions, head)
+        return True
+    return False
 
 
 def setup(client, manager) -> None:

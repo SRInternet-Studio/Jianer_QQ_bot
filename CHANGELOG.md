@@ -3,7 +3,7 @@
 ## 未发布
 
 ### 新增
-- 新增目录插件 `plugins/Wordle/`：群内协作猜词，`~wordle 开始` 开局（管理员可指定答案）、`~wordle 猜 <单词>` 竞猜、`~wordle 状态` 查看棋盘、`~wordle 结束` 放弃；提供 🟩/🟨/⬜ 反馈，最多 6 次机会，内置 1200+ 常见五字母答案词表。
+- 新增目录插件 `plugins/Wordle/`（参考 `nonebot-plugin-wordle`，MIT）：`~wordle [-l 长度] [-d 词典]` 开局、`~wordle 猜 <单词>` 竞猜、`~wordle 提示/状态/结束`；群内共享一局、任何成员都可猜，开局后也可直接发送单词、提示或结束；用 PIL 渲染棋盘，内置多套词典与释义，长度 3~8、最多“长度+1”次机会，10 分钟超时自动结束。
 - 移植 `nonebot-plugin-maimaidx` v3.1.4 为 JianerCore 目录插件 `plugins/MaimaiDX/`，覆盖成绩、曲目、别名、猜歌、表格、数据源和主题等命令，并保留上游 MIT 许可与绘图署名。
 - 新增水鱼设备 OAuth、落雪 OAuth、SSE 别名推送与 Yuri-YuzuChaN 数据源适配；令牌使用 Windows DPAPI 和受限 ACL 保护，运行时凭据统一从 `.env` 读取。
 - 首次启动缺少静态资源时在后台自动下载基础包与 1.56 增量包，校验后安全解压，并按配置自动安装 Playwright Chromium；文字功能不等待资源下载完成。
