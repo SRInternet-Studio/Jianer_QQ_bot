@@ -84,3 +84,32 @@ def test_auto_download_can_be_disabled(monkeypatch):
     monkeypatch.setattr(resource_manager, "resources_ready", lambda: False)
     assert asyncio.run(resource_manager.ensure_static_resources()) is False
 
+
+def test_download_retries_with_resume_after_transport_error(
+    monkeypatch,
+    tmp_path: Path,
+):
+    attempts = []
+
+    async def fake_download(archive, destination, **kwargs):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            raise resource_manager.httpx.ReadError("connection dropped")
+        destination.write_bytes(b"complete")
+        return destination
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(resource_manager.asyncio, "sleep", no_sleep)
+    target = tmp_path / "resource.7z"
+    archive = resource_manager.ResourceArchive("https://example.invalid/resource.7z")
+    assert asyncio.run(
+        resource_manager._download_with_retries(
+            archive,
+            target,
+            fake_download,
+        )
+    ) == target
+    assert attempts == [target, target]
+

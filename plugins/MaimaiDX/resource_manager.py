@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -24,10 +25,15 @@ class ResourceInstallError(RuntimeError):
     """Static resource preparation failed in a recoverable way."""
 
 
+RESOURCE_DOWNLOAD_RETRIES = 5
+RESOURCE_RETRY_DELAY_SECONDS = 3.0
+
+
 @dataclass(frozen=True)
 class ResourceArchive:
     url: str
     sha256: str | None = None
+    target: str | None = None
 
 
 def _archive_list() -> tuple[ResourceArchive, ...]:
@@ -39,6 +45,7 @@ def _archive_list() -> tuple[ResourceArchive, ...]:
             ResourceArchive(
                 maiconfig.resource_update_url,
                 maiconfig.resource_update_sha256,
+                target="mai/pic",
             )
         )
     return tuple(archives)
@@ -79,9 +86,20 @@ async def _download(
                 raise ResourceInstallError("资源包 SHA-256 校验失败")
         return destination
 
+    if destination.exists():
+        if not archive.sha256:
+            return destination
+        digest = await asyncio.to_thread(_sha256, destination)
+        if digest.casefold() == archive.sha256.casefold():
+            return destination
+        destination.unlink(missing_ok=True)
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = Path(f"{destination}.part")
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {
+        "Accept-Encoding": "identity",
+        "User-Agent": "JianerBot-MaimaiDX/3.1.4",
+    }
     if partial.exists():
         headers["Range"] = f"bytes={partial.stat().st_size}-"
 
@@ -111,13 +129,78 @@ async def _download(
     return destination
 
 
+def _cache_name(index: int, archive: ResourceArchive) -> str:
+    digest = hashlib.sha256(archive.url.encode("utf-8")).hexdigest()[:16]
+    name = Path(urlparse(archive.url).path).name or f"archive-{index}.7z"
+    return f"{index}-{digest}-{name}"
+
+
+async def _download_with_retries(
+    archive: ResourceArchive,
+    destination: Path,
+    download: Callable[..., Any],
+) -> Path:
+    delay = RESOURCE_RETRY_DELAY_SECONDS
+    last_error: BaseException | None = None
+    for attempt in range(1, RESOURCE_DOWNLOAD_RETRIES + 1):
+        try:
+            return await download(archive, destination)
+        except asyncio.CancelledError:
+            raise
+        except (httpx.HTTPError, OSError, ResourceInstallError) as error:
+            last_error = error
+            if attempt >= RESOURCE_DOWNLOAD_RETRIES:
+                break
+            log.warning(
+                "舞萌静态资源下载中断，将从断点重试 "
+                f"({attempt}/{RESOURCE_DOWNLOAD_RETRIES})："
+                f"{type(error).__name__}: {error}"
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)
+    raise ResourceInstallError(
+        "舞萌静态资源下载失败，已尝试断点续传："
+        f"{type(last_error).__name__ if last_error else 'unknown'}"
+    ) from last_error
+
+
 def _extract_archive(archive: Path, destination: Path) -> Path:
     try:
         import py7zr
     except ImportError as error:
-        raise ResourceInstallError(
-            "缺少 py7zr，无法自动解压舞萌静态资源"
-        ) from error
+        extractor = shutil.which("7z") or shutil.which("7zz")
+        if extractor is None:
+            raise ResourceInstallError(
+                "缺少 py7zr 或系统 7z，无法自动解压舞萌静态资源"
+            ) from error
+        destination.mkdir(parents=True, exist_ok=True)
+        listing = subprocess.run(
+            [extractor, "l", "-slt", str(archive)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if listing.returncode != 0:
+            raise ResourceInstallError(
+                f"7z 读取资源包失败：{(listing.stderr or listing.stdout)[-500:]}"
+            ) from error
+        for line in listing.stdout.splitlines():
+            if line.startswith("Path = "):
+                _safe_member_name(line[7:])
+        extracted = subprocess.run(
+            [extractor, "x", "-y", f"-o{destination}", str(archive)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        if extracted.returncode != 0:
+            raise ResourceInstallError(
+                f"7z 解压资源包失败：{(extracted.stderr or extracted.stdout)[-500:]}"
+            ) from error
+        nested = destination / "static"
+        return nested if nested.is_dir() else destination
 
     destination.mkdir(parents=True, exist_ok=True)
     try:
@@ -130,8 +213,10 @@ def _extract_archive(archive: Path, destination: Path) -> Path:
     except Exception as error:
         raise ResourceInstallError(f"资源包解压失败：{error}") from error
 
-    nested = destination / "static"
-    return nested if nested.is_dir() else destination
+    for nested in destination.rglob("static"):
+        if nested.is_dir():
+            return nested
+    return destination
 
 
 def _merge_static_tree(source: Path, destination: Path) -> None:
@@ -142,6 +227,14 @@ def _merge_static_tree(source: Path, destination: Path) -> None:
             shutil.copytree(child, target, dirs_exist_ok=True)
         else:
             shutil.copy2(child, target)
+
+
+def _remove_misplaced_resource_dirs(destination: Path) -> None:
+    if not destination.is_dir():
+        return
+    for child in destination.iterdir():
+        if child.is_dir() and child.name.startswith("Resource CN"):
+            shutil.rmtree(child)
 
 
 def _run_chromium_install() -> None:
@@ -182,7 +275,9 @@ async def ensure_static_resources(
     archives = list(_archive_list())
     if not resources_ready():
         install_root = static.parent / ".maimaidx-install"
+        cache_root = static.parent / ".maimaidx-cache"
         install_root.mkdir(parents=True, exist_ok=True)
+        cache_root.mkdir(parents=True, exist_ok=True)
         run_id = uuid.uuid4().hex
         with tempfile.TemporaryDirectory(
             prefix=f"{run_id}-",
@@ -196,16 +291,25 @@ async def ensure_static_resources(
                 archives = [ResourceArchive(local.resolve().as_uri())]
 
             for index, archive in enumerate(archives, 1):
-                target = temp / f"archive-{index}.7z"
-                await download(archive, target)
+                target = cache_root / _cache_name(index, archive)
+                await _download_with_retries(archive, target, download)
                 extracted = await asyncio.to_thread(
                     extract, target, temp / f"x{index}"
                 )
-                await asyncio.to_thread(_merge_static_tree, extracted, static)
+                destination = (
+                    static / archive.target
+                    if archive.target
+                    else static
+                )
+                await asyncio.to_thread(
+                    _merge_static_tree,
+                    extracted,
+                    destination,
+                )
+        await asyncio.to_thread(_remove_misplaced_resource_dirs, static)
 
     if maiconfig.auto_install_chromium:
         await asyncio.to_thread(chromium_install)
-        chromium_marker.write_text("ok\n", encoding="utf-8")
 
     marker = static.parent / "resource-install.json"
     marker.write_text(
@@ -225,6 +329,8 @@ async def ensure_static_resources(
         raise ResourceInstallError(
             "静态资源安装后校验仍未通过：\n" + "\n".join(issues)
         )
+    if maiconfig.auto_install_chromium:
+        chromium_marker.write_text("ok\n", encoding="utf-8")
     log.success("舞萌DX静态资源与 Chromium 已准备完成")
     return True
 
