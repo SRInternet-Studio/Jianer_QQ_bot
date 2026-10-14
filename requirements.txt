@@ -44,3 +44,4 @@ pymysql
 cryptography
 pycryptodome
 lark-oapi
+py7zr>=0.21,<2

@@ -3,8 +3,10 @@
 ## 未发布
 
 ### 新增
-- 移植 `nonebot-plugin-maimaidx` v3.0.13 为 JianerCore 目录插件 `plugins/MaimaiDX/`，覆盖成绩、曲目、别名、猜歌、表格、数据源和主题等命令，并保留上游 MIT 许可与绘图署名。
-- 新增水鱼查分器、落雪查分器 OAuth 与 Yuri-YuzuChaN 别名数据源适配；OAuth Token 使用 Windows DPAPI 和受限 ACL 保护，运行时凭据统一从未跟踪的 `.env` 读取。
+- 新增目录插件 `plugins/Wordle/`：群内协作猜词，`~wordle 开始` 开局（管理员可指定答案）、`~wordle 猜 <单词>` 竞猜、`~wordle 状态` 查看棋盘、`~wordle 结束` 放弃；提供 🟩/🟨/⬜ 反馈，最多 6 次机会，内置 1200+ 常见五字母答案词表。
+- 移植 `nonebot-plugin-maimaidx` v3.1.4 为 JianerCore 目录插件 `plugins/MaimaiDX/`，覆盖成绩、曲目、别名、猜歌、表格、数据源和主题等命令，并保留上游 MIT 许可与绘图署名。
+- 新增水鱼设备 OAuth、落雪 OAuth、SSE 别名推送与 Yuri-YuzuChaN 数据源适配；令牌使用 Windows DPAPI 和受限 ACL 保护，运行时凭据统一从 `.env` 读取。
+- 首次启动缺少静态资源时在后台自动下载基础包与 1.56 增量包，校验后安全解压，并按配置自动安装 Playwright Chromium；文字功能不等待资源下载完成。
 - 为 JianerAI 注册 MaimaiDX B50、曲目搜索/详情、单曲成绩与 Rating 排行榜工具；图片工具按当前适配器能力过滤，并限制他人查询只能使用公开数据。
 - 新增脱敏的 `config.example.json`，提供 OneBot、Milky、Kritor、飞书和 AI 基础配置结构。
 
@@ -19,7 +21,7 @@
 - 插件订阅事件纳入宿主统一派发，热重载后会重放 listener-start 生命周期，并回收旧代 Alconna 命令注册。
 - JianerAI Tool 上下文增加当前会话历史和会话发送者查询，供工具在不猜测身份的前提下解析群名片或昵称。
 - `config.json`、`.codex/`、`.agent/`、`.agents/` 和 `AGENTS.md` 改为仅本地使用，不再纳入版本控制。
-- `requirements.txt` 将 JianerCore 下限锁定为 `jianer-bot>=0.92.2`，并补充 MaimaiDX 所需的异步 IO、数据模型、绘图与 WebSocket 依赖。
+- `requirements.txt` 将 JianerCore 下限锁定为 `jianer-bot>=0.92.2`，并补充 MaimaiDX 所需的异步 IO、数据模型、绘图与 `py7zr` 依赖。
 
 ### 行为变更（插件开发者请关注）
 - 旧式关键词函数插件契约不再作为项目插件接口；命令插件必须声明 `__plugin_meta__ = PluginMetadata(...)` 并使用 `@Command(...).handle()`。

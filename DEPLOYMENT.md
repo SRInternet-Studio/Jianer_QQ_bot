@@ -379,7 +379,7 @@ Linux `systemd` 示例会把 `.env` 同时作为 `EnvironmentFile` 加载，因�
 
 ### 8.1 MaimaiDX
 
-完整舞萌功能需要把上游静态资源放到：
+完整舞萌功能默认会在首次启动后于后台自动准备静态资源和 Chromium。资源安装到：
 
 ```text
 data/maimaidx/static/
@@ -390,7 +390,14 @@ data/maimaidx/static/
 └── mai/plate_version/
 ```
 
-还必须存在 `mai/cover/0.png`。若 `.env` 中 `ASSETS_ONLINE=false`，还要提供 `mai/plate/`。
+自动流程会下载上游基础资源包与 `1.56` 增量包并校验解压。下载期间机器人仍可
+处理文字查询，图片功能会提示资源准备中。也可设置
+`MAIMAIDX_RESOURCE_ARCHIVE` 使用本地离线 7z 包，或通过
+`MAIMAIDX_RESOURCE_URL` / `MAIMAIDX_RESOURCE_UPDATE_URL` 覆盖下载地址。
+
+资源目录必须包含字体、`mai/pic`、`mai/cover`、`mai/shougou`、
+`mai/plate_version`，并存在 `mai/cover/0.png`。若 `.env` 中
+`ASSETS_ONLINE=false`，还要提供 `mai/plate/`。
 
 默认状态目录是：
 
