@@ -6,6 +6,7 @@ from jianer.plugins import PluginMetadata
 from jianer.plugins.builtin.alconna import Command
 
 from bot import plugin_state
+from plugins.JianerAI.observability import install_stdlib_logging_bridge
 from plugins.JianerAI.service import JianerAIService
 from plugins.JianerAI.tools import (
     ToolPluginRegistration,
@@ -74,7 +75,9 @@ def setup(client: Any, manager: Any) -> None:
     if _service is not None:
         raise RuntimeError("JianerAI service is already set up")
     previous_manager = getattr(client, "plugin_manager", None)
-    _service = JianerAIService.from_runtime(plugin_state.get_runtime())
+    runtime = plugin_state.get_runtime()
+    install_stdlib_logging_bridge(runtime.get("logger"))
+    _service = JianerAIService.from_runtime(runtime)
     try:
         startup = submit_awaitable(
             _service.start_after_activation(manager, previous_manager)
