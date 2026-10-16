@@ -24,21 +24,20 @@ from plugins.JianerAI.tools.contracts import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_DDGS_BACKENDS = (
-    "auto",
+_DDGS_ENGINE_HINTS = (
     "bing",
     "brave",
     "duckduckgo",
     "google",
     "grokipedia",
     "mojeek",
+    "startpage",
     "wikipedia",
     "yahoo",
     "yandex",
 )
 _CHINA_BACKENDS = ("zhipu", "bocha", "bing_cn")
-_ALLOWED_BACKENDS = frozenset((*_DDGS_BACKENDS, *_CHINA_BACKENDS))
-_BACKEND_OPTIONS = (*_DDGS_BACKENDS, *_CHINA_BACKENDS)
+_DIRECT_BING_BACKEND = "bing_cn"
 _DEFAULT_DDGS_BACKEND = "bing"
 _DEFAULT_FALLBACK_BACKENDS = _CHINA_BACKENDS
 
@@ -66,6 +65,33 @@ _BING_CN_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+
+
+@lru_cache(maxsize=1)
+def _ddgs_text_engines() -> frozenset[str]:
+    """Text engines actually enabled by the installed ``ddgs`` build."""
+
+    try:
+        from ddgs.engines import ENGINES
+    except Exception:
+        return frozenset(_DDGS_ENGINE_HINTS)
+    engines = ENGINES.get("text") if isinstance(ENGINES, Mapping) else None
+    if not isinstance(engines, Mapping) or not engines:
+        return frozenset(_DDGS_ENGINE_HINTS)
+    return frozenset(
+        str(name).strip().casefold() for name in engines if str(name).strip()
+    )
+
+
+def _backend_options() -> tuple[str, ...]:
+    options: list[str] = ["auto"]
+    for name in sorted(_ddgs_text_engines()):
+        if name not in options:
+            options.append(name)
+    for name in ("bing", *_CHINA_BACKENDS):
+        if name not in options:
+            options.append(name)
+    return tuple(options)
 
 
 class _BackendUnavailable(RuntimeError):
@@ -136,7 +162,7 @@ def web_search_tool(
                         "搜索引擎后端。省略时使用宿主默认后端；"
                         "DeepSeek 官方 API 下该参数会被忽略。"
                     ),
-                    "enum": list(_BACKEND_OPTIONS),
+                    "enum": list(_backend_options()),
                 },
             },
             "required": ["query"],
@@ -177,6 +203,12 @@ def _web_search(
         return _payload(query, "deepseek", results)
 
     backend = _resolve_backend(arguments.get("backend"), project_root, environ)
+    if backend == "bing" and "bing" not in _ddgs_text_engines():
+        _LOGGER.info(
+            "ddgs has no text engine named 'bing'; using the built-in "
+            "Bing client instead"
+        )
+        backend = _DIRECT_BING_BACKEND
     if backend in _CHINA_BACKENDS:
         outcome = _search_explicit_china_backend(
             backend,
@@ -519,9 +551,17 @@ def _resolve_backend(
             _config_value("DDGS_BACKEND", project_root, environ)
             or _DEFAULT_DDGS_BACKEND
         ).casefold()
-    if backend not in _ALLOWED_BACKENDS:
-        raise ValueError("search backend is not allowed")
-    return backend
+    if (
+        backend == "auto"
+        or backend == "bing"
+        or backend in _CHINA_BACKENDS
+        or backend in _ddgs_text_engines()
+    ):
+        return backend
+    raise ValueError(
+        "unsupported search backend; available: "
+        + ", ".join(_backend_options())
+    )
 
 
 def _fallback_backends(

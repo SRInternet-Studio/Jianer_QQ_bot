@@ -35,6 +35,7 @@
 - 飞书绑定以 JSON 为权威源，通过持久 outbox 幂等合并 AI 身份；回调失败不回滚非 AI 绑定。
 
 ### 修复
+- `web_search` 不再硬编码 DDGS 引擎列表，改为读取当前安装的 `ddgs` 实际启用的 text 引擎；`ddgs` 9.16 起 text 引擎无 `bing`，此时 `bing` 自动改用内置直连 Bing，未启用的引擎直接报错而不是静默回落到 `auto`。
 - MaimaiDX 自动资源安装改用持久缓存和断点续传，修复大文件下载中断后重头开始；兼容资源包多一层目录及 1.56 增量素材覆盖到 `mai/pic`。
 - JianerAI 在 OpenAI 协议（Chat Completions / Responses）发送图片前统一归一化：动图只取第一帧，最长边压到 2048，编码为静态 PNG 或 JPEG，单张上限 2 MiB。此前 GIF 会被中转站以上游 400 拒收、大体积 base64 请求会超时，导致带图的一轮直接回「暂时无法连接AI服务」。
 - Pixiv 生图插件的 `generating` 状态改为由 `plugin_state` 维护，避免派发参数副本导致并发状态丢失。

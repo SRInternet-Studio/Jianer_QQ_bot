@@ -140,11 +140,14 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 `aiconfig/deepseek.ai.json` 已按此设置。
 
 网页搜索默认使用 `ddgs` 文本搜索接口，后端由 `DDGS_BACKEND` 环境变量决定，
-默认 `bing`；模型可用 `backend` 参数选择 `auto`、`bing`、`brave`、
-`duckduckgo`、`google`、`grokipedia`、`mojeek`、`wikipedia`、`yahoo`、
-`yandex`，或直接选择国内后端 `zhipu`、`bocha`、`bing_cn`。当当前模型配置的
-`BaseUrl` 主机为 `api.deepseek.com` 时，工具自动改用 DeepSeek 官方
-`POST /v1/tools/search`，忽略 `backend` 参数。
+默认 `bing`；可用的 DDGS 引擎来自当前安装版本实际启用的 text 引擎（如 `auto`、
+`brave`、`duckduckgo`、`google`、`grokipedia`、`mojeek`、`startpage`、
+`wikipedia`、`yahoo`），另外可直接选择国内后端 `zhipu`、`bocha`、`bing_cn`。
+`ddgs` 9.16 起 text 引擎不再包含 `bing`，此时 `bing` 会自动改用内置直连 Bing
+客户端（先请求 `cn.bing.com`，无结果再试 `www.bing.com/search`）；未启用的 DDGS
+引擎会直接报错，不再静默回落到 `auto`。当当前模型配置的 `BaseUrl` 主机为
+`api.deepseek.com` 时，工具自动改用 DeepSeek 官方 `POST /v1/tools/search`，
+忽略 `backend` 参数。
 
 DDGS 超时、限流或网络错误时，按 `WEB_SEARCH_FALLBACK_BACKENDS`（默认
 `zhipu,bocha,bing_cn`）依次回退：智谱联网搜索读取 `ZHIPUAI_API_KEY`，博查

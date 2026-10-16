@@ -153,10 +153,10 @@ def _first_result(title: str = "标题", url: str = "https://a.example") -> dict
 def test_tool_exposes_backend_enum() -> None:
     spec = web_search_tool()
     backend = spec.input_schema["properties"]["backend"]
-    assert "yandex" in backend["enum"]
-    assert "zhipu" in backend["enum"]
-    assert "bocha" in backend["enum"]
-    assert "bing_cn" in backend["enum"]
+    expected = set(web_search_module._backend_options())
+    assert set(backend["enum"]) == expected
+    assert "bing" in backend["enum"]
+    assert {"zhipu", "bocha", "bing_cn"} <= set(backend["enum"])
 
 
 def test_backend_argument_overrides_environment(
@@ -188,12 +188,28 @@ def test_environment_backend_is_default(
 def test_builtin_default_backend_is_bing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = _install_ddgs(monkeypatch, results=[_first_result()])
-    _install_http(monkeypatch)
+    monkeypatch.setattr(
+        web_search_module,
+        "_ddgs_text_engines",
+        lambda: frozenset({"brave", "duckduckgo", "google"}),
+    )
+    ddgs_calls = _install_ddgs(monkeypatch, results=[_first_result()])
+    html_text = (
+        "<li class='b_algo'><h2>"
+        "<a href='https://bing.example/result'>Bing 结果</a>"
+        "</h2><p>Bing 摘要</p></li>"
+    )
+
+    def get(url: str, kwargs: dict[str, Any]) -> _FakeResponse:
+        assert url == "https://cn.bing.com/search"
+        return _FakeResponse(text=html_text)
+
+    _install_http(monkeypatch, get=get)
     spec = web_search_tool(environ={})
     result = spec.handler(_context(), {"query": "hello"})
-    assert calls[0]["backend"] == "bing"
-    assert result["backend"] == "bing"
+    assert ddgs_calls == []
+    assert result["backend"] == "bing_cn"
+    assert result["results"][0]["url"] == "https://bing.example/result"
 
 
 def test_invalid_backend_is_rejected(
@@ -260,14 +276,14 @@ def test_deepseek_gateway_still_uses_ddgs(
         base_url="https://api.rinko.ai/",
         api_key="sk-gateway",
     )
-    spec = web_search_tool(environ={})
+    spec = web_search_tool(environ={"DDGS_BACKEND": "google"})
     result = spec.handler(
         _context(model="deepseek", config=config),
         {"query": "hello"},
     )
-    assert calls[0]["backend"] == "bing"
+    assert calls[0]["backend"] == "google"
     assert client.posts == []
-    assert result["backend"] == "bing"
+    assert result["backend"] == "google"
 
 
 def test_deepseek_failure_does_not_fall_back_to_ddgs(
@@ -317,7 +333,9 @@ def test_ddgs_timeout_falls_back_to_zhipu(
         )
 
     _install_http(monkeypatch, post=post)
-    spec = web_search_tool(environ={"ZHIPUAI_API_KEY": "zp-key"})
+    spec = web_search_tool(
+        environ={"ZHIPUAI_API_KEY": "zp-key", "DDGS_BACKEND": "google"}
+    )
     result = spec.handler(_context(), {"query": "hello"})
     assert result["backend"] == "zhipu"
     assert result["results"] == [
@@ -357,7 +375,9 @@ def test_missing_zhipu_key_falls_back_to_bocha(
         )
 
     _install_http(monkeypatch, post=post)
-    spec = web_search_tool(environ={"BOCHA_API_KEY": "bocha-key"})
+    spec = web_search_tool(
+        environ={"BOCHA_API_KEY": "bocha-key", "DDGS_BACKEND": "google"}
+    )
     result = spec.handler(_context(), {"query": "hello"})
     assert result["backend"] == "bocha"
     assert result["results"][0]["url"] == "https://bocha.example/result"
@@ -385,7 +405,7 @@ def test_missing_paid_keys_falls_back_to_bing_cn(
         return _FakeResponse(text=html_text)
 
     client = _install_http(monkeypatch, get=get)
-    spec = web_search_tool(environ={})
+    spec = web_search_tool(environ={"DDGS_BACKEND": "google"})
     result = spec.handler(_context(), {"query": "hello"})
     assert client.gets
     assert result["backend"] == "bing_cn"
@@ -418,7 +438,7 @@ def test_bing_cn_falls_back_to_global_host(
         )
 
     _install_http(monkeypatch, get=get)
-    spec = web_search_tool(environ={})
+    spec = web_search_tool(environ={"DDGS_BACKEND": "google"})
     result = spec.handler(_context(), {"query": "hello"})
     assert seen == [
         "https://cn.bing.com/search",
@@ -433,11 +453,13 @@ def test_empty_ddgs_results_do_not_trigger_fallback(
 ) -> None:
     calls = _install_ddgs(monkeypatch, results=[])
     client = _install_http(monkeypatch)
-    spec = web_search_tool(environ={"ZHIPUAI_API_KEY": "zp-key"})
+    spec = web_search_tool(
+        environ={"ZHIPUAI_API_KEY": "zp-key", "DDGS_BACKEND": "google"}
+    )
     result = spec.handler(_context(), {"query": "hello"})
     assert calls
     assert client.posts == []
-    assert result["backend"] == "bing"
+    assert result["backend"] == "google"
     assert result["result_count"] == 0
 
 
@@ -448,7 +470,9 @@ def test_no_results_error_is_treated_as_empty(
 
     _install_ddgs(monkeypatch, error=DDGSException("No results found."))
     client = _install_http(monkeypatch)
-    spec = web_search_tool(environ={"ZHIPUAI_API_KEY": "zp-key"})
+    spec = web_search_tool(
+        environ={"ZHIPUAI_API_KEY": "zp-key", "DDGS_BACKEND": "google"}
+    )
     result = spec.handler(_context(), {"query": "hello"})
     assert client.posts == []
     assert result["result_count"] == 0
@@ -465,7 +489,7 @@ def test_exhausted_fallback_chain_returns_stable_error(
         raise httpx.ConnectError("offline")
 
     _install_http(monkeypatch, get=get)
-    spec = web_search_tool(environ={})
+    spec = web_search_tool(environ={"DDGS_BACKEND": "google"})
     with pytest.raises(ToolExecutionError) as error:
         spec.handler(_context(), {"query": "hello"})
     assert error.value.code == "web_search_unavailable"
@@ -516,7 +540,7 @@ def test_duplicate_and_invalid_urls_are_dropped(
         ],
     )
     _install_http(monkeypatch)
-    spec = web_search_tool(environ={})
+    spec = web_search_tool(environ={"DDGS_BACKEND": "google"})
     result = spec.handler(_context(), {"query": "hello"})
     assert [item["url"] for item in result["results"]] == [
         "https://a.example"
