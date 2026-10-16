@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
-import os
 import re
-import threading
 from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import quote, quote_plus
@@ -161,92 +158,3 @@ def _decode_json_container(value: str) -> Any | None:
 def _is_sensitive_key(key: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_")
     return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)
-
-
-_LOG_LEVEL_NUMBERS = {
-    "TRACE": 5,
-    "DEBUG": 10,
-    "INFO": 20,
-    "WARNING": 30,
-    "ERROR": 40,
-    "CRITICAL": 50,
-}
-_BRIDGE_TAKEOVER_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "jieba")
-_LOGGING_INTERNAL_FILES = frozenset(
-    os.path.realpath(path) for path in (logging.__file__, __file__)
-)
-_bridge_lock = threading.RLock()
-_bridge_handler: "_LoguruInterceptHandler | None" = None
-
-
-class _LoguruInterceptHandler(logging.Handler):
-    """Forward standard-library records into loguru's single log pipeline."""
-
-    def __init__(self, host_logger: Any = None) -> None:
-        super().__init__()
-        self._host_logger = host_logger
-
-    def set_host_logger(self, host_logger: Any) -> None:
-        self._host_logger = host_logger
-
-    def _threshold(self) -> int:
-        level = getattr(self._host_logger, "log_level", None)
-        if isinstance(level, int):
-            return level
-        return _LOG_LEVEL_NUMBERS.get(str(level or "").strip().upper(), logging.INFO)
-
-    def emit(self, record: logging.LogRecord) -> None:
-        if record.levelno < self._threshold():
-            return
-        try:
-            from loguru import logger as loguru_logger
-        except ImportError:  # pragma: no cover - loguru ships with jianer-bot
-            return
-        try:
-            level: str | int = loguru_logger.level(record.levelname).name
-        except (KeyError, ValueError):
-            level = record.levelno
-        frame = logging.currentframe()
-        depth = 0
-        while frame is not None and (
-            os.path.realpath(frame.f_code.co_filename) in _LOGGING_INTERNAL_FILES
-        ):
-            frame = frame.f_back
-            depth += 1
-        try:
-            loguru_logger.opt(depth=depth, exception=record.exc_info).log(
-                level, record.getMessage()
-            )
-        except Exception:  # pragma: no cover - logging must never break callers
-            self.handleError(record)
-
-
-def install_stdlib_logging_bridge(
-    host_logger: Any = None,
-    *,
-    takeover: Sequence[str] = _BRIDGE_TAKEOVER_LOGGERS,
-) -> None:
-    """Route third-party ``logging`` records into the bot's loguru pipeline.
-
-    The vendored Jianer Memory core and its console use ``logging.getLogger``
-    directly. Without this bridge their records never reach loguru: INFO/DEBUG
-    are dropped by the handler-less root logger and WARNING+ leak through
-    ``logging.lastResort`` as unformatted stderr text.
-    """
-
-    global _bridge_handler
-    with _bridge_lock:
-        root = logging.getLogger()
-        if _bridge_handler is None:
-            _bridge_handler = _LoguruInterceptHandler(host_logger)
-            logging.basicConfig(level=0, handlers=[_bridge_handler], force=True)
-        else:
-            if host_logger is not None:
-                _bridge_handler.set_host_logger(host_logger)
-            if _bridge_handler not in root.handlers:
-                root.addHandler(_bridge_handler)
-            root.setLevel(0)
-        for name in takeover:
-            target = logging.getLogger(name)
-            target.handlers = []
-            target.propagate = True

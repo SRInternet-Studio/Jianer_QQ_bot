@@ -318,12 +318,6 @@ class JianerMemoryAdapter:
         if self._kernel is None:
             from plugins.JianerAI.memorix.core.runtime.sdk_memory_kernel import SDKMemoryKernel
             from plugins.JianerAI.memorix.core._host_compat import configure_host_runtime
-            from plugins.JianerAI.observability import install_stdlib_logging_bridge
-
-            # Importing the kernel pulls in jieba, which attaches its own
-            # stderr handler on import; re-apply the takeover so those records
-            # flow through the bot logger instead of printing twice.
-            install_stdlib_logging_bridge()
 
             kernel_config = dict(self._config)
             storage = dict(kernel_config.get("storage") or {})

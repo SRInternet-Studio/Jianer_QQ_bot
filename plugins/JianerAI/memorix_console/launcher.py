@@ -18,23 +18,9 @@ class MemoryConsoleThread(threading.Thread):
     def __init__(self, kernel: Any, memory_store: Any, config: ConsoleConfig) -> None:
         import uvicorn
 
-        from ..observability import install_stdlib_logging_bridge
-
-        # The host installs this during plugin setup; repeat it here so a
-        # standalone console launch still shares the loguru pipeline.
-        install_stdlib_logging_bridge()
         app = create_app(kernel, memory_store=memory_store, config=config)
         self.server = uvicorn.Server(
-            uvicorn.Config(
-                app,
-                host=config.host,
-                port=config.port,
-                log_level="info",
-                # Keep uvicorn on the host logging pipeline instead of
-                # installing its own handlers, so access/error records reach
-                # the bot's loguru sink through the stdlib logging bridge.
-                log_config=None,
-            )
+            uvicorn.Config(app, host=config.host, port=config.port, log_level="info")
         )
         self.startup_error: BaseException | None = None
         super().__init__(target=self._run_server, name="jianer-memory-console", daemon=True)
