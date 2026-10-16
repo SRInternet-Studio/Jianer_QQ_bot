@@ -1,45 +1,111 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from functools import lru_cache
+from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
+from dotenv import dotenv_values
+
 from plugins.JianerAI.tools.contracts import (
     ToolContext,
+    ToolExecutionError,
     ToolRisk,
     ToolSpec,
 )
 
 
-_ALLOWED_BACKENDS = frozenset(
-    {
-        "auto",
-        "bing",
-        "brave",
-        "duckduckgo",
-        "google",
-        "grokipedia",
-        "mojeek",
-        "wikipedia",
-        "yahoo",
-        "yandex",
-    }
+_LOGGER = logging.getLogger(__name__)
+
+_DDGS_BACKENDS = (
+    "auto",
+    "bing",
+    "brave",
+    "duckduckgo",
+    "google",
+    "grokipedia",
+    "mojeek",
+    "wikipedia",
+    "yahoo",
+    "yandex",
 )
+_CHINA_BACKENDS = ("zhipu", "bocha", "bing_cn")
+_ALLOWED_BACKENDS = frozenset((*_DDGS_BACKENDS, *_CHINA_BACKENDS))
+_BACKEND_OPTIONS = (*_DDGS_BACKENDS, *_CHINA_BACKENDS)
+_DEFAULT_DDGS_BACKEND = "yandex"
+_DEFAULT_FALLBACK_BACKENDS = _CHINA_BACKENDS
+
 _DDGS_TIMEOUT_SECONDS = 8
-_TOOL_TIMEOUT_SECONDS = 12.0
+_DEEPSEEK_TIMEOUT_SECONDS = 10.0
+_FALLBACK_ATTEMPT_TIMEOUT_SECONDS = 6.0
+_FALLBACK_TOTAL_TIMEOUT_SECONDS = 12.0
+_TOOL_TIMEOUT_SECONDS = 22.0
 _DEFAULT_MAX_RESULTS = 5
 _MAX_RESULTS = 8
 _MAX_TITLE_CHARS = 300
 _MAX_SNIPPET_CHARS = 1200
 _MAX_URL_CHARS = 2048
+_DEEPSEEK_MAX_QUERY_CHARS = 128
+_ZHIPU_MAX_QUERY_CHARS = 70
+
+_DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
+_ZHIPU_SEARCH_URL = "https://open.bigmodel.cn/api/paas/v4/web_search"
+_BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
+_BING_CN_SEARCH_URLS = (
+    "https://cn.bing.com/search",
+    "https://www.bing.com/search",
+)
+_BING_CN_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
 
-def web_search_tool() -> ToolSpec:
+class _BackendUnavailable(RuntimeError):
+    """A configured backend cannot run, for example because its key is absent."""
+
+    def __init__(self, backend: str) -> None:
+        super().__init__(backend)
+        self.backend = backend
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchOutcome:
+    backend: str
+    results: list[dict[str, str]]
+
+
+def web_search_tool(
+    project_root: Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> ToolSpec:
+    root = Path(project_root).resolve() if project_root is not None else None
+
+    def handler(
+        context: ToolContext,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return _web_search(
+            context,
+            arguments,
+            project_root=root,
+            environ=environ,
+        )
+
     return ToolSpec(
         name="web_search",
         description=(
             "搜索互联网上的当前公开信息，返回标题、URL 和搜索摘要。"
+            "可用 backend 指定搜索引擎；省略时使用宿主默认后端。"
+            "当前模型为 DeepSeek 官方 API 时自动改用 DeepSeek 网页搜索。"
             "适合需要最新资料的问题，结果中的 URL 仅供回答依据；除非用户明确要求"
             "来源、出处、引用或链接，否则不要在最终回答中展示来源或 URL。"
         ),
@@ -64,11 +130,19 @@ def web_search_tool() -> ToolSpec:
                     "description": "可选时间范围：d 天、w 周、m 月、y 年。",
                     "enum": ["d", "w", "m", "y"],
                 },
+                "backend": {
+                    "type": "string",
+                    "description": (
+                        "搜索引擎后端。省略时使用宿主默认后端；"
+                        "DeepSeek 官方 API 下该参数会被忽略。"
+                    ),
+                    "enum": list(_BACKEND_OPTIONS),
+                },
             },
             "required": ["query"],
             "additionalProperties": False,
         },
-        handler=_web_search,
+        handler=handler,
         risk=ToolRisk.READ_ONLY,
         timeout_seconds=_TOOL_TIMEOUT_SECONDS,
         max_output_chars=12000,
@@ -78,8 +152,10 @@ def web_search_tool() -> ToolSpec:
 def _web_search(
     context: ToolContext,
     arguments: Mapping[str, Any],
+    *,
+    project_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    del context
     query = _clean_text(arguments["query"], limit=500)
     if not query:
         raise ValueError("search query cannot be blank")
@@ -90,7 +166,334 @@ def _web_search(
         if timelimit_value is not None
         else None
     )
-    backend = _configured_backend()
+
+    model_config = _active_model_config(context)
+    if _is_deepseek_official(model_config):
+        results = _deepseek_search(
+            query,
+            max_results=max_results,
+            config=model_config,
+        )
+        return _payload(query, "deepseek", results)
+
+    backend = _resolve_backend(arguments.get("backend"), project_root, environ)
+    if backend in _CHINA_BACKENDS:
+        outcome = _search_explicit_china_backend(
+            backend,
+            query,
+            max_results=max_results,
+            project_root=project_root,
+            environ=environ,
+        )
+        if outcome is not None:
+            return _payload(query, outcome.backend, outcome.results)
+        fallback = _run_fallback_chain(
+            query,
+            max_results=max_results,
+            project_root=project_root,
+            environ=environ,
+        )
+        if fallback is None:
+            raise _unavailable_error()
+        return _payload(query, fallback.backend, fallback.results)
+
+    try:
+        results = _ddgs_search(
+            query,
+            backend=backend,
+            max_results=max_results,
+            timelimit=timelimit,
+        )
+    except Exception as exc:
+        if _is_ddgs_empty_result(exc):
+            return _payload(query, backend, [])
+        if not _is_ddgs_fallback_error(exc):
+            raise _unavailable_error() from exc
+        _LOGGER.warning(
+            "web_search DDGS backend %s failed (%s); trying fallback chain",
+            backend,
+            type(exc).__name__,
+        )
+        fallback = _run_fallback_chain(
+            query,
+            max_results=max_results,
+            project_root=project_root,
+            environ=environ,
+        )
+        if fallback is None:
+            raise _unavailable_error() from exc
+        return _payload(query, fallback.backend, fallback.results)
+    return _payload(query, backend, results)
+
+
+def _active_model_config(context: ToolContext) -> Any:
+    agent = getattr(context, "agent", None)
+    providers = getattr(agent, "providers", None)
+    model_key = str(getattr(context, "model", "") or "").strip()
+    if providers is None or not model_key:
+        return None
+    try:
+        return providers.get(model_key)
+    except Exception:
+        return None
+
+
+def _is_deepseek_official(config: Any) -> bool:
+    if config is None:
+        return False
+    base_url = str(getattr(config, "base_url", "") or "").strip()
+    if not base_url:
+        return False
+    return (urlsplit(base_url).hostname or "").casefold() == "api.deepseek.com"
+
+
+def _deepseek_search(
+    query: str,
+    *,
+    max_results: int,
+    config: Any,
+) -> list[dict[str, str]]:
+    api_key = str(getattr(config, "api_key", "") or "").strip()
+    if not api_key:
+        raise _unavailable_error()
+    body = {
+        "query": _truncate(query, _DEEPSEEK_MAX_QUERY_CHARS),
+        "count": max(1, min(max_results, 50)),
+        "need_content": False,
+    }
+    try:
+        with _http_client(timeout=_DEEPSEEK_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                _DEEPSEEK_SEARCH_URL,
+                headers=_bearer_headers(api_key),
+                json=body,
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        _LOGGER.warning("DeepSeek web search failed: %s", type(exc).__name__)
+        raise _unavailable_error() from exc
+    items = payload.get("results") if isinstance(payload, Mapping) else None
+    return _normalize_results(
+        _map_items(
+            items,
+            title_keys=("title",),
+            url_keys=("url",),
+            snippet_keys=("summary", "snippet"),
+        ),
+        limit=max_results,
+    )
+
+
+def _search_explicit_china_backend(
+    backend: str,
+    query: str,
+    *,
+    max_results: int,
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> _SearchOutcome | None:
+    try:
+        results = _search_china_backend(
+            backend,
+            query,
+            max_results=max_results,
+            project_root=project_root,
+            environ=environ,
+            timeout=_FALLBACK_ATTEMPT_TIMEOUT_SECONDS,
+        )
+    except _BackendUnavailable:
+        return None
+    except Exception as exc:
+        _LOGGER.warning(
+            "web_search backend %s failed: %s",
+            backend,
+            type(exc).__name__,
+        )
+        return None
+    return _SearchOutcome(backend, results)
+
+
+def _run_fallback_chain(
+    query: str,
+    *,
+    max_results: int,
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> _SearchOutcome | None:
+    deadline = time.monotonic() + _FALLBACK_TOTAL_TIMEOUT_SECONDS
+    empty_outcome: _SearchOutcome | None = None
+    for backend in _fallback_backends(project_root, environ):
+        remaining = deadline - time.monotonic()
+        if remaining <= 1.0:
+            break
+        try:
+            results = _search_china_backend(
+                backend,
+                query,
+                max_results=max_results,
+                project_root=project_root,
+                environ=environ,
+                timeout=min(_FALLBACK_ATTEMPT_TIMEOUT_SECONDS, remaining),
+            )
+        except _BackendUnavailable:
+            continue
+        except Exception as exc:
+            _LOGGER.warning(
+                "web_search fallback backend %s failed: %s",
+                backend,
+                type(exc).__name__,
+            )
+            continue
+        if results:
+            return _SearchOutcome(backend, results)
+        if empty_outcome is None:
+            empty_outcome = _SearchOutcome(backend, results)
+    return empty_outcome
+
+
+def _search_china_backend(
+    backend: str,
+    query: str,
+    *,
+    max_results: int,
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+    timeout: float,
+) -> list[dict[str, str]]:
+    if backend == "bing_cn":
+        return _bing_cn_search(query, max_results=max_results, timeout=timeout)
+    api_key = _backend_api_key(backend, project_root, environ)
+    if not api_key:
+        raise _BackendUnavailable(backend)
+    if backend == "zhipu":
+        return _zhipu_search(
+            query,
+            max_results=max_results,
+            api_key=api_key,
+            timeout=timeout,
+        )
+    if backend == "bocha":
+        return _bocha_search(
+            query,
+            max_results=max_results,
+            api_key=api_key,
+            timeout=timeout,
+        )
+    raise _BackendUnavailable(backend)
+
+
+def _zhipu_search(
+    query: str,
+    *,
+    max_results: int,
+    api_key: str,
+    timeout: float,
+) -> list[dict[str, str]]:
+    body = {
+        "search_engine": "search_std",
+        "search_query": _truncate(query, _ZHIPU_MAX_QUERY_CHARS),
+        "count": max_results,
+    }
+    with _http_client(timeout=timeout) as client:
+        response = client.post(
+            _ZHIPU_SEARCH_URL,
+            headers=_bearer_headers(api_key),
+            json=body,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    items = payload.get("search_result") if isinstance(payload, Mapping) else None
+    return _normalize_results(
+        _map_items(
+            items,
+            title_keys=("title",),
+            url_keys=("link", "url"),
+            snippet_keys=("content", "snippet", "summary"),
+        ),
+        limit=max_results,
+    )
+
+
+def _bocha_search(
+    query: str,
+    *,
+    max_results: int,
+    api_key: str,
+    timeout: float,
+) -> list[dict[str, str]]:
+    body = {
+        "query": query,
+        "count": max_results,
+        "summary": True,
+        "page": 1,
+    }
+    with _http_client(timeout=timeout) as client:
+        response = client.post(
+            _BOCHA_SEARCH_URL,
+            headers=_bearer_headers(api_key),
+            json=body,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    items = _mapping_value(payload, "data", "webPages", "value")
+    return _normalize_results(
+        _map_items(
+            items,
+            title_keys=("name", "title"),
+            url_keys=("url",),
+            snippet_keys=("summary", "snippet"),
+        ),
+        limit=max_results,
+    )
+
+
+def _bing_cn_search(
+    query: str,
+    *,
+    max_results: int,
+    timeout: float,
+) -> list[dict[str, str]]:
+    params = {
+        "q": query,
+        "count": str(max_results),
+        "mkt": "zh-CN",
+        "setlang": "zh-hans",
+    }
+    headers = {
+        "User-Agent": _BING_CN_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Cookie": "SRCHHPGUSR=SRCHLANG=zh-Hans",
+    }
+    last_error: Exception | None = None
+    succeeded = False
+    with _http_client(timeout=max(2.0, timeout / 2)) as client:
+        for url in _BING_CN_SEARCH_URLS:
+            try:
+                response = client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+            except Exception as exc:
+                last_error = exc
+                continue
+            succeeded = True
+            parser = _BingCnParser()
+            parser.feed(response.text)
+            results = _normalize_results(parser.results, limit=max_results)
+            if results:
+                return results
+    if not succeeded and last_error is not None:
+        raise last_error
+    return []
+
+
+def _ddgs_search(
+    query: str,
+    *,
+    backend: str,
+    max_results: int,
+    timelimit: str | None,
+) -> list[dict[str, str]]:
     ddgs_class = _load_ddgs_class()
     with ddgs_class(timeout=_DDGS_TIMEOUT_SECONDS) as client:
         raw_results = client.text(
@@ -102,20 +505,85 @@ def _web_search(
             page=1,
             backend=backend,
         )
-        results = _normalize_results(raw_results or (), limit=max_results)
+    return _normalize_results(raw_results or (), limit=max_results)
+
+
+def _resolve_backend(
+    value: Any,
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> str:
+    backend = str(value or "").strip().casefold()
+    if not backend:
+        backend = (
+            _config_value("DDGS_BACKEND", project_root, environ)
+            or _DEFAULT_DDGS_BACKEND
+        ).casefold()
+    if backend not in _ALLOWED_BACKENDS:
+        raise ValueError("search backend is not allowed")
+    return backend
+
+
+def _fallback_backends(
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> tuple[str, ...]:
+    raw = _config_value("WEB_SEARCH_FALLBACK_BACKENDS", project_root, environ)
+    if not raw:
+        return _DEFAULT_FALLBACK_BACKENDS
+    backends: list[str] = []
+    for item in raw.split(","):
+        backend = item.strip().casefold()
+        if not backend or backend in backends:
+            continue
+        if backend not in _CHINA_BACKENDS:
+            raise ValueError(
+                "WEB_SEARCH_FALLBACK_BACKENDS contains an unsupported backend"
+            )
+        backends.append(backend)
+    return tuple(backends) or _DEFAULT_FALLBACK_BACKENDS
+
+
+def _backend_api_key(
+    backend: str,
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> str:
+    if backend == "zhipu":
+        return _config_value("ZHIPUAI_API_KEY", project_root, environ)
+    if backend == "bocha":
+        return _config_value("BOCHA_API_KEY", project_root, environ)
+    return ""
+
+
+def _config_value(
+    name: str,
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> str:
+    if environ is not None:
+        return str(environ.get(name) or "").strip()
+    value = os.environ.get(name)
+    if value is not None:
+        return str(value).strip()
+    if project_root is None:
+        return ""
+    try:
+        file_values = dotenv_values(project_root / ".env")
+    except OSError:
+        return ""
+    return str(file_values.get(name) or "").strip()
+
+
+def _bearer_headers(api_key: str) -> dict[str, str]:
     return {
-        "query": query,
-        "backend": backend,
-        "result_count": len(results),
-        "results": results,
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
     }
 
 
-def _configured_backend() -> str:
-    backend = str(os.environ.get("DDGS_BACKEND") or "yandex").strip().casefold()
-    if backend not in _ALLOWED_BACKENDS:
-        raise ValueError("DDGS_BACKEND is not an allowed search backend")
-    return backend
+def _http_client(*, timeout: float) -> httpx.Client:
+    return httpx.Client(timeout=timeout, follow_redirects=True)
 
 
 def _load_ddgs_class() -> type[Any]:
@@ -124,6 +592,190 @@ def _load_ddgs_class() -> type[Any]:
     except ImportError as exc:
         raise RuntimeError("DDGS search dependency is unavailable") from exc
     return DDGS
+
+
+@lru_cache(maxsize=1)
+def _ddgs_exception_types() -> tuple[type[BaseException], ...]:
+    try:
+        from ddgs.exceptions import (
+            DDGSException,
+            RatelimitException,
+            TimeoutException,
+        )
+    except ImportError:
+        return ()
+    return (DDGSException, RatelimitException, TimeoutException)
+
+
+def _is_ddgs_empty_result(exc: BaseException) -> bool:
+    types = _ddgs_exception_types()
+    if len(types) != 3:
+        return False
+    ddgs_exception, ratelimit_exception, timeout_exception = types
+    if isinstance(exc, (ratelimit_exception, timeout_exception)):
+        return False
+    if not isinstance(exc, ddgs_exception):
+        return False
+    return "no result" in str(exc).casefold()
+
+
+def _is_ddgs_fallback_error(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.TransportError, OSError, TimeoutError)):
+        return True
+    types = _ddgs_exception_types()
+    if not types:
+        return False
+    ddgs_exception, ratelimit_exception, timeout_exception = types
+    if isinstance(exc, (ratelimit_exception, timeout_exception)):
+        return True
+    if isinstance(exc, ddgs_exception):
+        return "no result" not in str(exc).casefold()
+    return False
+
+
+def _unavailable_error() -> ToolExecutionError:
+    return ToolExecutionError("web_search_unavailable", "网页搜索暂时不可用。")
+
+
+def _payload(
+    query: str,
+    backend: str,
+    results: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    normalized = [dict(item) for item in results]
+    return {
+        "query": query,
+        "backend": backend,
+        "result_count": len(normalized),
+        "results": normalized,
+    }
+
+
+def _map_items(
+    items: Any,
+    *,
+    title_keys: tuple[str, ...],
+    url_keys: tuple[str, ...],
+    snippet_keys: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    if (
+        items is None
+        or isinstance(items, (str, bytes, bytearray))
+        or not isinstance(items, Iterable)
+    ):
+        return []
+    mapped: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        mapped.append(
+            {
+                "title": _first_value(item, title_keys),
+                "url": _first_value(item, url_keys),
+                "snippet": _first_value(item, snippet_keys),
+            }
+        )
+    return mapped
+
+
+def _first_value(item: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value:
+            return value
+    return ""
+
+
+def _mapping_value(value: Any, *keys: str) -> Any:
+    current = value
+    for key in keys:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _truncate(value: str, limit: int) -> str:
+    return value[:limit] if len(value) > limit else value
+
+
+class _BingCnParser(HTMLParser):
+    """Extract title, URL, and snippet from ``cn.bing.com`` result cards."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._current: dict[str, str] | None = None
+        self._li_depth = 0
+        self._in_title = False
+        self._in_snippet = False
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        tag = tag.casefold()
+        attributes = {
+            str(key).casefold(): str(value or "")
+            for key, value in attrs
+        }
+        if (
+            tag == "li"
+            and self._current is None
+            and "b_algo" in attributes.get("class", "").split()
+        ):
+            self._current = {"title": "", "url": "", "snippet": ""}
+            self._li_depth = 1
+            return
+        if self._current is None:
+            return
+        if tag == "li":
+            self._li_depth += 1
+        elif tag == "h2" and not self._current["title"]:
+            self._in_title = True
+        elif tag == "a" and not self._current["url"]:
+            href = attributes.get("href", "").strip()
+            if href.casefold().startswith(("http://", "https://")):
+                self._current["url"] = href
+        elif tag == "p" and not self._current["snippet"]:
+            self._in_snippet = True
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if self._current is None:
+            return
+        if tag == "h2":
+            self._in_title = False
+        elif tag == "p":
+            self._in_snippet = False
+        elif tag == "li":
+            self._li_depth -= 1
+            if self._li_depth <= 0:
+                self.results.append(self._current)
+                self._current = None
+                self._li_depth = 0
+                self._in_title = False
+                self._in_snippet = False
+
+    def handle_data(self, data: str) -> None:
+        if self._current is None:
+            return
+        text = " ".join(data.split())
+        if not text:
+            return
+        if self._in_title:
+            self._current["title"] = _append_text(
+                self._current["title"], text
+            )
+        elif self._in_snippet:
+            self._current["snippet"] = _append_text(
+                self._current["snippet"], text
+            )
+
+
+def _append_text(current: str, addition: str) -> str:
+    return f"{current} {addition}".strip()
 
 
 def _normalize_results(

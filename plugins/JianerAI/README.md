@@ -139,12 +139,20 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 `OpenAI Chat Completions`、`Temperature: 0` 和 `ToolsEnabled: false`，当前本地
 `aiconfig/deepseek.ai.json` 已按此设置。
 
-网页搜索使用 `ddgs` 文本搜索接口。宿主可通过 `DDGS_BACKEND` 环境变量选择
-`auto`、`bing`、`brave`、`duckduckgo`、`google`、`grokipedia`、`mojeek`、
-`wikipedia`、`yahoo` 或 `yandex`，默认 `yandex`；如需多引擎回退可显式设置为
-`auto`。区域固定为 `cn-zh`，安全搜索
-固定为 `moderate`；模型不能指定代理、请求头、任意后端或待抓取 URL。若配置了
-`agent_allowed_tools` 白名单，需要显式加入 `web_search`。
+网页搜索默认使用 `ddgs` 文本搜索接口，后端由 `DDGS_BACKEND` 环境变量决定，
+默认 `yandex`；模型可用 `backend` 参数选择 `auto`、`bing`、`brave`、
+`duckduckgo`、`google`、`grokipedia`、`mojeek`、`wikipedia`、`yahoo`、
+`yandex`，或直接选择国内后端 `zhipu`、`bocha`、`bing_cn`。当当前模型配置的
+`BaseUrl` 主机为 `api.deepseek.com` 时，工具自动改用 DeepSeek 官方
+`POST /v1/tools/search`，忽略 `backend` 参数。
+
+DDGS 超时、限流或网络错误时，按 `WEB_SEARCH_FALLBACK_BACKENDS`（默认
+`zhipu,bocha,bing_cn`）依次回退：智谱联网搜索读取 `ZHIPUAI_API_KEY`，博查
+Web Search 读取 `BOCHA_API_KEY`，未配置 key 的后端自动跳过；Bing 中国
+（`cn.bing.com`）无需 key，作为最后兜底。搜索后端变量与密钥可由进程环境或仓库根
+`.env` 提供。DDGS 区域固定为 `cn-zh`，安全搜索固定为 `moderate`；模型不能指定
+代理、请求头或待抓取 URL。若配置了 `agent_allowed_tools` 白名单，需要显式加入
+`web_search`。
 
 GitHub 仓库读取由 `github_repository` 提供，只连接固定的 GitHub.com REST API，
 支持仓库概况、目录和 UTF-8 文本代码、提交、Pull Request 与 Issue 的只读查看。

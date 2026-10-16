@@ -52,7 +52,7 @@ def register_builtin_tools(
     project_root: Path | None = None,
     logger: logging.Logger | None = None,
 ) -> None:
-    registry.register(web_search_tool())
+    registry.register(web_search_tool(project_root=project_root))
     registry.register(github_repository_tool())
     registry.register(html_card_tool())
     if include_web_browser:
