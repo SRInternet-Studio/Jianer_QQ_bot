@@ -12,6 +12,7 @@
 - 新增脱敏的 `config.example.json`，提供 OneBot、Milky、Kritor、飞书和 AI 基础配置结构。
 
 ### 变更
+- `web_browser` 移除全部访问约束：不再校验 URL，可访问 `localhost`、内网地址和 `file://`，并放开媒体、字体、WebSocket、Service Worker 与下载拦截。
 - Bot 框架从项目内置旧框架切换为 PyPI 包 `jianer-bot`（导入包名 `jianer`），主程序、AI 核心、工具模块和前置逻辑统一改用 JianerCore API。
 - 移除项目自托管插件加载器/派发器，插件加载与派发改由 JianerCore `PluginManager` 负责。
 - AI 对话、模型/角色切换、短期上下文、TTS、回复后缀和简儿记忆迁入目录插件 `plugins/JianerAI/`。

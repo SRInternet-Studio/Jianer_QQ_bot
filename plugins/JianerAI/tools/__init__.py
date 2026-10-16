@@ -59,7 +59,6 @@ from plugins.JianerAI.tools.html_card import (
 from plugins.JianerAI.tools.web_browser import (
     BrowserManager,
     BrowserOptions,
-    validate_public_http_url,
     web_browser_tool,
 )
 
@@ -109,7 +108,6 @@ __all__ = [
     "register_builtin_tools",
     "register_qweather_tools",
     "qweather_tools",
-    "validate_public_http_url",
     "web_browser_tool",
     "load_tool_plugin",
 ]

@@ -171,9 +171,10 @@ python -m playwright install chromium
 ```
 
 `web_browser` 属于 `ToolRisk.PRIVILEGED`，默认启用且不会为提交表单等外部副作用
-进行二次确认。它拒绝本地、私有、回环、链路本地和保留地址，拦截重定向与子请求，
-并禁用 Service Worker、WebSocket、文件上传、下载、媒体和字体。页面只以正文和
-最新快照元素编号提供给模型，不开放 CSS、XPath、任意 JavaScript、坐标或截图。
+进行二次确认。浏览器不执行 URL 安全策略，可访问 `localhost`、内网地址、链路本地
+地址和 `file://`；也不拦截重定向、子请求、媒体、字体、WebSocket 或 Service
+Worker，并允许下载。页面只以正文和最新快照元素编号提供给模型，不开放 CSS、
+XPath、任意 JavaScript、坐标或截图。
 
 模型配置继续从 `aiconfig/*.ai.json` 读取；角色数据继续使用
 `prerequisites/current.json` 与相邻模板；后缀继续使用
