@@ -87,6 +87,13 @@ logger = get_logger("Jianer Memory.SDKMemoryKernel")
 
 DUAL_VECTOR_AUTO_MIGRATION_INITIAL_DELAY_SECONDS = 5.0
 DUAL_VECTOR_AUTO_MIGRATION_LOCK_RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0)
+# 向量通道因 embedding 指纹不可信而降级时，只有重新嵌入才能安全恢复。
+# 该看门狗只在通道已被关闭（state=incompatible/rebuild_required）后行动，
+# 并在真正重建前确认当前 embedding 指纹已经过真实请求观测。
+VECTOR_REBUILD_RECOVERY_POLL_SECONDS = 30.0
+VECTOR_REBUILD_RECOVERY_INITIAL_DELAY_SECONDS = 3.0
+VECTOR_REBUILD_RECOVERY_RETRY_SECONDS = 60.0
+VECTOR_REBUILD_RECOVERY_MAX_ATTEMPTS = 5
 
 
 class SDKMemoryKernel(KernelCompatibilityMixin):

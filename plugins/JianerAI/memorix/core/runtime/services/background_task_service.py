@@ -24,6 +24,8 @@ class MemoryBackgroundTaskService(KernelServiceBase):
             self._ensure_background_task("embedding_probe", self._embedding_probe_loop)
             self._ensure_background_task("paragraph_vector_backfill", self._paragraph_vector_backfill_loop)
             self._ensure_background_task("vector_index_training", self._vector_index_training_loop)
+            # 指纹/维度不可信会让向量通道被关闭；该看门狗负责用当前模型重建后恢复。
+            self._ensure_background_task("vector_rebuild_recovery", self._vector_rebuild_recovery_loop)
             self._ensure_background_task("memory_maintenance", self._memory_maintenance_loop)
             self._ensure_background_task("storage_cleanup", self._storage_cleanup_loop)
             self._ensure_background_task("person_profile_refresh", self._person_profile_refresh_loop)
@@ -49,6 +51,74 @@ class MemoryBackgroundTaskService(KernelServiceBase):
 
     async def _sleep_background(self, seconds: float) -> None:
         await asyncio.sleep(max(0.0, float(seconds or 0.0)))
+
+    def _vector_rebuild_recovery_required(self) -> bool:
+        """向量已存在但 embedding 世代不可信，需要重新嵌入后才能复用。"""
+
+        if bool(self._runtime_capabilities.get("vector_read", False)):
+            return False
+        if str(self._vector_health.get("state", "") or "") != "incompatible":
+            return False
+        if str(self._vector_health.get("recovery_stage", "") or "") != "rebuild_required":
+            return False
+        return self.metadata_store is not None and self.embedding_manager is not None
+
+    async def _vector_rebuild_recovery_loop(self) -> None:
+        """在被关闭的向量通道上执行受控的自动重建。
+
+        指纹缺失/不匹配或维度不一致时，磁盘上的向量无法证明属于当前模型，
+        唯一安全的修复是用当前模型重新嵌入全部有效对象。该看门狗与
+        ``dual_vector_auto_migration`` 不同：它只在向量通道已经降级后行动，
+        且每次重建前都要求 embedding 指纹已被真实请求观测，避免误用配置指纹。
+        """
+
+        from .. import sdk_memory_kernel as kernel_module
+
+        attempts = 0
+        capped_notice_emitted = False
+        while not self._background_stopping:
+            if not self._vector_rebuild_recovery_required():
+                attempts = 0
+                capped_notice_emitted = False
+                await self._sleep_background(kernel_module.VECTOR_REBUILD_RECOVERY_POLL_SECONDS)
+                continue
+            if attempts >= kernel_module.VECTOR_REBUILD_RECOVERY_MAX_ATTEMPTS:
+                if not capped_notice_emitted:
+                    capped_notice_emitted = True
+                    logger.warning(
+                        "向量通道自动重建达到最大尝试次数，保持降级；"
+                        "可手动执行 rebuild_all_vectors 后等待下次校验"
+                    )
+                await self._sleep_background(kernel_module.VECTOR_REBUILD_RECOVERY_POLL_SECONDS)
+                continue
+            attempts += 1
+            await self._sleep_background(
+                kernel_module.VECTOR_REBUILD_RECOVERY_INITIAL_DELAY_SECONDS
+                if attempts == 1
+                else kernel_module.VECTOR_REBUILD_RECOVERY_RETRY_SECONDS
+            )
+            if self._background_stopping:
+                break
+            if not self._vector_rebuild_recovery_required():
+                continue
+            if self._current_embedding_fingerprint_for_validation() is None:
+                logger.warning("向量通道自动重建等待当前 embedding 指纹就绪")
+                continue
+            error_code = str(self._vector_health.get("error_code", "") or "unknown")
+            logger.warning(f"检测到向量通道降级（{error_code}），开始自动重建向量")
+            try:
+                result = await self._rebuild_all_vectors()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"向量通道自动重建异常，将在下一周期重试: {exc}")
+                continue
+            if bool(result.get("success", False)):
+                logger.info("向量通道自动重建完成，向量读写已恢复")
+                attempts = 0
+                continue
+            detail = result.get("errors") or result.get("detail") or result.get("error") or "unknown"
+            logger.warning(f"向量通道自动重建未成功，将在下一周期重试: {detail}")
 
     async def _dual_vector_auto_migration_loop(self) -> None:
         from .. import sdk_memory_kernel as kernel_module
