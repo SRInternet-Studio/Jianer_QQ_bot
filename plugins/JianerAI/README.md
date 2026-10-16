@@ -140,7 +140,7 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 `aiconfig/deepseek.ai.json` 已按此设置。
 
 网页搜索默认使用 `ddgs` 文本搜索接口，后端由 `DDGS_BACKEND` 环境变量决定，
-默认 `yandex`；模型可用 `backend` 参数选择 `auto`、`bing`、`brave`、
+默认 `bing`；模型可用 `backend` 参数选择 `auto`、`bing`、`brave`、
 `duckduckgo`、`google`、`grokipedia`、`mojeek`、`wikipedia`、`yahoo`、
 `yandex`，或直接选择国内后端 `zhipu`、`bocha`、`bing_cn`。当当前模型配置的
 `BaseUrl` 主机为 `api.deepseek.com` 时，工具自动改用 DeepSeek 官方

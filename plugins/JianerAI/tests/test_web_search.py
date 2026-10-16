@@ -185,6 +185,17 @@ def test_environment_backend_is_default(
     assert result["backend"] == "brave"
 
 
+def test_builtin_default_backend_is_bing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _install_ddgs(monkeypatch, results=[_first_result()])
+    _install_http(monkeypatch)
+    spec = web_search_tool(environ={})
+    result = spec.handler(_context(), {"query": "hello"})
+    assert calls[0]["backend"] == "bing"
+    assert result["backend"] == "bing"
+
+
 def test_invalid_backend_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -254,9 +265,9 @@ def test_deepseek_gateway_still_uses_ddgs(
         _context(model="deepseek", config=config),
         {"query": "hello"},
     )
-    assert calls[0]["backend"] == "yandex"
+    assert calls[0]["backend"] == "bing"
     assert client.posts == []
-    assert result["backend"] == "yandex"
+    assert result["backend"] == "bing"
 
 
 def test_deepseek_failure_does_not_fall_back_to_ddgs(
@@ -426,7 +437,7 @@ def test_empty_ddgs_results_do_not_trigger_fallback(
     result = spec.handler(_context(), {"query": "hello"})
     assert calls
     assert client.posts == []
-    assert result["backend"] == "yandex"
+    assert result["backend"] == "bing"
     assert result["result_count"] == 0
 
 
