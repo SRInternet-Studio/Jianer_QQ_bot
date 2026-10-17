@@ -6,7 +6,6 @@
 - `web_search` 支持模型用 `backend` 指定搜索后端；当前模型为 DeepSeek 官方 API 时自动改用 DeepSeek 网页搜索；DDGS 超时或网络错误后按智谱、博查、Bing 中国顺序自动回退，新增 `WEB_SEARCH_FALLBACK_BACKENDS`、`ZHIPUAI_API_KEY`、`BOCHA_API_KEY` 配置。
 - 新增目录插件 `plugins/Wordle/`（参考 `nonebot-plugin-wordle`，MIT）：`~wordle [-l 长度] [-d 词典]` 开局、`~wordle 猜 <单词>` 竞猜、`~wordle 提示/状态/结束`；群内共享一局、任何成员都可猜，开局后也可直接发送单词、提示或结束；用 PIL 渲染棋盘，内置多套词典与释义，长度 3~8、最多“长度+1”次机会，10 分钟超时自动结束。
 - 移植 `nonebot-plugin-maimaidx` v3.1.4 为 JianerCore 目录插件 `plugins/MaimaiDX/`，覆盖成绩、曲目、别名、猜歌、表格、数据源和主题等命令，并保留上游 MIT 许可与绘图署名。
-- 移植 `nonebot-plugin-rollpig-plus` v0.14.4 为 JianerCore 目录插件 `plugins/RollPigPlus/`：`~今日小猪`、`~随机小猪`、`~找猪`、`~明日小猪`、`~昨日小猪`、`~今日烤猪`、`~烤群友`、`~随机烤群友`、`~烤箱续火`、`~我的猪圈`、`~小猪图鉴`、`~小猪投稿`、`~本周小猪`、`~猪圈日报` 与 `~小猪日报 开启/关闭/状态` 均已改为 Alconna 命令 + `actions` 收发；上游领域逻辑保留在 `rollpig/`，框架调用统一走插件内 `host/`（logger、数据目录、配置、消息段、OneBot 动作包装、asyncio 调度器），数据默认落在 `ROLLPIG_PATH`（默认 `data/rollpig`），并新增 `pilmoji` 依赖。
 - 新增水鱼设备 OAuth、落雪 OAuth、SSE 别名推送与 Yuri-YuzuChaN 数据源适配；令牌使用 Windows DPAPI 和受限 ACL 保护，运行时凭据统一从 `.env` 读取。
 - 首次启动缺少静态资源时在后台自动下载基础包与 1.56 增量包，校验后安全解压，并按配置自动安装 Playwright Chromium；文字功能不等待资源下载完成。
 - 为 JianerAI 注册 MaimaiDX B50、曲目搜索/详情、单曲成绩与 Rating 排行榜工具；图片工具按当前适配器能力过滤，并限制他人查询只能使用公开数据。
