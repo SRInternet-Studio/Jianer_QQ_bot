@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "background": [
+    "clean-paper-original-tone"
+  ],
+  "header": [
+    "header_pig_news"
+  ],
+  "stats": [
+    "stats_people",
+    "stats_flame",
+    "stats_calendar",
+    "stats_escape",
+    "stats_backfire",
+    "stats_pig_variety"
+  ],
+  "observations": [
+    "observation_reservation",
+    "observation_backfire",
+    "observation_escape",
+    "observation_roast_success",
+    "observation_human",
+    "observation_collision",
+    "observation_variety"
+  ],
+  "headlines": [
+    "headline_roast_success",
+    "headline_escape",
+    "headline_backfire",
+    "headline_self_roast",
+    "headline_bot_backfire",
+    "headline_reservation_success",
+    "headline_reservation_escape",
+    "headline_reservation_backfire",
+    "headline_reservation_human",
+    "headline_reservation_food",
+    "headline_reservation_eaten",
+    "headline_reservation_sold"
+  ],
+  "events": [
+    "event_fire",
+    "event_run",
+    "event_angry",
+    "event_reservation",
+    "event_special_target"
+  ],
+  "coupon": [
+    "coupon_surface",
+    "coupon_shield",
+    "coupon_barcode"
+  ],
+  "placeholders": []
+}

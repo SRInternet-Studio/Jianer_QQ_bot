@@ -1,0 +1,46 @@
+{
+  "rollpig": {
+    "rollpig_ai_enabled": false,
+    "rollpig_ai_api_key": null,
+    "rollpig_ai_base_url": null,
+    "rollpig_ai_model": null,
+    "rollpig_ai_timeout": 20.0,
+    "rollpig_ai_concurrency": 4,
+    "rollpig_ai_max_tokens": 4096,
+    "rollpig_ai_output_max_chars": 240,
+    "rollpig_roast_cooldown_hours": 8,
+    "rollpig_roast_charge_max": 2,
+
+    "rollpig_storage_backend": "local",
+    "rollpig_cloud_api_url": null,
+    "rollpig_cloud_token": null,
+    "rollpig_cloud_timeout": 5.0,
+    "rollpig_cloud_strict_mode": true,
+
+    "rollpig_resource_sync_enabled": true,
+    "rollpig_resource_manifest_url": "https://pig.felislab.cc/resources/rollpig/manifest.json",
+    "rollpig_resource_sync_interval_hours": 24,
+    "rollpig_resource_sync_timeout": 10.0,
+    "rollpig_resource_max_file_size": 10485760,
+    "rollpig_roast_library_manifest_url": "https://pig.felislab.cc/resources/rollpig-roasts/manifest.json",
+    "rollpig_private_resource_manifests": [
+      {
+        "name": "pjsk",
+        "manifest_url": "https://pig.felislab.cc/resources/rollpig-pjsk/manifest.json"
+      }
+    ],
+    "rollpig_private_resource_manifest_url": "",
+
+    "rollpig_daily_summary_enabled": false,
+
+    "rollpig_card_font_path": null,
+    "rollpig_yesterday_card_title_font_path": null,
+    "rollpig_yesterday_card_body_font_path": null,
+
+    "rollpig_catalog_enabled": true,
+    "rollpig_catalog_render_concurrency": 2,
+    "rollpig_catalog_cache_seconds": 300,
+    "rollpig_catalog_output_format": "png",
+    "rollpig_catalog_scale_factor": 2.0
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "food_pigs": [
+    "roasted-pig",
+    "bacon",
+    "mc_porkchop",
+    "pork-skewer",
+    "char-siu",
+    "pork-floss",
+    "suckling-pig",
+    "burger-pig",
+    "lard-pig",
+    "salmon-sushi-pig",
+    "dumpling-pig",
+    "hotdog-pig",
+    "shrimp-sushi-pig",
+    "strawberry-cake-pig",
+    "canned-pig",
+    "sushi-platter-pig",
+    "tamagoyaki-pig",
+    "bone-soup-pig",
+    "yiwei-pig"
+  ],
+  "human_pigs": [
+    "human"
+  ],
+  "eaten_pigs": [
+    "eaten"
+  ],
+  "roast_excluded_pigs": [],
+  "sold_pigs": [
+    "sold-out"
+  ]
+}
