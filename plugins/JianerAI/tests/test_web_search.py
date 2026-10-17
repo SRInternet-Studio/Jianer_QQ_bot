@@ -227,54 +227,118 @@ def test_invalid_backend_is_rejected(
         )
 
 
-def test_deepseek_official_routes_to_deepseek_search(
+def _deepseek_response() -> _FakeResponse:
+    return _FakeResponse(
+        {
+            "results": [
+                {
+                    "title": "DeepSeek 结果",
+                    "url": "https://deepseek.example/result",
+                    "snippet": "短摘要",
+                    "summary": "长摘要",
+                }
+            ]
+        }
+    )
+
+
+def test_provider_deepseek_uses_official_search_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ddgs_calls = _install_ddgs(monkeypatch, results=[_first_result()])
+    seen: list[dict[str, Any]] = []
 
     def post(url: str, kwargs: dict[str, Any]) -> _FakeResponse:
         assert url == "https://api.deepseek.com/v1/tools/search"
-        assert kwargs["headers"]["Authorization"] == "Bearer sk-deepseek"
-        assert len(kwargs["json"]["query"]) == 128
-        assert kwargs["json"]["count"] == 3
-        assert kwargs["json"]["need_content"] is False
-        return _FakeResponse(
-            {
-                "results": [
-                    {
-                        "title": "DeepSeek 结果",
-                        "url": "https://deepseek.example/result",
-                        "snippet": "短摘要",
-                        "summary": "长摘要",
-                    }
-                ]
-            }
-        )
+        seen.append(kwargs)
+        return _deepseek_response()
 
     client = _install_http(monkeypatch, post=post)
-    config = SimpleNamespace(
-        base_url="https://api.deepseek.com",
-        api_key="sk-deepseek",
+    spec = web_search_tool(
+        environ={
+            "WEB_SEARCH_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "sk-deepseek",
+        }
     )
-    spec = web_search_tool(environ={})
     result = spec.handler(
-        _context(model="deepseek", config=config),
-        {"query": "Q" * 200, "max_results": 3, "backend": "google"},
+        _context(),
+        {"query": "Q" * 200, "max_results": 3},
     )
     assert client.posts
     assert ddgs_calls == []
+    assert seen[0]["headers"]["Authorization"] == "Bearer sk-deepseek"
+    assert len(seen[0]["json"]["query"]) == 128
+    assert seen[0]["json"]["count"] == 3
+    assert seen[0]["json"]["need_content"] is False
     assert result["backend"] == "deepseek"
     assert result["results"][0]["snippet"] == "长摘要"
 
 
-def test_deepseek_gateway_still_uses_ddgs(
+def test_deepseek_provider_ignores_backend_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ddgs_calls = _install_ddgs(monkeypatch, results=[_first_result()])
+    client = _install_http(monkeypatch, post=lambda url, kwargs: _deepseek_response())
+    spec = web_search_tool(
+        environ={
+            "WEB_SEARCH_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "sk-deepseek",
+            "DDGS_BACKEND": "google",
+        }
+    )
+    result = spec.handler(
+        _context(),
+        {"query": "hello", "backend": "google"},
+    )
+    assert ddgs_calls == []
+    assert client.posts[0][0] == "https://api.deepseek.com/v1/tools/search"
+    assert result["backend"] == "deepseek"
+
+
+def test_deepseek_provider_maps_timelimit_to_after_operator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ddgs_calls = _install_ddgs(monkeypatch, results=[_first_result()])
+    client = _install_http(monkeypatch, post=lambda url, kwargs: _deepseek_response())
+    spec = web_search_tool(
+        environ={
+            "WEB_SEARCH_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "sk-search",
+        }
+    )
+    result = spec.handler(
+        _context(),
+        {"query": "hello", "timelimit": "w"},
+    )
+    assert ddgs_calls == []
+    assert client.posts[0][0] == "https://api.deepseek.com/v1/tools/search"
+    assert client.posts[0][1]["headers"]["Authorization"] == "Bearer sk-search"
+    assert " after:" in client.posts[0][1]["json"]["query"]
+    assert result["backend"] == "deepseek"
+    assert result["results"][0]["url"] == "https://deepseek.example/result"
+
+
+def test_deepseek_provider_without_key_reports_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_ddgs(monkeypatch, results=[_first_result()])
+    client = _install_http(monkeypatch)
+    spec = web_search_tool(environ={"WEB_SEARCH_PROVIDER": "deepseek"})
+    with pytest.raises(ToolExecutionError) as error:
+        spec.handler(_context(), {"query": "hello"})
+    assert error.value.code == "web_search_backend_not_configured"
+    assert "DEEPSEEK_API_KEY" in error.value.safe_message
+    assert client.posts == []
+
+
+def test_default_provider_uses_ddgs_even_on_deepseek_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _install_ddgs(monkeypatch, results=[_first_result()])
     client = _install_http(monkeypatch)
     config = SimpleNamespace(
-        base_url="https://api.rinko.ai/",
-        api_key="sk-gateway",
+        base_url="https://api.deepseek.com",
+        api_key="sk-deepseek",
     )
     spec = web_search_tool(environ={"DDGS_BACKEND": "google"})
     result = spec.handler(
@@ -286,7 +350,35 @@ def test_deepseek_gateway_still_uses_ddgs(
     assert result["backend"] == "google"
 
 
-def test_deepseek_failure_does_not_fall_back_to_ddgs(
+def test_deepseek_can_serve_as_ddgs_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ddgs.exceptions import TimeoutException
+
+    _install_ddgs(monkeypatch, error=TimeoutException("timed out"))
+    client = _install_http(monkeypatch, post=lambda url, kwargs: _deepseek_response())
+    spec = web_search_tool(
+        environ={
+            "DEEPSEEK_API_KEY": "sk-search",
+            "WEB_SEARCH_FALLBACK_BACKENDS": "deepseek,bing_cn",
+        }
+    )
+    result = spec.handler(_context(), {"query": "hello"})
+    assert client.posts[0][0] == "https://api.deepseek.com/v1/tools/search"
+    assert result["backend"] == "deepseek"
+
+
+def test_invalid_provider_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_ddgs(monkeypatch, results=[_first_result()])
+    _install_http(monkeypatch)
+    spec = web_search_tool(environ={"WEB_SEARCH_PROVIDER": "serper"})
+    with pytest.raises(ValueError):
+        spec.handler(_context(), {"query": "hello"})
+
+
+def test_deepseek_provider_failure_does_not_fall_back_to_ddgs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ddgs_calls = _install_ddgs(monkeypatch, results=[_first_result()])
@@ -295,16 +387,14 @@ def test_deepseek_failure_does_not_fall_back_to_ddgs(
         raise httpx.ConnectError("offline")
 
     _install_http(monkeypatch, post=post)
-    config = SimpleNamespace(
-        base_url="https://api.deepseek.com",
-        api_key="sk-deepseek",
+    spec = web_search_tool(
+        environ={
+            "WEB_SEARCH_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "sk-deepseek",
+        }
     )
-    spec = web_search_tool(environ={})
     with pytest.raises(ToolExecutionError) as error:
-        spec.handler(
-            _context(model="deepseek", config=config),
-            {"query": "hello"},
-        )
+        spec.handler(_context(), {"query": "hello"})
     assert error.value.code == "web_search_unavailable"
     assert ddgs_calls == []
 

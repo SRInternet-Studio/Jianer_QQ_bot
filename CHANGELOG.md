@@ -12,6 +12,7 @@
 - 新增脱敏的 `config.example.json`，提供 OneBot、Milky、Kritor、飞书和 AI 基础配置结构。
 
 ### 变更
+- 网页搜索提供方改由宿主配置 `WEB_SEARCH_PROVIDER` 决定（`ddgs` 默认，或 `deepseek` 官方网页搜索 API `POST /v1/tools/search`），不再按当前对话模型的 BaseUrl 自动切换；`deepseek` 也可作为 DDGS 回退链的一环，密钥读取 `DEEPSEEK_API_KEY`。
 - `web_search` 的 DDGS 默认后端由 `yandex` 改为 `bing`。
 - `web_browser` 移除全部访问约束：不再校验 URL，可访问 `localhost`、内网地址和 `file://`，并放开媒体、字体、WebSocket、Service Worker 与下载拦截。
 - Bot 框架从项目内置旧框架切换为 PyPI 包 `jianer-bot`（导入包名 `jianer`），主程序、AI 核心、工具模块和前置逻辑统一改用 JianerCore API。

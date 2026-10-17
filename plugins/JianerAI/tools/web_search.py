@@ -5,6 +5,7 @@ import os
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from html.parser import HTMLParser
 from pathlib import Path
@@ -38,6 +39,15 @@ _DDGS_ENGINE_HINTS = (
 )
 _CHINA_BACKENDS = ("zhipu", "bocha", "bing_cn")
 _DIRECT_BING_BACKEND = "bing_cn"
+_DEEPSEEK_BACKEND = "deepseek"
+_KEYED_DIRECT_BACKENDS = {
+    "zhipu": "ZHIPUAI_API_KEY",
+    "bocha": "BOCHA_API_KEY",
+}
+# Search providers selected by the host, not by the model.
+_DDGS_PROVIDER = "ddgs"
+_DEEPSEEK_PROVIDER = _DEEPSEEK_BACKEND
+_SEARCH_PROVIDERS = (_DDGS_PROVIDER, _DEEPSEEK_PROVIDER)
 _DEFAULT_DDGS_BACKEND = "bing"
 _DEFAULT_FALLBACK_BACKENDS = _CHINA_BACKENDS
 
@@ -53,6 +63,7 @@ _MAX_SNIPPET_CHARS = 1200
 _MAX_URL_CHARS = 2048
 _DEEPSEEK_MAX_QUERY_CHARS = 128
 _ZHIPU_MAX_QUERY_CHARS = 70
+_TIMELIMIT_DAYS = {"d": 1, "w": 7, "m": 30, "y": 365}
 
 _DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
 _ZHIPU_SEARCH_URL = "https://open.bigmodel.cn/api/paas/v4/web_search"
@@ -94,6 +105,22 @@ def _backend_options() -> tuple[str, ...]:
     return tuple(options)
 
 
+def _search_provider(
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> str:
+    provider = (
+        _config_value("WEB_SEARCH_PROVIDER", project_root, environ)
+        or _DDGS_PROVIDER
+    ).casefold()
+    if provider not in _SEARCH_PROVIDERS:
+        raise ValueError(
+            "WEB_SEARCH_PROVIDER is not supported; available: "
+            + ", ".join(_SEARCH_PROVIDERS)
+        )
+    return provider
+
+
 class _BackendUnavailable(RuntimeError):
     """A configured backend cannot run, for example because its key is absent."""
 
@@ -130,8 +157,8 @@ def web_search_tool(
         name="web_search",
         description=(
             "搜索互联网上的当前公开信息，返回标题、URL 和搜索摘要。"
-            "可用 backend 指定搜索引擎；省略时使用宿主默认后端。"
-            "当前模型为 DeepSeek 官方 API 时自动改用 DeepSeek 网页搜索。"
+            "宿主可配置使用 DDGS 聚合搜索或 DeepSeek 官方网页搜索 API；"
+            "使用 DDGS 时可用 backend 指定搜索引擎，省略则使用宿主默认后端。"
             "适合需要最新资料的问题，结果中的 URL 仅供回答依据；除非用户明确要求"
             "来源、出处、引用或链接，否则不要在最终回答中展示来源或 URL。"
         ),
@@ -159,8 +186,8 @@ def web_search_tool(
                 "backend": {
                     "type": "string",
                     "description": (
-                        "搜索引擎后端。省略时使用宿主默认后端；"
-                        "DeepSeek 官方 API 下该参数会被忽略。"
+                        "DDGS 搜索引擎后端；省略时使用宿主默认后端。"
+                        "宿主改用 DeepSeek 网页搜索 API 时该参数无效果。"
                     ),
                     "enum": list(_backend_options()),
                 },
@@ -193,14 +220,15 @@ def _web_search(
         else None
     )
 
-    model_config = _active_model_config(context)
-    if _is_deepseek_official(model_config):
-        results = _deepseek_search(
+    del context
+    if _search_provider(project_root, environ) == _DEEPSEEK_PROVIDER:
+        return _deepseek_provider_search(
             query,
             max_results=max_results,
-            config=model_config,
+            timelimit=timelimit,
+            project_root=project_root,
+            environ=environ,
         )
-        return _payload(query, "deepseek", results)
 
     backend = _resolve_backend(arguments.get("backend"), project_root, environ)
     if backend == "bing" and "bing" not in _ddgs_text_engines():
@@ -210,10 +238,11 @@ def _web_search(
         )
         backend = _DIRECT_BING_BACKEND
     if backend in _CHINA_BACKENDS:
-        outcome = _search_explicit_china_backend(
+        outcome = _search_explicit_direct_backend(
             backend,
             query,
             max_results=max_results,
+            timelimit=timelimit,
             project_root=project_root,
             environ=environ,
         )
@@ -222,6 +251,7 @@ def _web_search(
         fallback = _run_fallback_chain(
             query,
             max_results=max_results,
+            timelimit=timelimit,
             project_root=project_root,
             environ=environ,
         )
@@ -249,6 +279,7 @@ def _web_search(
         fallback = _run_fallback_chain(
             query,
             max_results=max_results,
+            timelimit=timelimit,
             project_root=project_root,
             environ=environ,
         )
@@ -258,53 +289,54 @@ def _web_search(
     return _payload(query, backend, results)
 
 
-def _active_model_config(context: ToolContext) -> Any:
-    agent = getattr(context, "agent", None)
-    providers = getattr(agent, "providers", None)
-    model_key = str(getattr(context, "model", "") or "").strip()
-    if providers is None or not model_key:
-        return None
+def _deepseek_provider_search(
+    query: str,
+    *,
+    max_results: int,
+    timelimit: str | None,
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    api_key = _config_value("DEEPSEEK_API_KEY", project_root, environ)
+    if not api_key:
+        raise ToolExecutionError(
+            "web_search_backend_not_configured",
+            "网页搜索已配置为 DeepSeek 网页搜索 API，但未配置 DEEPSEEK_API_KEY。",
+        )
     try:
-        return providers.get(model_key)
-    except Exception:
-        return None
-
-
-def _is_deepseek_official(config: Any) -> bool:
-    if config is None:
-        return False
-    base_url = str(getattr(config, "base_url", "") or "").strip()
-    if not base_url:
-        return False
-    return (urlsplit(base_url).hostname or "").casefold() == "api.deepseek.com"
+        results = _deepseek_search(
+            query,
+            max_results=max_results,
+            api_key=api_key,
+            timelimit=timelimit,
+        )
+    except Exception as exc:
+        _LOGGER.warning("DeepSeek web search failed: %s", type(exc).__name__)
+        raise _unavailable_error() from exc
+    return _payload(query, _DEEPSEEK_BACKEND, results)
 
 
 def _deepseek_search(
     query: str,
     *,
     max_results: int,
-    config: Any,
+    api_key: str,
+    timelimit: str | None = None,
+    timeout: float = _DEEPSEEK_TIMEOUT_SECONDS,
 ) -> list[dict[str, str]]:
-    api_key = str(getattr(config, "api_key", "") or "").strip()
-    if not api_key:
-        raise _unavailable_error()
     body = {
-        "query": _truncate(query, _DEEPSEEK_MAX_QUERY_CHARS),
+        "query": _deepseek_query(query, timelimit),
         "count": max(1, min(max_results, 50)),
         "need_content": False,
     }
-    try:
-        with _http_client(timeout=_DEEPSEEK_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                _DEEPSEEK_SEARCH_URL,
-                headers=_bearer_headers(api_key),
-                json=body,
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except Exception as exc:
-        _LOGGER.warning("DeepSeek web search failed: %s", type(exc).__name__)
-        raise _unavailable_error() from exc
+    with _http_client(timeout=timeout) as client:
+        response = client.post(
+            _DEEPSEEK_SEARCH_URL,
+            headers=_bearer_headers(api_key),
+            json=body,
+        )
+        response.raise_for_status()
+        payload = response.json()
     items = payload.get("results") if isinstance(payload, Mapping) else None
     return _normalize_results(
         _map_items(
@@ -317,25 +349,41 @@ def _deepseek_search(
     )
 
 
-def _search_explicit_china_backend(
+def _deepseek_query(query: str, timelimit: str | None) -> str:
+    """Map the DDGS-style time limit onto the ``after:`` search operator."""
+
+    if not timelimit:
+        return _truncate(query, _DEEPSEEK_MAX_QUERY_CHARS)
+    days = _TIMELIMIT_DAYS.get(str(timelimit).casefold())
+    if days is None:
+        return _truncate(query, _DEEPSEEK_MAX_QUERY_CHARS)
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    suffix = f" after:{since}"
+    room = _DEEPSEEK_MAX_QUERY_CHARS - len(suffix)
+    return f"{query[:room]}{suffix}"
+
+
+def _search_explicit_direct_backend(
     backend: str,
     query: str,
     *,
     max_results: int,
+    timelimit: str | None,
     project_root: Path | None,
     environ: Mapping[str, str] | None,
 ) -> _SearchOutcome | None:
     try:
-        results = _search_china_backend(
+        results = _search_direct_backend(
             backend,
             query,
             max_results=max_results,
+            timelimit=timelimit,
             project_root=project_root,
             environ=environ,
             timeout=_FALLBACK_ATTEMPT_TIMEOUT_SECONDS,
         )
-    except _BackendUnavailable:
-        return None
+    except _BackendUnavailable as exc:
+        raise _not_configured_error(exc) from exc
     except Exception as exc:
         _LOGGER.warning(
             "web_search backend %s failed: %s",
@@ -350,6 +398,7 @@ def _run_fallback_chain(
     query: str,
     *,
     max_results: int,
+    timelimit: str | None,
     project_root: Path | None,
     environ: Mapping[str, str] | None,
 ) -> _SearchOutcome | None:
@@ -360,10 +409,11 @@ def _run_fallback_chain(
         if remaining <= 1.0:
             break
         try:
-            results = _search_china_backend(
+            results = _search_direct_backend(
                 backend,
                 query,
                 max_results=max_results,
+                timelimit=timelimit,
                 project_root=project_root,
                 environ=environ,
                 timeout=min(_FALLBACK_ATTEMPT_TIMEOUT_SECONDS, remaining),
@@ -384,11 +434,12 @@ def _run_fallback_chain(
     return empty_outcome
 
 
-def _search_china_backend(
+def _search_direct_backend(
     backend: str,
     query: str,
     *,
     max_results: int,
+    timelimit: str | None,
     project_root: Path | None,
     environ: Mapping[str, str] | None,
     timeout: float,
@@ -398,6 +449,14 @@ def _search_china_backend(
     api_key = _backend_api_key(backend, project_root, environ)
     if not api_key:
         raise _BackendUnavailable(backend)
+    if backend == _DEEPSEEK_BACKEND:
+        return _deepseek_search(
+            query,
+            max_results=max_results,
+            api_key=api_key,
+            timelimit=timelimit,
+            timeout=timeout,
+        )
     if backend == "zhipu":
         return _zhipu_search(
             query,
@@ -576,7 +635,7 @@ def _fallback_backends(
         backend = item.strip().casefold()
         if not backend or backend in backends:
             continue
-        if backend not in _CHINA_BACKENDS:
+        if backend != _DEEPSEEK_BACKEND and backend not in _CHINA_BACKENDS:
             raise ValueError(
                 "WEB_SEARCH_FALLBACK_BACKENDS contains an unsupported backend"
             )
@@ -589,11 +648,23 @@ def _backend_api_key(
     project_root: Path | None,
     environ: Mapping[str, str] | None,
 ) -> str:
-    if backend == "zhipu":
-        return _config_value("ZHIPUAI_API_KEY", project_root, environ)
-    if backend == "bocha":
-        return _config_value("BOCHA_API_KEY", project_root, environ)
-    return ""
+    variable = (
+        "DEEPSEEK_API_KEY"
+        if backend == _DEEPSEEK_BACKEND
+        else _KEYED_DIRECT_BACKENDS.get(backend)
+    )
+    if variable is None:
+        return ""
+    return _config_value(variable, project_root, environ)
+
+
+def _not_configured_error(exc: _BackendUnavailable) -> ToolExecutionError:
+    variable = _KEYED_DIRECT_BACKENDS.get(exc.backend, "")
+    detail = f"未配置 {variable}" if variable else "无法使用"
+    return ToolExecutionError(
+        "web_search_backend_not_configured",
+        f"搜索后端 {exc.backend} {detail}，无法使用该后端。",
+    )
 
 
 def _config_value(

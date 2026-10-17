@@ -370,9 +370,10 @@ chmod 600 aiconfig/*.ai.json
 当前代码会由 MaimaiDX、QWeather 和 JianerAI 网页搜索主动读取仓库根目录 `.env`。
 部分 JianerAI 工具仍直接读取进程环境：
 
-- `DDGS_BACKEND`：DDGS 默认网页搜索后端，当前默认 `bing`；
-- `WEB_SEARCH_FALLBACK_BACKENDS`：DDGS 超时或网络错误后的国内回退顺序，默认 `zhipu,bocha,bing_cn`；
-- `ZHIPUAI_API_KEY` / `BOCHA_API_KEY`：智谱、博查联网搜索密钥，未配置的后端会自动跳过；
+- `WEB_SEARCH_PROVIDER`：搜索提供方，`ddgs`（默认）或 `deepseek`（DeepSeek 官方网页搜索 API）；
+- `DDGS_BACKEND`：`ddgs` 提供方下的默认搜索后端，当前默认 `bing`；
+- `WEB_SEARCH_FALLBACK_BACKENDS`：DDGS 超时或网络错误后的回退顺序，默认 `zhipu,bocha,bing_cn`，可加入 `deepseek`；
+- `DEEPSEEK_API_KEY` / `ZHIPUAI_API_KEY` / `BOCHA_API_KEY`：DeepSeek、智谱、博查联网搜索密钥，未配置的后端会自动跳过（选中 `deepseek` 提供方时必填）；
 - `GITHUB_TOKEN`：提高 GitHub API 限额或访问令牌已授权的仓库；
 - QWeather 与 MaimaiDX 变量：可直接写在 `.env`，字段见 `.env.example`。
 

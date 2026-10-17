@@ -139,23 +139,27 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 `OpenAI Chat Completions`、`Temperature: 0` 和 `ToolsEnabled: false`，当前本地
 `aiconfig/deepseek.ai.json` 已按此设置。
 
-网页搜索默认使用 `ddgs` 文本搜索接口，后端由 `DDGS_BACKEND` 环境变量决定，
-默认 `bing`；可用的 DDGS 引擎来自当前安装版本实际启用的 text 引擎（如 `auto`、
-`brave`、`duckduckgo`、`google`、`grokipedia`、`mojeek`、`startpage`、
-`wikipedia`、`yahoo`），另外可直接选择国内后端 `zhipu`、`bocha`、`bing_cn`。
-`ddgs` 9.16 起 text 引擎不再包含 `bing`，此时 `bing` 会自动改用内置直连 Bing
-客户端（先请求 `cn.bing.com`，无结果再试 `www.bing.com/search`）；未启用的 DDGS
-引擎会直接报错，不再静默回落到 `auto`。当当前模型配置的 `BaseUrl` 主机为
-`api.deepseek.com` 时，工具自动改用 DeepSeek 官方 `POST /v1/tools/search`，
-忽略 `backend` 参数。
+网页搜索走哪个后端由宿主配置 `WEB_SEARCH_PROVIDER` 决定，不按当前模型推断：
+
+- `ddgs`（默认）：使用 `ddgs` 聚合搜索，默认引擎由 `DDGS_BACKEND` 决定，当前默认
+  `bing`；可用的 DDGS 引擎来自当前安装版本实际启用的 text 引擎（如 `auto`、
+  `brave`、`duckduckgo`、`google`、`grokipedia`、`mojeek`、`startpage`、
+  `wikipedia`、`yahoo`），另外可直接选择国内后端 `zhipu`、`bocha`、`bing_cn`。
+  `ddgs` 9.16 起 text 引擎不再包含 `bing`，此时 `bing` 会自动改用内置直连 Bing
+  客户端（先请求 `cn.bing.com`，无结果再试 `www.bing.com/search`）；未启用的
+  DDGS 引擎会直接报错，不再静默回落到 `auto`。
+- `deepseek`：使用 DeepSeek 官方网页搜索 API `POST /v1/tools/search`，读取
+  `DEEPSEEK_API_KEY`，与当前对话模型无关，任何模型下都可启用。该模式下忽略
+  `backend` 参数，DeepSeek 搜索失败不会回退到 DDGS。
 
 DDGS 超时、限流或网络错误时，按 `WEB_SEARCH_FALLBACK_BACKENDS`（默认
 `zhipu,bocha,bing_cn`）依次回退：智谱联网搜索读取 `ZHIPUAI_API_KEY`，博查
-Web Search 读取 `BOCHA_API_KEY`，未配置 key 的后端自动跳过；Bing 中国
-（`cn.bing.com`）无需 key，作为最后兜底。搜索后端变量与密钥可由进程环境或仓库根
-`.env` 提供。DDGS 区域固定为 `cn-zh`，安全搜索固定为 `moderate`；模型不能指定
-代理、请求头或待抓取 URL。若配置了 `agent_allowed_tools` 白名单，需要显式加入
-`web_search`。
+Web Search 读取 `BOCHA_API_KEY`，DeepSeek 网页搜索读取 `DEEPSEEK_API_KEY`；
+未配置 key 的后端自动跳过。Bing 中国（`cn.bing.com`）无需 key，作为最后兜底。
+搜索后端变量与密钥可由进程环境或仓库根 `.env` 提供；`WEB_SEARCH_PROVIDER` 或
+`WEB_SEARCH_FALLBACK_BACKENDS` 填了不支持的值会直接报错。DDGS 区域固定为
+`cn-zh`，安全搜索固定为 `moderate`；模型不能指定代理、请求头或待抓取 URL。若
+配置了 `agent_allowed_tools` 白名单，需要显式加入 `web_search`。
 
 GitHub 仓库读取由 `github_repository` 提供，只连接固定的 GitHub.com REST API，
 支持仓库概况、目录和 UTF-8 文本代码、提交、Pull Request 与 Issue 的只读查看。
