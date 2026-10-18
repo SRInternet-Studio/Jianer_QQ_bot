@@ -14,13 +14,15 @@ __plugin_meta__ = PluginMetadata(
         "lxbind / dfbind / 数据源 / 主题 —> 管理查分器与授权\n"
         "群里 @机器人 的消息交由 AI 处理，本插件不响应"
     ),
-    requires={"jianerbot-plugin-alconna", "jianerbot-plugin-jianer-ai"},
+    requires={"jianerbot-plugin-alconna"},
 )
 
 
+from bot import plugin_state
 from plugins.MaimaiDX import commands
 from plugins.MaimaiDX.ai_tools import register_ai_tools, unregister_ai_tools
 from plugins.MaimaiDX.commands import guess as guess_commands
+from plugins.MaimaiDX.config import log
 from plugins.MaimaiDX.runtime import runtime
 
 
@@ -28,14 +30,37 @@ _ai_tool_module = None
 _ai_tool_registrations = ()
 
 
+def _register_ai_tools(manager) -> bool:
+    """Attach MaimaiDX tools to JianerAI when that optional plugin is ready."""
+
+    global _ai_tool_module, _ai_tool_registrations
+    if _ai_tool_module is not None:
+        return True
+    try:
+        module, registrations = register_ai_tools(manager)
+    except Exception as exc:
+        log.warning(
+            "MaimaiDX AI 工具注册失败，稍后重试："
+            f"{type(exc).__name__}: {exc}"
+        )
+        return False
+    if module is None:
+        log.info("未检测到 JianerAI 插件，跳过 MaimaiDX AI 工具注册")
+        return False
+    _ai_tool_module, _ai_tool_registrations = module, registrations
+    return True
+
+
 async def _listener_started(event, actions):
+    manager = plugin_state.get_plugin_manager()
+    if manager is not None:
+        _register_ai_tools(manager)
     await runtime.start(event, actions)
 
 
 def setup(client, manager):
-    global _ai_tool_module, _ai_tool_registrations
     client.subscribe(_listener_started, events.HyperListenerStartNotify)
-    _ai_tool_module, _ai_tool_registrations = register_ai_tools(manager)
+    _register_ai_tools(manager)
 
 
 async def on_message_observe(event, actions):

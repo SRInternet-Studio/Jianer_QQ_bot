@@ -8,18 +8,10 @@ import math
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jianer import common, segments
 from jianer.adapters import Capability
-
-from plugins.JianerAI.tools import (
-    ToolContext,
-    ToolExecutionError,
-    ToolRegistration,
-    ToolRisk,
-    ToolSpec,
-)
 
 from . import adapter
 from .core.clients.exceptions import UserNotBindError
@@ -37,6 +29,16 @@ from .resources import resource_issues
 from .runtime import runtime
 
 
+if TYPE_CHECKING:  # JianerAI is an optional companion plugin.
+    from plugins.JianerAI.tools import (
+        ToolContext,
+        ToolExecutionError,
+        ToolRegistration,
+        ToolRisk,
+        ToolSpec,
+    )
+
+
 JIANER_AI_PLUGIN_ID = "jianerbot-plugin-jianer-ai"
 DIVINGFISH_SOURCE = "水鱼查分器"
 ALIAS_SOURCE = "Yuri-YuzuChaN别名数据源"
@@ -45,6 +47,8 @@ IMAGE_CAPABILITIES = frozenset({Capability.SEND_IMAGE})
 
 
 def _tool_error(code: str, message: str) -> ToolExecutionError:
+    from plugins.JianerAI.tools import ToolExecutionError
+
     return ToolExecutionError(code, message)
 
 
@@ -533,6 +537,8 @@ async def maimaidx_rating_ranking(
 def maimaidx_tool_specs() -> tuple[ToolSpec, ...]:
     """Build fresh generation-scoped ToolSpec instances for JianerAI."""
 
+    from plugins.JianerAI.tools import ToolRisk, ToolSpec
+
     song_property = {
         "type": "string",
         "description": "曲目数字 ID、完整曲名或准确别名。",
@@ -692,18 +698,26 @@ def maimaidx_tool_specs() -> tuple[ToolSpec, ...]:
     )
 
 
-def _jianer_ai_module(manager: Any) -> Any:
+def _jianer_ai_module(manager: Any) -> Any | None:
+    """Return the JianerAI plugin entry, or ``None`` when it is not loaded."""
+
     plugin = getattr(manager, "plugins", {}).get(JIANER_AI_PLUGIN_ID)
     module = getattr(plugin, "module", None)
     if module is None or not callable(getattr(module, "register_tool", None)):
-        raise RuntimeError("JianerAI plugin entry is not available")
+        return None
     return module
 
 
 def register_ai_tools(manager: Any) -> tuple[Any, tuple[ToolRegistration, ...]]:
-    """Register every MaimaiDX tool atomically for one plugin generation."""
+    """Register every MaimaiDX tool atomically for one plugin generation.
+
+    JianerAI is optional, so a missing plugin yields ``(None, ())``; callers
+    may retry later without treating the absence as a failure.
+    """
 
     module = _jianer_ai_module(manager)
+    if module is None:
+        return None, ()
     registrations: list[ToolRegistration] = []
     try:
         for spec in maimaidx_tool_specs():

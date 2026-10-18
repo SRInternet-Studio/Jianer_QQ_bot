@@ -66,7 +66,8 @@ DPAPI，Linux 下收紧文件权限。
 
 ## JianerAI Tools
 
-插件依赖 `jianerbot-plugin-jianer-ai`，加载与热重载时注册以下工具：
+JianerAI 是可选插件：检测到 `jianerbot-plugin-jianer-ai` 时，加载与热重载会
+注册以下工具；未启用时舞萌DX 的命令功能不受影响。
 
 - `maimaidx_b50`
 - `maimaidx_song_search`

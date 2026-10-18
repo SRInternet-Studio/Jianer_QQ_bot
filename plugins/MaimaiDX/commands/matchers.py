@@ -2,7 +2,7 @@
 
 The host projects QQ messages to plain text before plugin dispatch, so
 ``@机器人 b50`` reaches the command matchers as ``b50``.  MaimaiDX leaves
-those messages to the JianerAI fallback, therefore every matcher built here
+those messages to the host AI fallback, therefore every matcher built here
 declines events that @ the bot account.
 """
 

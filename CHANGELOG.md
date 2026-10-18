@@ -12,6 +12,7 @@
 - 新增脱敏的 `config.example.json`，提供 OneBot、Milky、Kritor、飞书和 AI 基础配置结构。
 
 ### 变更
+- 舞萌DX 不再依赖 JianerAI 插件：移除插件依赖声明，未启用或尚未就绪时跳过 AI 工具注册并在监听启动后重试，命令功能与 `@机器人` 消息让位行为保持不变。
 - 舞萌DX 插件不再响应群聊中 `@机器人` 的消息，这类消息继续交给 JianerAI 处理；`b50 @成员` 等指定其他群成员的查询不受影响。
 - 网页搜索提供方改由宿主配置 `WEB_SEARCH_PROVIDER` 决定（`ddgs` 默认，或 `deepseek` 官方网页搜索 API `POST /v1/tools/search`），不再按当前对话模型的 BaseUrl 自动切换；`deepseek` 也可作为 DDGS 回退链的一环，密钥读取 `DEEPSEEK_API_KEY`。
 - `web_search` 的 DDGS 默认后端由 `yandex` 改为 `bing`。

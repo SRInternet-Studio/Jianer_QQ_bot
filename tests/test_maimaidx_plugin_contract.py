@@ -1,5 +1,9 @@
 import ast
 import asyncio
+import os
+import subprocess
+import sys
+import textwrap
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -502,3 +506,137 @@ def test_plugin_manager_dispatch_declines_bot_mentions(tmp_path):
         assert "仅支持 QQ OneBot/Milky 协议" in str(actions.sent[-1][1])
     finally:
         asyncio.run(manager.shutdown())
+
+
+class _StubClient:
+    """Minimal client double for the plugin setup contract."""
+
+    def __init__(self):
+        self.subscriptions = []
+
+    def subscribe(self, handler, event_type):
+        self.subscriptions.append((handler, event_type))
+
+
+def test_plugin_loads_and_sets_up_without_jianer_ai(tmp_path):
+    from jianer.plugins import PluginManager
+
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / "MaimaiDX").symlink_to(PLUGIN_ROOT, target_is_directory=True)
+
+    manager = PluginManager()
+    try:
+        assert manager.load_plugins(plugins_dir).failed == []
+        assert set(manager.plugins) == {
+            "jianerbot-plugin-alconna",
+            "jianerbot-plugin-maimaidx",
+        }
+        plugin = manager.plugins["jianerbot-plugin-maimaidx"]
+        assert "jianerbot-plugin-jianer-ai" not in plugin.metadata.requires
+
+        client = _StubClient()
+        manager.setup_client(client)
+
+        assert client.subscriptions
+        assert getattr(plugin.module, "_ai_tool_module", None) is None
+    finally:
+        asyncio.run(manager.shutdown())
+
+
+def test_register_ai_tools_without_jianer_ai_is_a_noop():
+    from plugins.MaimaiDX import ai_tools
+
+    assert ai_tools.register_ai_tools(SimpleNamespace(plugins={})) == (None, ())
+
+    entryless = SimpleNamespace(
+        plugins={
+            ai_tools.JIANER_AI_PLUGIN_ID: SimpleNamespace(module=SimpleNamespace())
+        }
+    )
+    assert ai_tools.register_ai_tools(entryless) == (None, ())
+
+
+def test_setup_registers_and_shutdown_removes_jianer_ai_tools(tmp_path):
+    from jianer.plugins import PluginManager
+
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / "jianer-ai.py").write_text(
+        "from jianer.plugins import PluginMetadata\n"
+        "\n"
+        '__plugin_meta__ = PluginMetadata(name="jianerbot-plugin-jianer-ai")\n'
+        "\n"
+        "REGISTERED = []\n"
+        "UNREGISTERED = []\n"
+        "\n"
+        "def register_tool(spec):\n"
+        "    REGISTERED.append(spec.name)\n"
+        "    return spec.name\n"
+        "\n"
+        "def unregister_tool(token):\n"
+        "    UNREGISTERED.append(token)\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    (plugins_dir / "MaimaiDX").symlink_to(PLUGIN_ROOT, target_is_directory=True)
+
+    manager = PluginManager()
+    try:
+        assert manager.load_plugins(plugins_dir).failed == []
+        manager.setup_client(_StubClient())
+
+        entry = manager.plugins["jianerbot-plugin-jianer-ai"].module
+        assert entry.REGISTERED == [
+            "maimaidx_b50",
+            "maimaidx_song_search",
+            "maimaidx_song_info",
+            "maimaidx_player_song_score",
+            "maimaidx_rating_ranking",
+        ]
+    finally:
+        asyncio.run(manager.shutdown())
+
+    assert entry.UNREGISTERED == list(reversed(entry.REGISTERED))
+
+
+def test_plugin_entry_import_does_not_require_jianer_ai():
+    """Importing MaimaiDX must not pull in the optional JianerAI plugin."""
+
+    script = textwrap.dedent(
+        """
+        import sys
+        from pathlib import Path
+
+        from cfgr.manager import Serializers
+        from jianer import configurator
+
+        config = Path("config.json")
+        if not config.is_file():
+            config = Path("config.example.json")
+        configurator.BotConfig.load_from(
+            str(config), Serializers.JSON, "jianer-bot"
+        )
+
+        import plugins.MaimaiDX.ai_tools  # noqa: F401
+        import plugins.MaimaiDX.setup  # noqa: F401
+
+        leaked = sorted(
+            name
+            for name in sys.modules
+            if name == "plugins.JianerAI"
+            or name.startswith("plugins.JianerAI.")
+        )
+        assert not leaked, leaked
+        print("MAIMAIDX_IMPORT_OK")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "MAIMAIDX_IMPORT_OK" in result.stdout
