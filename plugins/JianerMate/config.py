@@ -42,6 +42,9 @@ DEFAULT_TOOL_ALLOWLIST = (
     "web_search",
     "github_repository",
     "render_information_card",
+    "list_agent_skills",
+    "load_agent_skill",
+    "read_agent_skill_resource",
 )
 
 
@@ -55,6 +58,8 @@ class ToolOptions:
     allow_mutating: bool = False
     allowlist: tuple[str, ...] | None = DEFAULT_TOOL_ALLOWLIST
     max_output_chars: int = 4000
+    skills_dirs: tuple[str, ...] = (".agents/skills",)
+    skills_max_file_bytes: int = 65536
 
 @dataclass(frozen=True, slots=True)
 class StyleOptions:
@@ -279,6 +284,15 @@ class RuntimeOptions:
                 4000,
                 minimum=200,
                 maximum=20000,
+            ),
+            skills_dirs=_as_text_tuple(
+                others.get("jianer_mate_tool_skills_dirs"), (".agents/skills",)
+            ),
+            skills_max_file_bytes=_clamp_int(
+                others.get("jianer_mate_tool_skills_max_file_bytes"),
+                65536,
+                minimum=1024,
+                maximum=262144,
             ),
         )
         return cls(

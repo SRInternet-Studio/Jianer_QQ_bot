@@ -158,8 +158,11 @@ class MateToolRuntime:
                 project_root=self.project_root,
                 logger=self._logger,
             )
-            if self.options.allow_mutating:
-                register_platform_api_tools(registry)
+            # Read-only platform APIs (milky_get_*, onebot_get_*, Lark GET)
+            # stay available; mutating ones are filtered by the risk filter
+            # unless ``allow_mutating`` is enabled.
+            register_platform_api_tools(registry)
+            self._register_skills(registry)
             try:
                 register_qweather_tools(
                     registry,
@@ -181,6 +184,38 @@ class MateToolRuntime:
     @property
     def available(self) -> bool:
         return self._registry is not None
+
+    def _register_skills(self, registry: Any) -> None:
+        roots = []
+        for item in self.options.skills_dirs:
+            path = Path(item)
+            if not path.is_absolute():
+                path = self.project_root / path
+            if path.is_dir():
+                roots.append(path)
+        if not roots:
+            return
+        try:
+            from plugins.JianerAI.tools.agent_skills import (  # noqa: PLC0415
+                AgentSkillManager,
+            )
+        except Exception as exc:  # noqa: BLE001 - skills are optional
+            self._log(
+                "info", f"Agent Skills 未加载：{exc.__class__.__name__}"
+            )
+            return
+        manager = AgentSkillManager(
+            roots, max_file_bytes=self.options.skills_max_file_bytes
+        )
+        specs = manager.provide_tools()
+        if not specs:
+            self._log("info", "Agent Skills 目录为空，未注册技能工具")
+            return
+        for spec in specs:
+            try:
+                registry.register(spec)
+            except Exception as exc:  # noqa: BLE001
+                self._log("warning", f"注册技能工具失败：{exc}")
 
     @property
     def import_error(self) -> str:

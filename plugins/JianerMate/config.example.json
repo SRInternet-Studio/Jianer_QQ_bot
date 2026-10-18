@@ -98,9 +98,16 @@
             "search_current_chat",
             "web_search",
             "github_repository",
-            "render_information_card"
+            "render_information_card",
+            "list_agent_skills",
+            "load_agent_skill",
+            "read_agent_skill_resource"
         ],
-        "max_output_chars": 4000
+        "max_output_chars": 4000,
+        "skills_dirs": [
+            ".agents/skills"
+        ],
+        "skills_max_file_bytes": 65536
     },
     "group_blacklist": []
 }

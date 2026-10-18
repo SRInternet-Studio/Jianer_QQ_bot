@@ -73,8 +73,21 @@ def test_default_tool_allowlist_matches_jianer_ai_tools(tmp_path):
     runtime = MateToolRuntime(ToolOptions(), project_root=tmp_path)
     status = runtime.status()
     assert status["available"] is True, status.get("error")
-    assert tuple(status["names"]) == tuple(sorted(DEFAULT_TOOL_ALLOWLIST))
-    assert status["tools"] == len(DEFAULT_TOOL_ALLOWLIST)
+    names = set(status["names"])
+    assert names <= set(DEFAULT_TOOL_ALLOWLIST)
+    for name in (
+        "get_current_time",
+        "calculate_expression",
+        "read_recent_chat",
+        "search_current_chat",
+        "web_search",
+        "github_repository",
+        "render_information_card",
+    ):
+        assert name in names
+    # Skill tools only appear when a skills directory actually exists.
+    assert "list_agent_skills" not in names
+    assert status["tools"] == len(names)
     asyncio.run(runtime.shutdown())
 
 
@@ -138,5 +151,43 @@ def test_original_tools_execute_against_mate_context(tmp_path):
         runtime.execute("call-4", "list_my_memories", {"scope": "person"}, context)
     )
     assert "长期记忆" in memory
+    asyncio.run(runtime.shutdown())
+    store.close()
+
+
+def test_agent_skills_are_registered_when_present(tmp_path):
+    skill_dir = tmp_path / ".agents" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: 演示技能\n---\n\n按步骤做事。\n",
+        encoding="utf-8",
+    )
+    store, context = _context(tmp_path)
+    runtime = MateToolRuntime(ToolOptions(allowlist=None), project_root=tmp_path)
+    status = runtime.status()
+    assert "list_agent_skills" in status["names"]
+    listing = asyncio.run(
+        runtime.execute("call-1", "list_agent_skills", {}, context)
+    )
+    assert "demo" in listing
+    asyncio.run(runtime.shutdown())
+    store.close()
+
+
+def test_readonly_platform_tools_need_privilege_but_no_mutating_flag(tmp_path):
+    store, anonymous = _context(tmp_path)
+    _store, privileged = _context(
+        tmp_path / "priv", actor=SimpleNamespace(is_privileged=True)
+    )
+    runtime = MateToolRuntime(ToolOptions(allowlist=None), project_root=tmp_path)
+    plain_names = {
+        item["function"]["name"] for item in runtime.schemas(anonymous)
+    }
+    privileged_names = {
+        item["function"]["name"] for item in runtime.schemas(privileged)
+    }
+    assert not any(name.startswith("milky_get_") for name in plain_names)
+    assert any(name.startswith("milky_get_") for name in privileged_names)
+    assert "send_message" not in privileged_names
     asyncio.run(runtime.shutdown())
     store.close()

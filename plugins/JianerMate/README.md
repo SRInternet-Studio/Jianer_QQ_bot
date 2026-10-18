@@ -92,8 +92,10 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
 | `read_recent_chat` / `search_current_chat` | 当前会话最近聊天与文字搜索（读本插件自己的聊天表） |
 | `web_search` / `github_repository` | 联网搜索摘要与 GitHub 仓库只读查询 |
 | `render_information_card` | 生成 PNG 信息卡并直接发到当前会话（需要适配器支持发图） |
+| `list_agent_skills` / `load_agent_skill` / `read_agent_skill_resource` | 读取 `.agents/skills/**/SKILL.md` 技能说明（目录存在时才注册） |
 | `qweather_*` | 配好 `.env` 的和风天气工具；缺配置时不会注册 |
-| `web_browser`、平台 API、长期记忆工具 | 默认不放开，需要显式打开 `include_web_browser` / `allow_mutating` |
+| 只读平台 API（`milky_get_*` / `onebot_get_*` / Lark GET） | 需要群主/管理员或机器人管理员身份，随权限自动可见 |
+| `web_browser`、平台写操作、长期记忆工具 | 默认不放开：`web_browser` 需 `include_web_browser`，写操作需 `allow_mutating` |
 
 `tools` 段配置：
 
@@ -101,6 +103,8 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
 - `tools.max_rounds`：单次回复最多几轮工具调用，默认 `3`；
 - `tools.allowlist`：允许暴露给模型的工具名列表，默认是上表里的 9 个只读工具；
   写 `[]` 表示彻底关闭工具，写 `null` 表示不做白名单限制；
+- `tools.skills_dirs` / `tools.skills_max_file_bytes`：Agent Skills 目录（默认
+  `.agents/skills`）与单个技能文件上限；
 - `tools.include_web_browser`：注册 `web_browser`，默认 `false`（会启动浏览器）；
 - `tools.allow_mutating`：允许注册写操作与平台 API 工具，默认 `false`；
 - `tools.max_output_chars`：单次工具结果注入模型的长度上限，默认 `4000`。

@@ -89,6 +89,8 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
         "allow_mutating": "jianer_mate_tool_allow_mutating",
         "allowlist": "jianer_mate_tool_allowlist",
         "max_output_chars": "jianer_mate_tool_max_output_chars",
+        "skills_dirs": "jianer_mate_tool_skills_dirs",
+        "skills_max_file_bytes": "jianer_mate_tool_skills_max_file_bytes",
     },
 }
 
@@ -263,6 +265,10 @@ def build_config_document(options: Any) -> dict[str, Any]:
             ),
             "max_output_chars": int(
                 getattr(tools, "max_output_chars", 4000)
+            ),
+            "skills_dirs": list(getattr(tools, "skills_dirs", ()) or ()),
+            "skills_max_file_bytes": int(
+                getattr(tools, "skills_max_file_bytes", 65536)
             ),
         },
         "group_blacklist": list(getattr(options, "group_blacklist", ())),
