@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from plugins.JianerMate.providers import OpenAICompatibleClient, ProviderError
+from plugins.JianerMate.providers import (
+    OpenAICompatibleClient,
+    ProviderError,
+    ResponseParseError,
+)
 
 
 DEFAULT_BOT_NAME = "简儿"
@@ -290,6 +294,12 @@ PERSONA_CONVERSION_RULES = (
     "multiple_probability 建议 0，除非原文明确要求随机切换风格。"
 )
 
+PERSONA_CONVERSION_RETRY_SUFFIX = (
+    "\n\n上一次的输出没法被程序解析。这次务必只输出一个 JSON 对象："
+    "不要 Markdown 代码块，不要解释、注释或前后缀文字；"
+    "所有键名和字符串都用英文双引号，数组和对象结尾不要留多余的逗号。"
+)
+
 
 class PersonaConverter:
     """Ask a model to turn an existing setting into a Persona payload."""
@@ -318,19 +328,43 @@ class PersonaConverter:
             f"原始设定名称：{source_name.strip() or '（未命名）'}\n"
             f"原始设定内容：\n{body[:6000]}"
         )
-        payload = await self.client.complete_json(
-            model_key,
-            system_prompt=PERSONA_CONVERSION_RULES,
-            user_text=user_prompt,
-            max_tokens=900,
-            temperature=0.2,
+        missing_fields = False
+        for attempt in range(2):
+            system_prompt = PERSONA_CONVERSION_RULES
+            if attempt:
+                system_prompt += PERSONA_CONVERSION_RETRY_SUFFIX
+            try:
+                payload = await self.client.complete_json(
+                    model_key,
+                    system_prompt=system_prompt,
+                    user_text=user_prompt,
+                    max_tokens=900,
+                    temperature=0.2 if not attempt else 0.0,
+                )
+            except ResponseParseError:
+                missing_fields = False
+                continue
+            if _has_persona_fields(payload):
+                return Persona.from_payload(payload, base=base)
+            missing_fields = True
+        reason = (
+            "没有给出可用的人格字段"
+            if missing_fields
+            else "返回的内容不是能解析的 JSON"
         )
-        if not isinstance(payload, Mapping) or not any(
-            str(payload.get(key) or "").strip()
-            for key in ("personality", "behavior_style", "reply_style")
-        ):
-            raise PersonaError("模型没有给出可用的人格字段")
-        return Persona.from_payload(payload, base=base)
+        raise PersonaError(
+            f"模型「{model_key or '未配置'}」{reason}；"
+            "可以换个模型（~模型）或把原设定写短一点再试"
+        )
+
+
+def _has_persona_fields(payload: Any) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    return any(
+        str(payload.get(key) or "").strip()
+        for key in ("personality", "behavior_style", "reply_style")
+    )
 
 
 # ---------------------------------------------------------------------- #

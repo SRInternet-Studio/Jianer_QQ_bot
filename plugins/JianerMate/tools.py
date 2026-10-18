@@ -20,6 +20,10 @@ from jianer import common as Manager
 from jianer import segments as Segments
 
 from plugins.JianerMate.config import ToolOptions
+from plugins.JianerMate.compat import ensure_jianer_ai
+
+
+ensure_jianer_ai()
 
 
 _LOGGER = logging.getLogger("jianer_mate.tools")

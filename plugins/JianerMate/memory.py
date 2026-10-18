@@ -16,6 +16,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from plugins.JianerMate.compat import ensure_jianer_ai
+
+
+ensure_jianer_ai()
+
 
 _LOGGER = logging.getLogger("jianer_mate.memory")
 

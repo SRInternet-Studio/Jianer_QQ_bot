@@ -64,6 +64,10 @@ from plugins.JianerMate.tools import (
     build_tool_context,
     make_actor_resolver,
 )
+from plugins.JianerMate.compat import ensure_jianer_ai
+
+
+ensure_jianer_ai()
 
 try:  # Optional parity helpers from the JianerAI package.
     from plugins.JianerAI.speech import SpeechSynthesizer as _SpeechSynthesizer
@@ -163,12 +167,13 @@ class JianerMateService:
         if client is not None:
             self.client = client
         else:
-            loaded, errors = load_models(options.ai_config_dir)
+            model_dirs = (options.ai_config_dir, *options.ai_config_dirs)
+            loaded, errors = load_models(model_dirs)
             if entries is not None:
                 loaded = dict(entries)
             self._model_errors = errors
             self.client = OpenAICompatibleClient(
-                loaded, bridge=JianerAIBridge(options.ai_config_dir)
+                loaded, bridge=JianerAIBridge(model_dirs)
             )
         self._model_errors = getattr(self, "_model_errors", {})
         self.planner = planner or Planner(
@@ -273,17 +278,17 @@ class JianerMateService:
             self._log_error(self._conflict_detail)
             return
         self._active = True
-        models = [
-            key
-            for key, entry in self.client.models.items()
-            if entry.supported
-        ]
+        self._auto_select_models()
+        native, bridged, unsupported = self._model_groups()
         self._log_info(
-            "JianerMate 已激活 | planner=%s | replyer=%s | 可用模型=%s"
+            "JianerMate 已激活 | planner=%s | replyer=%s"
+            " | 原生模型=%s | 桥接模型=%s | 不支持=%s"
             % (
                 self.options.planner_model or "(未配置)",
                 self.options.replyer_model or "(未配置)",
-                ",".join(sorted(models)) or "(无)",
+                ",".join(sorted(native)) or "(无)",
+                ",".join(sorted(bridged)) or "(无)",
+                ",".join(sorted(unsupported)) or "(无)",
             )
         )
         removed = 0
@@ -316,6 +321,48 @@ class JianerMateService:
         if isinstance(plugins, Mapping) and JIANER_AI_PLUGIN_ID in plugins:
             return True
         return False
+
+    def _model_groups(self) -> tuple[list[str], list[str], list[str]]:
+        """Split configured models into native / bridged / unusable."""
+
+        entries = dict(getattr(self.client, "models", {}) or {})
+        serves = getattr(self.client, "serves", None)
+        native: list[str] = []
+        bridged: list[str] = []
+        unsupported: list[str] = []
+        for key, entry in entries.items():
+            if entry.supported and entry.api_key:
+                native.append(key)
+            elif callable(serves) and serves(key):
+                bridged.append(key)
+            else:
+                unsupported.append(key)
+        return native, bridged, unsupported
+
+    def _auto_select_models(self) -> None:
+        """Fill planner/replyer from ``default_mode`` when unset."""
+
+        native, bridged, _unsupported = self._model_groups()
+        available = native + bridged
+        if not available:
+            return
+        preferred = self.options.default_model.strip()
+        if preferred and preferred not in available:
+            preferred = ""
+        fallback = preferred or (native[0] if native else available[0])
+        planner = self.options.planner_model.strip() or fallback
+        replyer = self.options.replyer_model.strip() or fallback
+        if (
+            planner != self.options.planner_model
+            or replyer != self.options.replyer_model
+        ):
+            self.options = replace(
+                self.options, planner_model=planner, replyer_model=replyer
+            )
+            self._log_info(
+                "planner/replyer 未配置，自动选用：planner=%s，replyer=%s"
+                % (planner, replyer)
+            )
 
     async def shutdown(self) -> None:
         self._closed = True
@@ -2335,7 +2382,8 @@ class JianerMateService:
     # ------------------------------------------------------------------ #
     async def reload(self) -> None:
         options = RuntimeOptions.from_runtime(self.runtime)
-        entries, errors = load_models(options.ai_config_dir)
+        model_dirs = (options.ai_config_dir, *options.ai_config_dirs)
+        entries, errors = load_models(model_dirs)
         self.options = options
         self._model_errors = errors
         ensure_config_file(options.config_path, options)
@@ -2363,9 +2411,8 @@ class JianerMateService:
         if hasattr(self.client, "reload"):
             self.client.reload(entries)
         if hasattr(self.client, "set_bridge"):
-            self.client.set_bridge(
-                JianerAIBridge(options.ai_config_dir)
-            )
+            self.client.set_bridge(JianerAIBridge(model_dirs))
+        self._auto_select_models()
         self.memes.options = options.meme
         self.memes.directory = Path(options.meme_dir)
         self.memes.directory.mkdir(parents=True, exist_ok=True)
@@ -2539,6 +2586,16 @@ class JianerMateService:
     def _has_image(event: Any) -> bool:
         return any(
             isinstance(segment, Segments.Image)
+            for segment in (getattr(event, "message", ()) or ())
+        )
+
+    @staticmethod
+    def _has_media(event: Any) -> bool:
+        """True when the message carries anything but plain text."""
+
+        kinds = (Segments.Image, Segments.Record, Segments.Video)
+        return any(
+            isinstance(segment, kinds)
             for segment in (getattr(event, "message", ()) or ())
         )
 

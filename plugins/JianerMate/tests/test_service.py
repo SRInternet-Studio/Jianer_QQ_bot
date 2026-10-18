@@ -30,7 +30,11 @@ from plugins.JianerMate.providers import (
     ProviderError,
 )
 from plugins.JianerMate.replyer import ReplyPlan
-from plugins.JianerMate.service import ConversationRef, JianerMateService
+from plugins.JianerMate.service import (
+    BARE_MENTION_PROMPT,
+    ConversationRef,
+    JianerMateService,
+)
 from plugins.JianerMate.store import MateStore
 
 
@@ -359,6 +363,43 @@ def test_passive_group_mention_and_private_reply(tmp_path):
     ]
     assert "incoming" not in directions
     assert directions.count("outgoing") >= 1
+    asyncio.run(service.shutdown())
+
+
+def test_bare_mention_and_image_only_fallback(tmp_path):
+    service = _service(tmp_path)
+    _activate(service)
+
+    actions = _FakeActions()
+    assert (
+        asyncio.run(service.handle_fallback(_event(at=True, text=""), actions))
+        is True
+    )
+    assert len(actions.sent) == 1
+    assert service.replyer.calls[-1]["trigger_text"] == BARE_MENTION_PROMPT
+
+    image_actions = _FakeActions()
+    image_only = _event(at=True, text="", images=(1,))
+    assert (
+        asyncio.run(service.handle_fallback(image_only, image_actions)) is True
+    )
+    assert len(image_actions.sent) == 1
+    assert (
+        service.replyer.calls[-1]["trigger_text"] == "（对方发来了图片）"
+    )
+
+    private_actions = _FakeActions()
+    private_image = _event(group_id=None, at=False, text="", images=(1,))
+    assert (
+        asyncio.run(service.handle_fallback(private_image, private_actions))
+        is True
+    )
+    assert service.replyer.calls[-1]["trigger_text"] == "[图片]"
+
+    idle_actions = _FakeActions()
+    empty = _event(group_id=None, at=False, text="")
+    assert asyncio.run(service.handle_fallback(empty, idle_actions)) is False
+    assert idle_actions.sent == []
     asyncio.run(service.shutdown())
 
 
@@ -1364,4 +1405,22 @@ def test_memory_console_skips_when_disabled_or_memory_unavailable(tmp_path):
     service.long_term = SimpleNamespace(available=False, error="disabled")
     asyncio.run(service._start_memory_console())
     assert service._memory_console_thread is None
+    asyncio.run(service.shutdown())
+
+
+def test_models_auto_selected_from_default_mode(tmp_path):
+    service = _service(
+        tmp_path,
+        jianer_mate_planner_model="",
+        jianer_mate_replyer_model="",
+        default_mode="test",
+    )
+    assert service.options.planner_model == ""
+    assert service.options.replyer_model == ""
+    service._auto_select_models()
+    assert service.options.planner_model == "test"
+    assert service.options.replyer_model == "test"
+    native, bridged, unsupported = service._model_groups()
+    assert native == ["test"]
+    assert bridged == [] and unsupported == []
     asyncio.run(service.shutdown())

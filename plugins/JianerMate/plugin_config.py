@@ -29,6 +29,7 @@ _SCALAR_KEYS = {
     "db_path": "jianer_mate_db_path",
     "meme_dir": "jianer_mate_meme_dir",
     "ai_config_dir": "jianer_mate_ai_config_dir",
+    "ai_config_dirs": "jianer_mate_ai_config_dirs",
     "group_blacklist": "jianer_mate_group_blacklist",
 }
 
@@ -207,6 +208,10 @@ def build_config_document(options: Any) -> dict[str, Any]:
         "enabled": bool(getattr(options, "enabled", True)),
         "data_dir": _portable(root, getattr(options, "data_dir", None)),
         "ai_config_dir": _portable(root, getattr(options, "ai_config_dir", None)),
+        "ai_config_dirs": [
+            _portable(root, item)
+            for item in getattr(options, "ai_config_dirs", ()) or ()
+        ],
         "models": {
             "planner": str(getattr(options, "planner_model", "") or ""),
             "replyer": str(getattr(options, "replyer_model", "") or ""),

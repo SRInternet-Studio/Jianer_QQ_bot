@@ -150,9 +150,14 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
 所有键都有默认值，模型定义复用 `aiconfig/*.ai.json`：
 
 - `jianer_mate_config_path`：插件配置文件位置（只在这里配置，默认 `data/jianer_mate/config.json`）。
+- `jianer_mate_ai_config_dir` / `jianer_mate_ai_config_dirs`：模型目录，默认只读
+  `aiconfig`；其它存放 `*.ai.json` 的目录可以列进 `ai_config_dirs` 一起加载
+  （同名模型以先加载的为准，重复项会在状态里提示）。
 - `jianer_mate_enabled`：插件总开关，默认 `true`。
 - `jianer_mate_planner_model`：Planner 使用的 aiconfig 模型代码（文本模型即可）。
 - `jianer_mate_replyer_model`：Replyer 使用的模型代码，必须支持图片输入（视觉挑选表情包）。
+- 两者留空时会自动采用宿主 `default_mode`（没有则取第一个可用模型），
+  启动日志会分别列出「原生模型 / 桥接模型 / 不支持」，方便确认加载了哪些模型。
 - `jianer_mate_moderation_enabled` / `jianer_mate_moderation_model`：可选审核，默认关闭。
 - `jianer_mate_persona`：单一人设，
   `{name, personality, behavior_style, reply_style, group_chat_prompt, private_chat_prompt, multiple_reply_styles, multiple_probability}`。

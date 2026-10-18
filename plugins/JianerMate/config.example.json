@@ -3,6 +3,7 @@
     "enabled": true,
     "data_dir": "data/jianer_mate",
     "ai_config_dir": "aiconfig",
+    "ai_config_dirs": [],
     "models": {
         "planner": "deepseek",
         "replyer": "vision-primary"

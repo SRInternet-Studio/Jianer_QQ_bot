@@ -45,6 +45,30 @@ def test_load_models_marks_unsupported_entries(tmp_path):
     assert "broken.ai.json" in errors
 
 
+def test_load_models_reads_multiple_directories(tmp_path):
+    first = tmp_path / "aiconfig"
+    second = tmp_path / "aiconfig-extra"
+    first.mkdir()
+    second.mkdir()
+    (first / "alpha.ai.json").write_text(
+        '{"Model": "m1", "ResponseType": "OpenAI", "ApiKey": "k"}',
+        encoding="utf-8",
+    )
+    (second / "beta.ai.json").write_text(
+        '{"Model": "m2", "ResponseType": "Google GenerateContent", "ApiKey": "k"}',
+        encoding="utf-8",
+    )
+    (second / "alpha.ai.json").write_text(
+        '{"Model": "m3", "ResponseType": "OpenAI", "ApiKey": "k"}',
+        encoding="utf-8",
+    )
+    entries, errors = load_models([first, second])
+    assert set(entries) == {"alpha", "beta"}
+    assert entries["alpha"].model == "m1"
+    assert entries["beta"].supported is False
+    assert any("重复" in message for message in errors.values())
+
+
 def test_extract_json_object_handles_fences_and_nesting():
     payload = parse_json_object(
         '当然可以：\n```json\n{"speak": true, "topic": "天气 {今天}",'
@@ -54,6 +78,21 @@ def test_extract_json_object_handles_fences_and_nesting():
     assert payload["topic"] == "天气 {今天}"
     with pytest.raises(ValueError):
         extract_json_object("no json here")
+
+
+def test_parse_json_object_tolerates_trailing_commas():
+    payload = parse_json_object(
+        '```json\n{"personality": "机娘", "aliases": ["小简",],\n'
+        ' "styles": [{"name": "短句",},],}\n```'
+    )
+    assert payload["personality"] == "机娘"
+    assert payload["aliases"] == ["小简"]
+    assert payload["styles"] == [{"name": "短句"}]
+    # commas inside strings must survive the clean-up untouched
+    assert parse_json_object('{"a": "1, 2,", "b": [1, 2],}') == {
+        "a": "1, 2,",
+        "b": [1, 2],
+    }
 
 
 class _FakeResponse:

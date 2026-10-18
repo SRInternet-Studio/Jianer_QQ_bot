@@ -18,6 +18,11 @@ from typing import Any, Mapping, Sequence
 
 import aiohttp
 
+from plugins.JianerMate.compat import ensure_jianer_ai
+
+
+ensure_jianer_ai()
+
 
 _LOGGER = logging.getLogger("jianer_mate.providers")
 
@@ -122,28 +127,47 @@ class ChatImage:
         return f"data:{self.mime or 'image/jpeg'};base64,{payload}"
 
 
-def load_models(config_dir: str | Path) -> tuple[dict[str, ModelEntry], dict[str, str]]:
-    """Load every ``*.ai.json`` entry, keeping unsupported ones for status."""
+def load_models(
+    config_dirs: str | Path | Sequence[str | Path],
+) -> tuple[dict[str, ModelEntry], dict[str, str]]:
+    """Load ``*.ai.json`` entries from one or more directories.
 
-    directory = Path(config_dir)
+    Extra directories let deployments keep parts of their model pool outside
+    the default ``aiconfig`` folder; the first directory wins on key clashes.
+    """
+
+    if isinstance(config_dirs, (str, Path)):
+        directories = [Path(config_dirs)]
+    else:
+        directories = [Path(item) for item in config_dirs]
     entries: dict[str, ModelEntry] = {}
     errors: dict[str, str] = {}
-    if not directory.is_dir():
-        return entries, errors
-    for path in sorted(directory.glob("*.ai.json")):
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            errors[path.name] = f"配置读取失败: {exc.__class__.__name__}"
+    multi = len(directories) > 1
+    for directory in directories:
+        if not directory.is_dir():
             continue
-        if not isinstance(raw, Mapping):
-            errors[path.name] = "配置必须是 JSON 对象"
-            continue
-        key = str(path.name)[: -len(".ai.json")]
-        try:
-            entries[key] = _model_entry(key, raw)
-        except (TypeError, ValueError) as exc:
-            errors[path.name] = f"配置无效: {exc}"
+        prefix = f"{directory.name}/" if multi else ""
+        for path in sorted(directory.glob("*.ai.json")):
+            key = str(path.name)[: -len(".ai.json")]
+            if key in entries:
+                errors[f"{prefix}{path.name}"] = (
+                    f"模型代码重复：{key}（已使用先加载的那份）"
+                )
+                continue
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                errors[f"{prefix}{path.name}"] = (
+                    f"配置读取失败: {exc.__class__.__name__}"
+                )
+                continue
+            if not isinstance(raw, Mapping):
+                errors[f"{prefix}{path.name}"] = "配置必须是 JSON 对象"
+                continue
+            try:
+                entries[key] = _model_entry(key, raw)
+            except (TypeError, ValueError) as exc:
+                errors[f"{prefix}{path.name}"] = f"配置无效: {exc}"
     return entries, errors
 
 
@@ -226,10 +250,47 @@ def extract_json_object(text: str) -> str:
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
-    payload = json.loads(extract_json_object(text))
+    raw = extract_json_object(text)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        # Small models love trailing commas; retry before giving up.
+        payload = json.loads(strip_trailing_commas(raw))
     if not isinstance(payload, dict):
         raise ValueError("model answer is not a JSON object")
     return payload
+
+
+def strip_trailing_commas(value: str) -> str:
+    """Drop commas that sit right before a closing brace or bracket."""
+
+    output: list[str] = []
+    pending: int | None = None
+    in_string = False
+    escaped = False
+    for char in value:
+        if in_string:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            pending = None
+        elif char == ",":
+            pending = len(output)
+        elif char in "}]":
+            if pending is not None:
+                output.pop(pending)
+                pending = None
+        elif not char.isspace():
+            pending = None
+        output.append(char)
+    return "".join(output)
 
 
 class JianerAIBridge:

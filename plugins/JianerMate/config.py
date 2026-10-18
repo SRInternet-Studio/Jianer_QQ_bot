@@ -119,6 +119,8 @@ class RuntimeOptions:
         default_factory=lambda: Path(DEFAULT_DATA_DIR) / "memes"
     )
     ai_config_dir: Path = field(default_factory=lambda: Path(DEFAULT_AI_CONFIG_DIR))
+    ai_config_dirs: tuple[Path, ...] = ()
+    default_model: str = ""
     planner_model: str = ""
     replyer_model: str = ""
     moderation_enabled: bool = False
@@ -413,6 +415,13 @@ class RuntimeOptions:
             database_path=database_path,
             meme_dir=meme_dir,
             ai_config_dir=ai_config_dir,
+            ai_config_dirs=_ai_config_dirs(
+                project_root, others, ai_config_dir
+            ),
+            default_model=_clean_text(
+                others.get("default_mode") or others.get("ai_default_model"),
+                "",
+            ),
             planner_model=planner_model,
             replyer_model=replyer_model,
             moderation_enabled=_as_bool(
@@ -647,6 +656,34 @@ def _as_tool_allowlist(value: Any) -> tuple[str, ...]:
     else:
         return DEFAULT_TOOL_ALLOWLIST
     return tuple(str(item).strip() for item in items if str(item).strip())
+
+
+def _ai_config_dirs(
+    project_root: Path,
+    others: Mapping[str, Any],
+    fallback: Path,
+) -> tuple[Path, ...]:
+    """Extra model directories (``jianer_mate_ai_config_dirs``)."""
+
+    raw = others.get("jianer_mate_ai_config_dirs")
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        items: Sequence[Any] = [
+            item for item in raw.replace("，", ",").split(",") if item.strip()
+        ]
+    elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+        items = list(raw)
+    else:
+        return ()
+    resolved: list[Path] = []
+    for item in items:
+        path = Path(str(item))
+        if not path.is_absolute():
+            path = project_root / path
+        if path != fallback and path not in resolved:
+            resolved.append(path)
+    return tuple(resolved)
 
 
 def _mcp_servers(value: Any) -> tuple[Mapping[str, Any], ...]:

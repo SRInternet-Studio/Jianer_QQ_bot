@@ -15,6 +15,7 @@ from plugins.JianerMate.persona import (
     load_jianer_ai_presets,
     resolve_preset,
 )
+from plugins.JianerMate.providers import ResponseParseError
 
 
 def test_persona_from_value_extended_fields():
@@ -143,13 +144,16 @@ def test_pick_multiple_style_probability_and_labels():
 
 
 class _StubClient:
-    def __init__(self, payload, error=None):
+    def __init__(self, payload, error=None, errors=()):
         self.payload = payload
         self.error = error
+        self.errors = list(errors)
         self.calls = []
 
     async def complete_json(self, model_key, **kwargs):
         self.calls.append({"model_key": model_key, **kwargs})
+        if self.errors:
+            raise self.errors.pop(0)
         if self.error is not None:
             raise self.error
         return self.payload
@@ -195,6 +199,50 @@ def test_persona_converter_rejects_unusable_payload():
 
     with pytest.raises(PersonaError):
         asyncio.run(scenario())
+
+
+def test_persona_converter_retries_once_when_json_is_unparsable():
+    client = _StubClient(
+        {
+            "personality": "你是一个机娘",
+            "behavior_style": "只在被叫到时说话",
+            "reply_style": "说话带点机械感",
+        },
+        errors=(ResponseParseError("模型返回的 JSON 无法解析"),),
+    )
+    converter = PersonaConverter(client)
+
+    async def scenario():
+        return await converter.convert(
+            model_key="gemini", source_text="我是一个机娘"
+        )
+
+    persona = asyncio.run(scenario())
+    assert persona.personality == "你是一个机娘"
+    assert len(client.calls) == 2
+    assert "上一次的输出没法被程序解析" not in client.calls[0]["system_prompt"]
+    assert "上一次的输出没法被程序解析" in client.calls[1]["system_prompt"]
+    assert client.calls[1]["temperature"] == 0.0
+
+
+def test_persona_converter_reports_model_when_json_keeps_failing():
+    client = _StubClient(
+        {},
+        errors=(
+            ResponseParseError("模型返回的 JSON 无法解析"),
+            ResponseParseError("模型返回的 JSON 无法解析"),
+        ),
+    )
+    converter = PersonaConverter(client)
+
+    async def scenario():
+        await converter.convert(model_key="gemini", source_text="我是一个机娘")
+
+    with pytest.raises(PersonaError) as info:
+        asyncio.run(scenario())
+    assert "gemini" in str(info.value)
+    assert "JSON" in str(info.value)
+    assert len(client.calls) == 2
 
 
 def test_load_jianer_ai_presets_and_resolution(tmp_path):
