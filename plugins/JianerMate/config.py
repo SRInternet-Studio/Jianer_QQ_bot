@@ -119,8 +119,15 @@ class RuntimeOptions:
     meme: MemeOptions = field(default_factory=MemeOptions)
     tools: ToolOptions = field(default_factory=ToolOptions)
     memory_enabled: bool = True
+    memory_backend: str = "memorix"
     memory_db_path: Path = field(
         default_factory=lambda: Path(DEFAULT_DATA_DIR) / "memory.db"
+    )
+    memory_data_dir: Path = field(
+        default_factory=lambda: Path(DEFAULT_DATA_DIR) / "memorix"
+    )
+    memory_embedding_config_path: Path = field(
+        default_factory=lambda: Path(DEFAULT_AI_CONFIG_DIR) / "embedding.json"
     )
     context_messages: int = 40
     history_keep_messages: int = 300
@@ -328,7 +335,20 @@ class RuntimeOptions:
             memory_enabled=_as_bool(
                 others.get("jianer_mate_memory_enabled"), True
             ),
+            memory_backend=_clean_text(
+                others.get("jianer_mate_memory_backend"), "memorix"
+            ).casefold(),
             memory_db_path=memory_db_path,
+            memory_data_dir=_resolve_path(
+                project_root,
+                others.get("jianer_mate_memory_data_dir"),
+                str(data_dir / "memorix"),
+            ),
+            memory_embedding_config_path=_resolve_path(
+                project_root,
+                others.get("jianer_mate_memory_embedding_config_path"),
+                str(Path(DEFAULT_AI_CONFIG_DIR) / "embedding.json"),
+            ),
             context_messages=context_messages,
             history_keep_messages=_clamp_int(
                 others.get("jianer_mate_history_keep_messages"),

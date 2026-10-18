@@ -260,6 +260,7 @@ def _runtime(tmp_path, **overrides):
         "jianer_mate_min_interval_seconds": 0,
         "jianer_mate_quiet_hours_default": "关闭",
         "jianer_mate_config_path": str(tmp_path / "mate-config.json"),
+        "jianer_mate_memory_backend": "legacy",
     }
     others.update(overrides)
     config = SimpleNamespace(others=others, black_list=[])

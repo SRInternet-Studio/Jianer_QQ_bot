@@ -94,7 +94,10 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
     },
     "memory": {
         "enabled": "jianer_mate_memory_enabled",
+        "backend": "jianer_mate_memory_backend",
         "db_path": "jianer_mate_memory_db_path",
+        "data_dir": "jianer_mate_memory_data_dir",
+        "embedding_config_path": "jianer_mate_memory_embedding_config_path",
     },
 }
 

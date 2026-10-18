@@ -184,6 +184,11 @@ class JianerMateService:
             options.memory_db_path,
             enabled=bool(options.memory_enabled),
             logger=self._logger,
+            backend=options.memory_backend,
+            data_dir=options.memory_data_dir,
+            project_root=options.project_root,
+            embedding_config_path=options.memory_embedding_config_path,
+            bot_name=options.persona.name,
         )
 
     # ------------------------------------------------------------------ #
@@ -1793,6 +1798,11 @@ class JianerMateService:
             options.memory_db_path,
             enabled=bool(options.memory_enabled),
             logger=self._logger,
+            backend=options.memory_backend,
+            data_dir=options.memory_data_dir,
+            project_root=options.project_root,
+            embedding_config_path=options.memory_embedding_config_path,
+            bot_name=options.persona.name,
         )
         if hasattr(self.client, "reload"):
             self.client.reload(entries)

@@ -198,7 +198,7 @@ def test_readonly_platform_tools_need_privilege_but_no_mutating_flag(tmp_path):
 def test_long_term_memory_tools_round_trip(tmp_path):
     from plugins.JianerMate.memory import LongTermMemory
 
-    memory = LongTermMemory(tmp_path / "memory.db")
+    memory = LongTermMemory(tmp_path / "memory.db", backend="legacy")
     assert memory.available, memory.error
     store, context = _context(tmp_path, long_term=memory)
     runtime = MateToolRuntime(
