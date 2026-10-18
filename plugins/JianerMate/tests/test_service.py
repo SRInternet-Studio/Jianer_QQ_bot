@@ -1,4 +1,5 @@
 import asyncio
+import json
 import random
 import time
 from dataclasses import replace
@@ -258,6 +259,7 @@ def _runtime(tmp_path, **overrides):
         "jianer_mate_talk_value_default": 1.0,
         "jianer_mate_min_interval_seconds": 0,
         "jianer_mate_quiet_hours_default": "关闭",
+        "jianer_mate_config_path": str(tmp_path / "mate-config.json"),
     }
     others.update(overrides)
     config = SimpleNamespace(others=others, black_list=[])
@@ -1094,3 +1096,35 @@ def test_planner_silence_accumulates_backoff(tmp_path):
     assert key not in service._backoff_until
     assert key not in service._silence_streak
     asyncio.run(service.shutdown())
+
+
+def test_activation_creates_plugin_config_and_status_shows_it(tmp_path):
+    config_path = tmp_path / "mate-config.json"
+    service = _service(
+        tmp_path,
+        jianer_mate_config_path=str(config_path),
+        jianer_mate_planner_model="test",
+    )
+    _activate(service)
+    assert config_path.is_file()
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    assert document["models"]["planner"] == "test"
+    assert document["_readme"]
+    status = service._status_text(
+        ConversationRef("milky", "10001", "group", "222")
+    )
+    assert str(config_path) in status
+    assert "已加载" in status
+
+    # User edits in the file win on the next activation and are not overwritten.
+    config_path.write_text(
+        json.dumps({"models": {"planner": "edited"}}), encoding="utf-8"
+    )
+    reloaded = _service(tmp_path, jianer_mate_config_path=str(config_path))
+    _activate(reloaded)
+    assert reloaded.options.planner_model == "edited"
+    assert json.loads(config_path.read_text(encoding="utf-8"))["models"][
+        "planner"
+    ] == "edited"
+    asyncio.run(service.shutdown())
+    asyncio.run(reloaded.shutdown())

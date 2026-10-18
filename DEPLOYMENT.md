@@ -392,7 +392,10 @@ AI：群里被 @ 或私聊时回复，群内可开启主动发言，回复拆成
 2. 确认 `aiconfig/*.ai.json` 里至少有两个可用模型：Planner 用文本模型即可，
    Replyer 必须支持图片输入（例如 Qwen-VL、Gemini、GPT-4o 一类的
    OpenAI 兼容端点）；
-3. 在 `config.json -> others` 设置模型代码：
+3. 模型与插件参数：首次启用后 JianerMate 会自动生成插件配置文件
+   `data/jianer_mate/config.json`（完整字段见 `plugins/JianerMate/config.example.json`），
+   推荐直接改这个文件；它**优先于** `config.json -> others` 里的 `jianer_mate_*` 键，
+   宿主键只作为兜底。两边都设置时以插件文件为准，改完用 `~主动发言 重载` 生效：
 
 ```json
 {
@@ -420,6 +423,7 @@ TTS、回复后缀、MCP、飞书身份合并，以及依赖 JianerAI 的 Maimai
 
 运行数据：
 
+- `data/jianer_mate/config.json`：插件自己的配置文件（优先于宿主 `config.others`）；
 - `data/jianer_mate/mate.db`：会话开关、最近消息、决策记录；
 - `data/jianer_mate/memes/`：表情包文件；备份时一并复制该目录。
 

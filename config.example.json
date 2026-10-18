@@ -75,6 +75,7 @@
             "volume": "+0%",
             "pitch": "+0Hz"
         },
+        "jianer_mate_config_path": "data/jianer_mate/config.json",
         "jianer_mate_enabled": true,
         "jianer_mate_data_dir": "data/jianer_mate",
         "jianer_mate_planner_model": "deepseek",

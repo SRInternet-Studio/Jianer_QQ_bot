@@ -64,10 +64,27 @@ MaiBot 风格的群聊 AI：群里被 @ 或私聊时正常回话，群内可以�
 `~人格 导入` 只以只读方式读取 `prerequisites/current.json` 与其中的模板文件，
 不依赖 JianerAI 插件本身；导入结果由模型转写，转写前会先发一条“正在转写”的提示。
 
+## 插件配置文件
+
+JianerMate 有自己的配置文件，默认 `data/jianer_mate/config.json`：
+
+- 首次启用（或 `~主动发言 重载` 时文件不存在）会按当前生效值自动生成一份，包含全部可调项；
+- **文件里的值优先于宿主 `config.json → others` 里的 `jianer_mate_*` 键**，宿主键只作为兜底与兼容；
+- 位置由宿主键 `jianer_mate_config_path` 决定（只有宿主配置能改它，避免自指）；
+- 改完发 `~主动发言 重载` 生效；`~主动发言 状态` 会显示路径、已加载项数以及解析错误；
+- 文件损坏不会让插件崩溃：会打印错误并退回 `config.others`，状态里给出具体原因；
+- 除了嵌套结构，也接受直接写 `jianer_mate_*` 扁平键（方便从宿主配置粘贴）。
+
+完整字段见 `plugins/JianerMate/config.example.json`，结构为
+`enabled / data_dir / ai_config_dir / models / moderation / persona / style /
+proactive / context / memes / limits / group_blacklist`。
+
 ## 配置
 
-全部读取宿主 `config.others`，都有默认值；模型定义复用 `aiconfig/*.ai.json`：
+优先读取插件配置文件 `data/jianer_mate/config.json`，宿主 `config.others` 作为兜底；
+所有键都有默认值，模型定义复用 `aiconfig/*.ai.json`：
 
+- `jianer_mate_config_path`：插件配置文件位置（只在这里配置，默认 `data/jianer_mate/config.json`）。
 - `jianer_mate_enabled`：插件总开关，默认 `true`。
 - `jianer_mate_planner_model`：Planner 使用的 aiconfig 模型代码（文本模型即可）。
 - `jianer_mate_replyer_model`：Replyer 使用的模型代码，必须支持图片输入（视觉挑选表情包）。

@@ -16,8 +16,10 @@ class _Config:
 
 
 def _runtime(others=None):
+    values = {"jianer_mate_config_path": ".pytest-missing-mate-config.json"}
+    values.update(others or {})
     config = _Config()
-    config.others = dict(others or {})
+    config.others = values
     return {"config": config, "reminder": "~"}
 
 

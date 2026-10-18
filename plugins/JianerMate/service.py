@@ -37,6 +37,12 @@ from plugins.JianerMate.persona import (
     load_jianer_ai_presets,
     resolve_preset,
 )
+from plugins.JianerMate.plugin_config import (
+    PluginConfigError,
+    ensure_config_file,
+    flatten_plugin_config,
+    load_plugin_config,
+)
 from plugins.JianerMate.planner import Planner, PlannerDecision
 from plugins.JianerMate.providers import (
     ChatImage,
@@ -213,6 +219,9 @@ class JianerMateService:
             )
         )
         removed = 0
+        if ensure_config_file(self.options.config_path, self.options):
+            self._log_info(f"已生成插件配置文件：{self.options.config_path}")
+            self._refresh_config_metadata()
         with contextlib.suppress(Exception):
             removed = self.memes.cleanup_orphans()
         if removed:
@@ -290,6 +299,25 @@ class JianerMateService:
         persona = self._effective_persona()
         source = "人格转换结果" if self.persona_override else "config.json"
         return "当前人格（来源：%s）\n%s" % (source, "\n".join(persona.summary_lines()))
+
+    def _refresh_config_metadata(self) -> None:
+        """Refresh where the dedicated config lives and how many keys it holds."""
+
+        path = self.options.config_path
+        document, errors = load_plugin_config(path)
+        keys: tuple[str, ...] = ()
+        if document:
+            with contextlib.suppress(PluginConfigError):
+                keys = tuple(sorted(flatten_plugin_config(document)))
+        self.options = replace(
+            self.options,
+            config_loaded=path.is_file() and not errors,
+            config_keys=keys,
+            config_errors=tuple(
+                f"{source}: {message}"
+                for source, message in sorted(errors.items())
+            ),
+        )
 
     # ------------------------------------------------------------------ #
     # observation
@@ -1161,7 +1189,13 @@ class JianerMateService:
                 await self._reply(actions, event, "重载只有机器人管理员能执行。")
                 return True
             await self.reload()
-            await self._reply(actions, event, "配置与 aiconfig 已重载。")
+            await self._reply(
+                actions,
+                event,
+                "配置与 aiconfig 已重载。\n插件配置："
+                f"{self.options.config_path}"
+                f"（{'已加载' if self.options.config_loaded else '尚未创建'}）",
+            )
             return True
         if normalized in {"决策", "日志"}:
             try:
@@ -1646,6 +1680,7 @@ class JianerMateService:
         entries, errors = load_models(options.ai_config_dir)
         self.options = options
         self._model_errors = errors
+        ensure_config_file(options.config_path, options)
         if hasattr(self.client, "reload"):
             self.client.reload(entries)
         self.memes.options = options.meme
@@ -1925,6 +1960,12 @@ class JianerMateService:
             f"（来源：{'转换结果' if self.persona_override else 'config.json'}）"
             f"｜备用风格 {len(self._effective_persona().multiple_reply_styles)} 条"
             f"｜切换概率 {self._effective_persona().multiple_probability:.2f}",
+            f"插件配置：{self.options.config_path}"
+            + (
+                f"（已加载 {len(self.options.config_keys)} 项）"
+                if self.options.config_loaded
+                else "（未创建或未加载，使用 config.others）"
+            ),
             f"主动发言：{enabled}｜频率：{talk_value:.2f}｜免打扰：{quiet or '无'}｜"
             f"最小间隔：{interval}s｜调试：{debug}",
             f"Planner：{planner}｜Replyer：{replyer}",
@@ -1946,6 +1987,10 @@ class JianerMateService:
         if self._model_errors:
             lines.append(
                 "配置错误：" + "；".join(sorted(self._model_errors))[:200]
+            )
+        if self.options.config_errors:
+            lines.append(
+                "插件配置文件错误：" + "；".join(self.options.config_errors)[:300]
             )
         return "\n".join(lines)
 

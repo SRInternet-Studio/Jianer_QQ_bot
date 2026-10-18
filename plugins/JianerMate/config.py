@@ -17,6 +17,13 @@ from plugins.JianerMate.persona import (
     DEFAULT_REPLY_STYLE,
     Persona,
 )
+from plugins.JianerMate.plugin_config import (
+    DEFAULT_CONFIG_PATH,
+    PluginConfigError,
+    flatten_plugin_config,
+    load_plugin_config,
+    resolve_config_path,
+)
 
 
 PLUGIN_ID = "jianerbot-plugin-jianer-mate"
@@ -97,6 +104,10 @@ class RuntimeOptions:
     backoff_base_seconds: float = 15.0
     backoff_cap_seconds: float = 300.0
     backoff_start_count: int = 2
+    config_path: Path = field(default_factory=lambda: Path(DEFAULT_CONFIG_PATH))
+    config_loaded: bool = False
+    config_keys: tuple[str, ...] = ()
+    config_errors: tuple[str, ...] = ()
 
     @property
     def bot_name(self) -> str:
@@ -106,10 +117,21 @@ class RuntimeOptions:
     def from_runtime(cls, runtime: Mapping[str, Any] | None) -> "RuntimeOptions":
         runtime = runtime or {}
         config = runtime.get("config")
-        others = getattr(config, "others", None)
-        if not isinstance(others, Mapping):
-            others = {}
+        host_others = getattr(config, "others", None)
+        if not isinstance(host_others, Mapping):
+            host_others = {}
         project_root = Path.cwd().resolve()
+        config_path = resolve_config_path(project_root, host_others)
+        document, config_errors = load_plugin_config(config_path)
+        plugin_keys: dict[str, Any] = {}
+        if document:
+            try:
+                plugin_keys = flatten_plugin_config(document)
+            except PluginConfigError as exc:
+                config_errors = dict(config_errors)
+                config_errors[str(config_path)] = str(exc)
+        # Dedicated config file wins over the legacy host entries.
+        others = {**host_others, **plugin_keys}
         bot_name = _clean_text(others.get("bot_name"), "简儿")
         data_dir = _resolve_path(project_root, others.get("jianer_mate_data_dir"), DEFAULT_DATA_DIR)
         database_value = others.get("jianer_mate_db_path") or (data_dir / "mate.db")
@@ -304,6 +326,13 @@ class RuntimeOptions:
                 2,
                 minimum=1,
                 maximum=20,
+            ),
+            config_path=config_path,
+            config_loaded=config_path.is_file() and not config_errors,
+            config_keys=tuple(sorted(plugin_keys)),
+            config_errors=tuple(
+                f"{source}: {message}"
+                for source, message in sorted(config_errors.items())
             ),
         )
 
