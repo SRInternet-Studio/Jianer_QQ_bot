@@ -265,3 +265,29 @@ def test_external_plugin_tools_are_loaded_and_prefixed(tmp_path):
     assert any("lookup" in name for name in names), names
     asyncio.run(runtime.shutdown())
     store.close()
+
+
+def test_mcp_servers_degrade_gracefully(tmp_path):
+    store, context = _context(tmp_path)
+    runtime = MateToolRuntime(
+        ToolOptions(
+            allowlist=None,
+            mcp_enabled=True,
+            mcp_servers=(
+                {
+                    "name": "broken",
+                    "transport": "stdio",
+                    "command": "/nonexistent/jianer-mcp-server",
+                },
+            ),
+        ),
+        project_root=tmp_path,
+    )
+    asyncio.run(runtime.ensure_ready())
+    assert runtime.available is True
+    # A failed MCP server must not remove the built-in tools.
+    names = [item["function"]["name"] for item in runtime.schemas(context)]
+    assert any(name == "get_current_time" for name in names)
+    asyncio.run(runtime.ensure_ready())  # second call is a no-op
+    asyncio.run(runtime.shutdown())
+    store.close()

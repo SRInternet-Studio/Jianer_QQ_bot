@@ -61,6 +61,8 @@ class ToolOptions:
     max_output_chars: int = 4000
     skills_dirs: tuple[str, ...] = (".agents/skills",)
     skills_max_file_bytes: int = 65536
+    mcp_enabled: bool = False
+    mcp_servers: tuple[Mapping[str, Any], ...] = ()
 
 @dataclass(frozen=True, slots=True)
 class StyleOptions:
@@ -319,6 +321,19 @@ class RuntimeOptions:
                 minimum=1024,
                 maximum=262144,
             ),
+            mcp_enabled=_as_bool(
+                others.get(
+                    "jianer_mate_tool_mcp_enabled",
+                    others.get("agent_mcp_enabled"),
+                ),
+                False,
+            ),
+            mcp_servers=_mcp_servers(
+                others.get(
+                    "jianer_mate_tool_mcp_servers",
+                    others.get("agent_mcp_servers"),
+                )
+            ),
         )
         memory_db_path = _resolve_path(
             project_root,
@@ -554,3 +569,19 @@ def _as_tool_allowlist(value: Any) -> tuple[str, ...]:
     else:
         return DEFAULT_TOOL_ALLOWLIST
     return tuple(str(item).strip() for item in items if str(item).strip())
+
+
+def _mcp_servers(value: Any) -> tuple[Mapping[str, Any], ...]:
+    """Accept JianerAI's mapping form or a plain list of server configs."""
+
+    if isinstance(value, Mapping):
+        items: list[Any] = []
+        for name, config in value.items():
+            if isinstance(config, Mapping):
+                merged = dict(config)
+                merged.setdefault("name", str(name))
+                items.append(merged)
+        return tuple(item for item in items if isinstance(item, Mapping))
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return tuple(item for item in value if isinstance(item, Mapping))
+    return ()

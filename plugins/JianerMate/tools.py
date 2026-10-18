@@ -172,6 +172,7 @@ class MateToolRuntime:
         self._registry: Any | None = None
         self._tool_error: Any | None = None
         self._extra_tools: set[str] = set()
+        self._mcp_loaded = False
         if options.enabled:
             self._build()
 
@@ -265,6 +266,41 @@ class MateToolRuntime:
                 "warning", f"加载第三方插件工具失败：{exc.__class__.__name__}"
             )
             return ()
+
+    async def ensure_ready(self) -> None:
+        """Register providers that need async setup (MCP servers)."""
+
+        if self._registry is None or self._mcp_loaded:
+            return
+        self._mcp_loaded = True
+        if not self.options.mcp_enabled or not self.options.mcp_servers:
+            return
+        try:
+            from plugins.JianerAI.tools.mcp_client import (  # noqa: PLC0415
+                MCPToolPlugin,
+            )
+            from plugins.JianerAI.tools.plugin_registry import (  # noqa: PLC0415
+                ToolPluginManager,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional
+            self._log("warning", f"MCP 支持不可用：{exc.__class__.__name__}")
+            return
+        try:
+            provider = MCPToolPlugin(self.options.mcp_servers)
+            await ToolPluginManager(self._registry).load_async(provider)
+            errors = list(getattr(provider, "errors", None) or ())
+            loaded = [
+                spec.name
+                for spec in self._registry.specs
+                if spec.name.startswith("mcp_")
+            ]
+            self._log(
+                "info",
+                f"MCP 工具已加载 {len(loaded)} 个"
+                + (f"，{len(errors)} 个服务不可用" if errors else ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - never break chat over MCP
+            self._log("warning", f"MCP 工具加载失败：{exc.__class__.__name__}")
 
     def register_tool(self, spec: Any) -> Any:
         """Public API for sibling plugins (mirrors JianerAI's register_tool)."""

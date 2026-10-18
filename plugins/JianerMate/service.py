@@ -728,6 +728,8 @@ class JianerMateService:
     ) -> Any | None:
         if not self.tool_runtime.available:
             return None
+        with contextlib.suppress(Exception):
+            await self.tool_runtime.ensure_ready()
         actor = None
         if self._actor_resolver is not None:
             with contextlib.suppress(Exception):

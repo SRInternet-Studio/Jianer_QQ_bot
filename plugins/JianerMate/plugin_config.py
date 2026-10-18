@@ -91,6 +91,8 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
         "max_output_chars": "jianer_mate_tool_max_output_chars",
         "skills_dirs": "jianer_mate_tool_skills_dirs",
         "skills_max_file_bytes": "jianer_mate_tool_skills_max_file_bytes",
+        "mcp_enabled": "jianer_mate_tool_mcp_enabled",
+        "mcp_servers": "jianer_mate_tool_mcp_servers",
     },
     "memory": {
         "enabled": "jianer_mate_memory_enabled",
@@ -285,6 +287,10 @@ def build_config_document(options: Any) -> dict[str, Any]:
             "skills_max_file_bytes": int(
                 getattr(tools, "skills_max_file_bytes", 65536)
             ),
+            "mcp_enabled": bool(getattr(tools, "mcp_enabled", False)),
+            "mcp_servers": [
+                dict(item) for item in getattr(tools, "mcp_servers", ()) or ()
+            ],
         },
         "group_blacklist": list(getattr(options, "group_blacklist", ())),
         "memory": {
