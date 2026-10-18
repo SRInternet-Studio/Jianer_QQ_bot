@@ -82,6 +82,14 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
         "max_concurrent_ai": "jianer_mate_max_concurrent_ai",
         "request_timeout_seconds": "jianer_mate_request_timeout_seconds",
     },
+    "tools": {
+        "enabled": "jianer_mate_tools_enabled",
+        "max_rounds": "jianer_mate_tool_max_rounds",
+        "include_web_browser": "jianer_mate_tool_include_web_browser",
+        "allow_mutating": "jianer_mate_tool_allow_mutating",
+        "allowlist": "jianer_mate_tool_allowlist",
+        "max_output_chars": "jianer_mate_tool_max_output_chars",
+    },
 }
 
 
@@ -156,6 +164,7 @@ def build_config_document(options: Any) -> dict[str, Any]:
     persona = getattr(options, "persona", None)
     style = getattr(options, "style", None)
     meme = getattr(options, "meme", None)
+    tools = getattr(options, "tools", None)
     return {
         "_readme": _README,
         "enabled": bool(getattr(options, "enabled", True)),
@@ -236,6 +245,24 @@ def build_config_document(options: Any) -> dict[str, Any]:
             ),
             "request_timeout_seconds": float(
                 getattr(options, "request_timeout_seconds", 60.0)
+            ),
+        },
+        "tools": {
+            "enabled": bool(getattr(tools, "enabled", True)),
+            "max_rounds": int(getattr(tools, "max_rounds", 3)),
+            "include_web_browser": bool(
+                getattr(tools, "include_web_browser", False)
+            ),
+            "allow_mutating": bool(
+                getattr(tools, "allow_mutating", False)
+            ),
+            "allowlist": (
+                None
+                if getattr(tools, "allowlist", None) is None
+                else list(getattr(tools, "allowlist", ()) or ())
+            ),
+            "max_output_chars": int(
+                getattr(tools, "max_output_chars", 4000)
             ),
         },
         "group_blacklist": list(getattr(options, "group_blacklist", ())),

@@ -84,5 +84,23 @@
         "max_concurrent_ai": 2,
         "request_timeout_seconds": 60
     },
+    "tools": {
+        "enabled": true,
+        "max_rounds": 3,
+        "include_web_browser": false,
+        "allow_mutating": false,
+        "allowlist": [
+            "get_current_time",
+            "calculate_expression",
+            "get_current_user_profile",
+            "get_current_chat_info",
+            "read_recent_chat",
+            "search_current_chat",
+            "web_search",
+            "github_repository",
+            "render_information_card"
+        ],
+        "max_output_chars": 4000
+    },
     "group_blacklist": []
 }

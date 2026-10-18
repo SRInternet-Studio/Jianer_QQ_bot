@@ -32,6 +32,29 @@ DEFAULT_AI_CONFIG_DIR = "aiconfig"
 DEFAULT_QUIET_HOURS = "23:00-08:00"
 DEFAULT_KAOMOJI = ("(￣▽￣)", "ovo", "qwq", "嘿嘿", "欸嘿")
 DEFAULT_CATCHPHRASES = ("确实", "好耶", "emmm", "哈哈", "啊这")
+DEFAULT_TOOL_ALLOWLIST = (
+    "get_current_time",
+    "calculate_expression",
+    "get_current_user_profile",
+    "get_current_chat_info",
+    "read_recent_chat",
+    "search_current_chat",
+    "web_search",
+    "github_repository",
+    "render_information_card",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolOptions:
+    """Model-callable tools copied from the JianerAI tool package."""
+
+    enabled: bool = True
+    max_rounds: int = 3
+    include_web_browser: bool = False
+    allow_mutating: bool = False
+    allowlist: tuple[str, ...] | None = DEFAULT_TOOL_ALLOWLIST
+    max_output_chars: int = 4000
 
 @dataclass(frozen=True, slots=True)
 class StyleOptions:
@@ -88,6 +111,7 @@ class RuntimeOptions:
     persona: Persona = field(default_factory=Persona)
     style: StyleOptions = field(default_factory=StyleOptions)
     meme: MemeOptions = field(default_factory=MemeOptions)
+    tools: ToolOptions = field(default_factory=ToolOptions)
     context_messages: int = 40
     history_keep_messages: int = 300
     history_retention_days: int = 7
@@ -230,6 +254,33 @@ class RuntimeOptions:
                 maximum=86400,
             ),
         )
+        allowlist_raw = others.get("jianer_mate_tool_allowlist")
+        tool_options = ToolOptions(
+            enabled=_as_bool(others.get("jianer_mate_tools_enabled"), True),
+            max_rounds=_clamp_int(
+                others.get("jianer_mate_tool_max_rounds"),
+                3,
+                minimum=1,
+                maximum=10,
+            ),
+            include_web_browser=_as_bool(
+                others.get("jianer_mate_tool_include_web_browser"), False
+            ),
+            allow_mutating=_as_bool(
+                others.get("jianer_mate_tool_allow_mutating"), False
+            ),
+            allowlist=(
+                DEFAULT_TOOL_ALLOWLIST
+                if allowlist_raw is None
+                else _as_tool_allowlist(allowlist_raw)
+            ),
+            max_output_chars=_clamp_int(
+                others.get("jianer_mate_tool_max_output_chars"),
+                4000,
+                minimum=200,
+                maximum=20000,
+            ),
+        )
         return cls(
             enabled=_as_bool(others.get("jianer_mate_enabled"), True),
             project_root=project_root,
@@ -249,6 +300,7 @@ class RuntimeOptions:
             ),
             style=style,
             meme=meme,
+            tools=tool_options,
             context_messages=context_messages,
             history_keep_messages=_clamp_int(
                 others.get("jianer_mate_history_keep_messages"),
@@ -405,3 +457,17 @@ def _parse_delay_pair(value: Any, default: tuple[int, int]) -> tuple[int, int]:
     if maximum < minimum:
         maximum = minimum
     return minimum, maximum
+
+
+def _as_tool_allowlist(value: Any) -> tuple[str, ...]:
+    """``[]`` disables every tool; strings accept comma separated names."""
+
+    if isinstance(value, str):
+        items: Sequence[Any] = [
+            item for item in value.replace("，", ",").split(",")
+        ]
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        items = list(value)
+    else:
+        return DEFAULT_TOOL_ALLOWLIST
+    return tuple(str(item).strip() for item in items if str(item).strip())

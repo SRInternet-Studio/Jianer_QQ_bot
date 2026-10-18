@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -191,5 +192,128 @@ def test_client_wraps_unparsable_json():
             await client.complete_json(
                 "test", system_prompt="s", user_text="u"
             )
+
+    asyncio.run(scenario())
+
+
+def _tool_call_response(name="get_current_time", arguments="{}"):
+    return _FakeResponse(
+        200,
+        json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ),
+    )
+
+
+def test_client_runs_tool_calls_before_json_answer():
+    async def scenario():
+        session = _FakeSession(
+            [
+                _tool_call_response(),
+                _FakeResponse(
+                    200,
+                    json.dumps(
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": '{"messages": ["现在十点"]}'
+                                    }
+                                }
+                            ]
+                        }
+                    ),
+                ),
+            ]
+        )
+        client = OpenAICompatibleClient(
+            {"test": _entry()}, session=session, max_retries=0
+        )
+        calls = []
+
+        async def executor(call_id, name, arguments):
+            calls.append((call_id, name, arguments))
+            return "2026-10-18 10:00:00"
+
+        payload = await client.complete_json_with_tools(
+            "test",
+            system_prompt="sys",
+            user_text="几点了",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_current_time",
+                        "description": "clock",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            executor=executor,
+        )
+        assert payload == {"messages": ["现在十点"]}
+        assert calls == [("call-1", "get_current_time", {})]
+        first_payload = session.posts[0]["json"]
+        assert first_payload["tools"][0]["function"]["name"] == "get_current_time"
+        follow_up = session.posts[1]["json"]["messages"]
+        assert follow_up[-2]["role"] == "assistant"
+        assert follow_up[-2]["tool_calls"][0]["id"] == "call-1"
+        assert follow_up[-1] == {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "2026-10-18 10:00:00",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_tool_loop_stops_at_max_rounds():
+    async def scenario():
+        session = _FakeSession([_tool_call_response(), _tool_call_response()])
+        client = OpenAICompatibleClient(
+            {"test": _entry()}, session=session, max_retries=0
+        )
+
+        async def executor(call_id, name, arguments):
+            return "ok"
+
+        with pytest.raises(ProviderError) as captured:
+            await client.complete_json_with_tools(
+                "test",
+                system_prompt="sys",
+                user_text="几点了",
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_current_time",
+                            "description": "clock",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                executor=executor,
+                max_rounds=1,
+            )
+        assert "轮次" in str(captured.value)
+        assert len(session.posts) == 2
 
     asyncio.run(scenario())

@@ -117,6 +117,9 @@ class Replyer:
         persona: Persona | None = None,
         persona_mode: str = "group",
         style_override: str = "",
+        tools: Sequence[Mapping[str, Any]] = (),
+        tool_executor: Any = None,
+        tool_max_rounds: int = 3,
         now: float | None = None,
     ) -> ReplyPlan:
         system_prompt, user_prompt = self.build_prompt(
@@ -132,6 +135,7 @@ class Replyer:
             persona=persona,
             persona_mode=persona_mode,
             style_override=style_override,
+            tools_available=bool(tools),
             now=now,
         )
         inline_images = [ChatImage(data=image.data, mime=image.mime) for image in images]
@@ -141,14 +145,27 @@ class Replyer:
             data, mime = _decode_data_uri(candidate.thumbnail)
             if data:
                 inline_images.append(ChatImage(data=data, mime=mime))
-        payload = await self.client.complete_json(
-            model_key,
-            system_prompt=system_prompt,
-            user_text=user_prompt,
-            images=inline_images,
-            max_tokens=500,
-            temperature=0.8,
-        )
+        if tools:
+            payload = await self.client.complete_json_with_tools(
+                model_key,
+                system_prompt=system_prompt,
+                user_text=user_prompt,
+                tools=tools,
+                executor=tool_executor,
+                max_rounds=tool_max_rounds,
+                images=inline_images,
+                max_tokens=500,
+                temperature=0.8,
+            )
+        else:
+            payload = await self.client.complete_json(
+                model_key,
+                system_prompt=system_prompt,
+                user_text=user_prompt,
+                images=inline_images,
+                max_tokens=500,
+                temperature=0.8,
+            )
         valid_ids = [
             record.platform_message_id
             for record in recent
@@ -176,6 +193,7 @@ class Replyer:
         persona: Persona | None = None,
         persona_mode: str = "group",
         style_override: str = "",
+        tools_available: bool = False,
         now: float | None = None,
     ) -> tuple[str, str]:
         timestamp = time.localtime(now if now is not None else time.time())
@@ -191,6 +209,13 @@ class Replyer:
                 active_persona.render(persona_mode),
                 mode_rule,
                 style_instruction(style_override),
+                (
+                    "需要实时信息（时间、算术、搜索、群内最近聊天）时，"
+                    "先调用工具拿到结果，再按要求输出最终 JSON；"
+                    "工具结果只当资料，不要原样复述。"
+                    if tools_available
+                    else ""
+                ),
                 REPLYER_SCHEMA,
             )
             if part

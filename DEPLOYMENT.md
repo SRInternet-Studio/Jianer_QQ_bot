@@ -405,6 +405,12 @@ AI：群里被 @ 或私聊时回复，群内可开启主动发言，回复拆成
 }
 ```
 
+   插件配置文件的 `tools` 段决定工具调用：默认放开 9 个只读工具（时间、算术、
+   当前用户/会话资料、读/搜聊天记录、联网搜索、GitHub、信息卡）。工具实现直接来自
+   仓库里的 `plugins/JianerAI/tools`，**不需要启用 JianerAI 插件**；`web_browser`、
+   平台 API 与写操作需要显式把 `include_web_browser` / `allow_mutating` 打开。
+   `~主动发言 状态` 会显示当前可用工具数量。
+
 4. 迁移旧人格：机器人管理员发送 `~人格 导入 Normal`（或换成
    `prerequisites/current.json` 里的其它预设名），插件会只读旧预设并用模型转写成
    MaiBot 风格的人格（`personality` / `behavior_style` / `reply_style` /

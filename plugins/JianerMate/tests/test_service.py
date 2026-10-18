@@ -1128,3 +1128,43 @@ def test_activation_creates_plugin_config_and_status_shows_it(tmp_path):
     ] == "edited"
     asyncio.run(service.shutdown())
     asyncio.run(reloaded.shutdown())
+
+
+def test_replyer_receives_tools_and_status_reports_them(tmp_path):
+    replyer = _StubReplyer(ReplyPlan(messages=("在的",)))
+    service = _service(tmp_path, replyer=replyer)
+    _activate(service)
+    actions = _FakeActions()
+    assert asyncio.run(
+        service.handle_fallback(_event(at=True, text="现在几点了"), actions)
+    ) is True
+    call = replyer.calls[-1]
+    names = [item["function"]["name"] for item in call["tools"]]
+    assert "get_current_time" in names
+    assert "read_recent_chat" in names
+    assert callable(call["tool_executor"])
+    assert call["tool_max_rounds"] == 3
+    status = service._status_text(
+        ConversationRef("milky", "10001", "group", "222")
+    )
+    assert "工具调用：开" in status
+    asyncio.run(service.shutdown())
+
+
+def test_tools_can_be_disabled_by_config(tmp_path):
+    replyer = _StubReplyer(ReplyPlan(messages=("在的",)))
+    service = _service(
+        tmp_path,
+        replyer=replyer,
+        jianer_mate_tools_enabled=False,
+    )
+    _activate(service)
+    asyncio.run(
+        service.handle_fallback(_event(at=True, text="几点了"), _FakeActions())
+    )
+    assert replyer.calls[-1]["tools"] == ()
+    status = service._status_text(
+        ConversationRef("milky", "10001", "group", "222")
+    )
+    assert "工具调用：关闭" in status
+    asyncio.run(service.shutdown())

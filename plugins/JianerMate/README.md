@@ -77,7 +77,36 @@ JianerMate 有自己的配置文件，默认 `data/jianer_mate/config.json`：
 
 完整字段见 `plugins/JianerMate/config.example.json`，结构为
 `enabled / data_dir / ai_config_dir / models / moderation / persona / style /
-proactive / context / memes / limits / group_blacklist`。
+proactive / context / memes / limits / tools / group_blacklist`。
+
+## 工具调用
+
+Replyer 会走标准 OpenAI `tools` 协议：需要实时信息时先调用工具，再输出最终的短句
+JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`（只导入模块，
+**不需要启用 JianerAI 插件**）；导入失败时自动降级为无工具模式，聊天不受影响。
+
+| 工具 | 说明 |
+| --- | --- |
+| `get_current_time` / `calculate_expression` | 当前时间、只含数字与基础运算符的安全算术 |
+| `get_current_user_profile` / `get_current_chat_info` | 当前发言人、当前会话的基础资料 |
+| `read_recent_chat` / `search_current_chat` | 当前会话最近聊天与文字搜索（读本插件自己的聊天表） |
+| `web_search` / `github_repository` | 联网搜索摘要与 GitHub 仓库只读查询 |
+| `render_information_card` | 生成 PNG 信息卡并直接发到当前会话（需要适配器支持发图） |
+| `qweather_*` | 配好 `.env` 的和风天气工具；缺配置时不会注册 |
+| `web_browser`、平台 API、长期记忆工具 | 默认不放开，需要显式打开 `include_web_browser` / `allow_mutating` |
+
+`tools` 段配置：
+
+- `tools.enabled`：总开关，默认 `true`；
+- `tools.max_rounds`：单次回复最多几轮工具调用，默认 `3`；
+- `tools.allowlist`：允许暴露给模型的工具名列表，默认是上表里的 9 个只读工具；
+  写 `[]` 表示彻底关闭工具，写 `null` 表示不做白名单限制；
+- `tools.include_web_browser`：注册 `web_browser`，默认 `false`（会启动浏览器）；
+- `tools.allow_mutating`：允许注册写操作与平台 API 工具，默认 `false`；
+- `tools.max_output_chars`：单次工具结果注入模型的长度上限，默认 `4000`。
+
+权限沿用 JianerAI 的工具契约：声明需要权限的工具只对群主/管理员或机器人管理员
+可见；长期记忆类工具在本插件里会明确回复“没有启用长期记忆”，不会静默失败。
 
 ## 配置
 

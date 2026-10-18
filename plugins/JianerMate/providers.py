@@ -329,6 +329,81 @@ class OpenAICompatibleClient:
         except ValueError as exc:
             raise ResponseParseError("模型返回的 JSON 无法解析") from exc
 
+    async def complete_json_with_tools(
+        self,
+        key: str,
+        *,
+        system_prompt: str,
+        user_text: str,
+        tools: Sequence[Mapping[str, Any]] = (),
+        executor: Any = None,
+        max_rounds: int = 3,
+        images: Sequence[ChatImage] = (),
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> dict[str, Any]:
+        """Chat-completions loop that runs tool calls before the JSON answer."""
+
+        entry = self.entry(key)
+        payload = _build_payload(
+            entry,
+            system_prompt=system_prompt,
+            user_text=user_text,
+            images=images,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            json_mode=True,
+        )
+        tool_schemas = [dict(item) for item in tools]
+        messages = list(payload.get("messages") or [])
+        rounds = 0
+        while True:
+            current = dict(payload)
+            current["messages"] = list(messages)
+            if tool_schemas:
+                current["tools"] = tool_schemas
+                current.setdefault("tool_choice", "auto")
+            response = await self._post(entry, current)
+            message = _extract_choice_message(response)
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                rounds += 1
+                if rounds > max(1, int(max_rounds)):
+                    raise ProviderError("工具调用轮次超限")
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.get("content") or "",
+                        "tool_calls": tool_calls,
+                    }
+                )
+                for call in tool_calls:
+                    function = call.get("function") if isinstance(call, Mapping) else None
+                    name = str((function or {}).get("name") or "")
+                    arguments = _tool_arguments((function or {}).get("arguments"))
+                    if executor is None:
+                        result = "工具执行器不可用。"
+                    else:
+                        try:
+                            result = await executor(
+                                str(call.get("id") or ""), name, arguments
+                            )
+                        except Exception as exc:  # noqa: BLE001 - surfaced to model
+                            result = f"工具执行失败：{exc.__class__.__name__}"
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or ""),
+                            "content": str(result)[:8000],
+                        }
+                    )
+                continue
+            text = _message_text(message)
+            try:
+                return parse_json_object(text)
+            except ValueError as exc:
+                raise ResponseParseError("模型返回的 JSON 无法解析") from exc
+
     async def _post(self, entry: ModelEntry, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         if self._closed:
             raise ProviderError("模型客户端已关闭")
@@ -452,6 +527,10 @@ def _build_payload(
 
 
 def _extract_message_text(response: Mapping[str, Any]) -> str:
+    return _message_text(_extract_choice_message(response))
+
+
+def _extract_choice_message(response: Mapping[str, Any]) -> Mapping[str, Any]:
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices:
         raise ProviderError("模型没有返回任何候选内容")
@@ -461,6 +540,10 @@ def _extract_message_text(response: Mapping[str, Any]) -> str:
     message = first.get("message")
     if not isinstance(message, Mapping):
         message = {"content": first.get("text")}
+    return message
+
+
+def _message_text(message: Mapping[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str):
         text = content
@@ -476,3 +559,16 @@ def _extract_message_text(response: Mapping[str, Any]) -> str:
     if not text:
         raise ProviderError("模型返回了空内容")
     return text
+
+
+def _tool_arguments(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value or "{}")
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+    return {}

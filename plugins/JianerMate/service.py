@@ -53,6 +53,12 @@ from plugins.JianerMate.providers import (
 )
 from plugins.JianerMate.replyer import MemeCandidateView, ReplyPlan, Replyer
 from plugins.JianerMate.store import ConversationRecord, MateStore, MessageRecord
+from plugins.JianerMate.tools import (
+    MateMemoryFacade,
+    MateToolRuntime,
+    build_tool_context,
+    make_actor_resolver,
+)
 
 
 _LOGGER = logging.getLogger("jianer_mate")
@@ -167,6 +173,12 @@ class JianerMateService:
         self._backoff_until: dict[ConversationRef, float] = {}
         self.persona_converter = PersonaConverter(self.client, logger=self._logger)
         self.persona_override: Persona | None = self._load_persona_override()
+        self.tool_runtime = MateToolRuntime(
+            options.tools,
+            project_root=options.project_root,
+            logger=self._logger,
+        )
+        self._actor_resolver = make_actor_resolver()
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -257,6 +269,8 @@ class JianerMateService:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks.clear()
+        with contextlib.suppress(Exception):
+            await self.tool_runtime.shutdown()
         with contextlib.suppress(Exception):
             await self.client.close()
         with contextlib.suppress(Exception):
@@ -465,6 +479,9 @@ class JianerMateService:
         try:
             persona = self._effective_persona()
             style_override, style_label = persona.pick_multiple_style(self._rng)
+            tool_context = await self._tool_context(
+                event, actions, key, conversation, model=replyer_model
+            )
             async with self._ai_semaphore:
                 decision = await self.planner.decide(
                     model_key=planner_model,
@@ -504,6 +521,9 @@ class JianerMateService:
                     persona=persona,
                     persona_mode="group",
                     style_override=style_override,
+                    tools=self._tool_schemas(tool_context),
+                    tool_executor=self._tool_executor(tool_context),
+                    tool_max_rounds=self.options.tools.max_rounds,
                     now=now,
                 )
         except ProviderError as exc:
@@ -646,6 +666,62 @@ class JianerMateService:
         self._backoff_until.pop(key, None)
 
     # ------------------------------------------------------------------ #
+    # tool calling
+    # ------------------------------------------------------------------ #
+    async def _tool_context(
+        self,
+        event: Any,
+        actions: Any,
+        key: ConversationRef,
+        conversation: ConversationRecord,
+        *,
+        model: str,
+    ) -> Any | None:
+        if not self.tool_runtime.available:
+            return None
+        actor = None
+        if self._actor_resolver is not None:
+            with contextlib.suppress(Exception):
+                actor = await self._actor_resolver.resolve(
+                    event, actions, self.runtime
+                )
+        return build_tool_context(
+            event=event,
+            actions=actions,
+            conversation=self._framework_key(key),
+            canonical_user_id=f"{key.protocol}:{getattr(event, 'user_id', '')}",
+            runtime=self.runtime,
+            memory=MateMemoryFacade(self.store, conversation.ref),
+            actor=actor,
+            model=str(model or ""),
+        )
+
+    def _tool_schemas(self, tool_context: Any) -> tuple[Mapping[str, Any], ...]:
+        if tool_context is None:
+            return ()
+        return self.tool_runtime.schemas(tool_context)
+
+    def _tool_executor(self, tool_context: Any) -> Any:
+        async def execute(
+            call_id: str,
+            name: str,
+            arguments: Mapping[str, Any],
+        ) -> str:
+            return await self.tool_runtime.execute(
+                call_id, name, arguments, tool_context
+            )
+
+        return execute
+
+    def _tool_status_text(self) -> str:
+        status = self.tool_runtime.status()
+        if not status.get("enabled"):
+            return "关闭"
+        if not status.get("available"):
+            return f"不可用（{status.get('error') or '未知原因'}）"
+        return f"开（{status.get('tools', 0)} 个可用）"
+
+    # ------------------------------------------------------------------ #
     # passive fallback
     # ------------------------------------------------------------------ #
     async def handle_fallback(self, event: Any, actions: Any) -> bool:
@@ -688,6 +764,13 @@ class JianerMateService:
             try:
                 persona = self._effective_persona()
                 style_override, _style_label = persona.pick_multiple_style(self._rng)
+                tool_context = await self._tool_context(
+                    event,
+                    actions,
+                    key,
+                    conversation,
+                    model=replyer_model,
+                )
                 async with self._ai_semaphore:
                     images, reference_text = await self._resolve_inputs(
                         event, actions, key
@@ -709,6 +792,9 @@ class JianerMateService:
                         persona=persona,
                         persona_mode="group" if is_group else "private",
                         style_override=style_override,
+                        tools=self._tool_schemas(tool_context),
+                        tool_executor=self._tool_executor(tool_context),
+                        tool_max_rounds=self.options.tools.max_rounds,
                         now=now,
                     )
             except ProviderError as exc:
@@ -1681,6 +1767,13 @@ class JianerMateService:
         self.options = options
         self._model_errors = errors
         ensure_config_file(options.config_path, options)
+        with contextlib.suppress(Exception):
+            await self.tool_runtime.shutdown()
+        self.tool_runtime = MateToolRuntime(
+            options.tools,
+            project_root=options.project_root,
+            logger=self._logger,
+        )
         if hasattr(self.client, "reload"):
             self.client.reload(entries)
         self.memes.options = options.meme
@@ -1969,6 +2062,7 @@ class JianerMateService:
             f"主动发言：{enabled}｜频率：{talk_value:.2f}｜免打扰：{quiet or '无'}｜"
             f"最小间隔：{interval}s｜调试：{debug}",
             f"Planner：{planner}｜Replyer：{replyer}",
+            f"工具调用：{self._tool_status_text()}",
             f"回复时 @ 发言人：{'开' if self.options.reply_at_enabled else '关'}"
             f"｜点名更容易接话：{'开' if self.options.mentioned_reply_enabled else '关'}",
             f"表情包：{self.memes.status()['count']} 张",
