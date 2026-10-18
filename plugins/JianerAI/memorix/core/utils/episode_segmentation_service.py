@@ -379,10 +379,11 @@ class EpisodeSegmentationService:
             max_tokens=getattr(resolved_model.task_config, "max_tokens", None),
         )
         if not result.success:
-            raise RuntimeError("llm_generate_failed")
+            detail = str(getattr(result, "error", "") or "unknown error")[:200]
+            raise RuntimeError(f"llm_generate_failed: {detail}")
         response = str(result.completion.response or "")
         if not response:
-            raise RuntimeError("llm_generate_failed")
+            raise RuntimeError("llm_generate_failed: empty response")
 
         input_hashes = [str(p.get("hash", "") or "").strip() for p in paragraphs]
         try:

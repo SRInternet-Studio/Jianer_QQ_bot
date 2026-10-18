@@ -1251,37 +1251,58 @@ def _build_gemini_payload(
             }
         )
     contents.append({"role": "user", "parts": parts})
-    pending_results: list[dict[str, Any]] = []
-    for turn in request.turns:
+    requires_signature = _is_gemini_3_model(config.model)
+    turns = list(request.turns)
+    index = 0
+    while index < len(turns):
+        turn = turns[index]
         if isinstance(turn, ToolResultTurn):
-            pending_results.append(_gemini_function_response(turn))
-            continue
-        if pending_results:
-            contents.append({"role": "user", "parts": pending_results})
-            pending_results = []
-        if turn.provider_content is not None:
-            provider_content = _sanitize_gemini_content(turn.provider_content)
-            if provider_content is not None:
-                provider_content.setdefault("role", "model")
-                contents.append(provider_content)
-            continue
-        model_parts: list[dict[str, Any]] = []
-        if turn.text:
-            model_parts.append({"text": turn.text})
-        model_parts.extend(
-            {
-                "functionCall": {
-                    "id": call.id,
-                    "name": call.name,
-                    "args": _arguments_mapping(call.arguments),
+            orphaned: list[ToolResultTurn] = []
+            while index < len(turns) and isinstance(turns[index], ToolResultTurn):
+                orphaned.append(turns[index])
+                index += 1
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": _gemini_text_tool_result(item)}
+                        for item in orphaned
+                    ],
                 }
-            }
-            for call in turn.tool_calls
+            )
+            continue
+        results: list[ToolResultTurn] = []
+        cursor = index + 1
+        while cursor < len(turns) and isinstance(turns[cursor], ToolResultTurn):
+            results.append(turns[cursor])
+            cursor += 1
+        model_content, call_parts = _gemini_replay_model_turn(
+            turn,
+            requires_signature=requires_signature,
         )
-        if model_parts:
-            contents.append({"role": "model", "parts": model_parts})
-    if pending_results:
-        contents.append({"role": "user", "parts": pending_results})
+        if model_content is not None:
+            contents.append(model_content)
+        if call_parts:
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": _gemini_aligned_function_responses(
+                        call_parts,
+                        results,
+                    ),
+                }
+            )
+        elif results:
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": _gemini_text_tool_result(item)}
+                        for item in results
+                    ],
+                }
+            )
+        index = cursor
     generation_config: dict[str, Any] = {
         "temperature": (
             request.temperature
@@ -1333,6 +1354,110 @@ def _build_gemini_payload(
 def _is_gemini_3_model(model: str) -> bool:
     normalized = str(model or "").strip().casefold().replace("_", "-")
     return "gemini-3" in normalized
+
+
+_GEMINI_SIGNATURE_KEYS = ("thoughtSignature", "thought_signature")
+
+
+def _gemini_part_signature(part: Mapping[str, Any]) -> str:
+    for key in _GEMINI_SIGNATURE_KEYS:
+        value = part.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _gemini_call_part(part: Any) -> Mapping[str, Any] | None:
+    if not isinstance(part, Mapping):
+        return None
+    function = part.get("functionCall") or part.get("function_call")
+    return function if isinstance(function, Mapping) else None
+
+
+def _gemini_replay_model_turn(
+    turn: AssistantTurn,
+    *,
+    requires_signature: bool,
+) -> tuple[dict[str, Any] | None, list[Mapping[str, Any]]]:
+    """Replay an assistant turn, degrading to text when Gemini would reject it."""
+
+    if turn.provider_content is not None:
+        provider_content = _sanitize_gemini_content(turn.provider_content)
+        if provider_content is not None:
+            provider_content.setdefault("role", "model")
+            call_parts = [
+                part
+                for part in provider_content.get("parts", ())
+                if _gemini_call_part(part) is not None
+            ]
+            if not call_parts or not requires_signature or all(
+                _gemini_part_signature(part) for part in call_parts
+            ):
+                return provider_content, call_parts
+    model_parts: list[dict[str, Any]] = []
+    if turn.text:
+        model_parts.append({"text": turn.text})
+    for call in turn.tool_calls:
+        model_parts.append({"text": "[工具调用] " + _gemini_call_label(call)})
+    if not model_parts:
+        return None, []
+    return {"role": "model", "parts": model_parts}, []
+
+
+def _gemini_call_label(call: ProviderToolCall) -> str:
+    arguments = _arguments_mapping(call.arguments)
+    try:
+        rendered = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        rendered = "{}"
+    return f"{call.name}({rendered})"
+
+
+def _gemini_text_tool_result(turn: ToolResultTurn) -> str:
+    content = str(turn.content or "").strip()
+    return f"[工具结果] {turn.name}: {content}"
+
+
+def _gemini_aligned_function_responses(
+    call_parts: Sequence[Mapping[str, Any]],
+    results: Sequence[ToolResultTurn],
+) -> list[dict[str, Any]]:
+    """Pair every function call part with exactly one function response part."""
+
+    by_id: dict[str, ToolResultTurn] = {}
+    by_name: dict[str, ToolResultTurn] = {}
+    for item in results:
+        call_id = str(item.call_id or "").strip()
+        if call_id:
+            by_id.setdefault(call_id, item)
+        name = str(item.name or "").strip()
+        if name:
+            by_name.setdefault(name, item)
+    parts: list[dict[str, Any]] = []
+    used: set[int] = set()
+    for part in call_parts:
+        call = _gemini_call_part(part) or {}
+        name = str(call.get("name") or "").strip()
+        call_id = str(call.get("id") or "").strip()
+        match = by_id.get(call_id) if call_id else None
+        if match is not None and id(match) in used:
+            match = None
+        if match is None:
+            match = by_name.get(name)
+            if match is not None and id(match) in used:
+                match = None
+        if match is not None:
+            used.add(id(match))
+            parts.append(_gemini_function_response(match))
+            continue
+        response: dict[str, Any] = {
+            "name": name,
+            "response": {"error": "工具未执行或结果缺失"},
+        }
+        if call_id:
+            response["id"] = call_id
+        parts.append({"functionResponse": response})
+    return parts
 
 
 def _without_gemini_thinking_config(payload: Mapping[str, Any]) -> dict[str, Any]:

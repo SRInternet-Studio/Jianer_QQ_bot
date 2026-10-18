@@ -49,6 +49,84 @@ else:
 
 logger = get_logger("Jianer Memory.EmbeddingAPIAdapter")
 
+_EMBEDDING_SPLIT_MAX_DEPTH = 3
+_EMBEDDING_MIN_CHUNK_CHARS = 200
+_INPUT_TOO_LONG_MARKERS = (
+    "input too long",
+    "input_too_long",
+    "too long",
+    "maximum context",
+    "context length",
+    "context_length",
+    "max tokens",
+    "token limit",
+    "max_length",
+    "exceeds",
+)
+
+
+class _InputTooLongError(RuntimeError):
+    """The embedding endpoint rejected a payload because it was too long."""
+
+
+def _is_input_too_long_error(raw: str) -> bool:
+    text = str(raw or "").casefold()
+    return any(marker in text for marker in _INPUT_TOO_LONG_MARKERS)
+
+
+def _split_text_for_embedding(text: str) -> Tuple[str, str]:
+    """Split long text near the middle, preferring natural boundaries."""
+
+    value = str(text or "")
+    if len(value) < 2:
+        return value, ""
+    middle = len(value) // 2
+    window = max(32, len(value) // 8)
+    start = max(1, middle - window)
+    end = min(len(value) - 1, middle + window)
+    best_cut = -1
+    best_distance = -1
+    for marker in ("\n\n", "\n", "。", "！", "？", "；", ". ", "! ", "? ", "; "):
+        index = value.rfind(marker, start, end)
+        if index < 0:
+            continue
+        cut = index + len(marker)
+        if cut <= 0 or cut >= len(value):
+            continue
+        distance = abs(cut - middle)
+        if best_cut < 0 or distance < best_distance:
+            best_cut = cut
+            best_distance = distance
+    if best_cut <= 0:
+        best_cut = middle
+    return value[:best_cut], value[best_cut:]
+
+
+def _merge_embedding_vectors(
+    vectors: List[List[float]],
+    weights: List[float],
+) -> List[float]:
+    """Length-weighted mean of chunk embeddings, re-normalized for cosine use."""
+
+    arrays = [
+        np.asarray(vector, dtype=np.float32).reshape(-1)
+        for vector in vectors
+        if vector is not None and len(vector) > 0
+    ]
+    if not arrays:
+        raise RuntimeError("embedding chunk merge received no vectors")
+    weight_array = np.asarray(
+        list(weights)[: len(arrays)] or [1.0] * len(arrays),
+        dtype=np.float32,
+    )
+    if weight_array.shape[0] != len(arrays) or float(weight_array.sum()) <= 0:
+        weight_array = np.ones(len(arrays), dtype=np.float32)
+    merged = np.average(np.stack(arrays), axis=0, weights=weight_array)
+    norm = float(np.linalg.norm(merged))
+    if norm > 0:
+        merged = merged / norm
+    return merged.tolist()
+
 
 class EmbeddingAPIAdapter:
     """适配宿主 embedding 请求接口。"""
@@ -382,19 +460,139 @@ class EmbeddingAPIAdapter:
             raise RuntimeError("embedding.json is missing BaseUrl")
         provider = self.direct_provider or "openai"
         requested_dimension = self._resolve_canonical_dimension(dimensions) if self._should_include_dimension(dimensions, include_dimension) else None
-        if provider in {"gemini", "google", "google-genai", "googleai"}:
+        is_gemini = provider in {"gemini", "google", "google-genai", "googleai"}
+        if is_gemini:
             url = f"{self.direct_base_url}/v1beta/models/{self.model_name}:embedContent"
-            payload: Dict[str, Any] = {"content": {"parts": [{"text": str(text)}]}}
-            if requested_dimension is not None:
-                payload["outputDimensionality"] = int(requested_dimension)
             headers = {"Content-Type": "application/json", "x-goog-api-key": self.direct_api_key}
         else:
             url = f"{self.direct_base_url}/embeddings"
-            payload = {"model": self.model_name, "input": str(text)}
-            if requested_dimension is not None:
-                payload["dimensions"] = int(requested_dimension)
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.direct_api_key}"}
 
+        def build_payload(chunk: str) -> Dict[str, Any]:
+            if is_gemini:
+                payload: Dict[str, Any] = {
+                    "content": {"parts": [{"text": str(chunk)}]}
+                }
+                if requested_dimension is not None:
+                    payload["outputDimensionality"] = int(requested_dimension)
+                return payload
+            payload = {"model": self.model_name, "input": str(chunk)}
+            if requested_dimension is not None:
+                payload["dimensions"] = int(requested_dimension)
+            return payload
+
+        return await self._embed_text_adaptive(
+            str(text),
+            url=url,
+            headers=headers,
+            provider=provider,
+            build_payload=build_payload,
+            depth=0,
+        )
+
+    async def _embed_text_adaptive(
+        self,
+        text: str,
+        *,
+        url: str,
+        headers: Dict[str, str],
+        provider: str,
+        build_payload: Any,
+        depth: int,
+    ) -> List[float]:
+        """Embed text, splitting and merging it when the endpoint says it is too long."""
+
+        try:
+            return await self._post_embedding(
+                url=url,
+                headers=headers,
+                provider=provider,
+                payload=build_payload(text),
+            )
+        except _InputTooLongError:
+            if (
+                depth >= _EMBEDDING_SPLIT_MAX_DEPTH
+                or len(text) < _EMBEDDING_MIN_CHUNK_CHARS * 2
+            ):
+                return await self._embed_truncated(
+                    text,
+                    url=url,
+                    headers=headers,
+                    provider=provider,
+                    build_payload=build_payload,
+                )
+            left, right = _split_text_for_embedding(text)
+            if not left or not right:
+                return await self._embed_truncated(
+                    text,
+                    url=url,
+                    headers=headers,
+                    provider=provider,
+                    build_payload=build_payload,
+                )
+            left_vector, right_vector = await asyncio.gather(
+                self._embed_text_adaptive(
+                    left,
+                    url=url,
+                    headers=headers,
+                    provider=provider,
+                    build_payload=build_payload,
+                    depth=depth + 1,
+                ),
+                self._embed_text_adaptive(
+                    right,
+                    url=url,
+                    headers=headers,
+                    provider=provider,
+                    build_payload=build_payload,
+                    depth=depth + 1,
+                ),
+            )
+            return _merge_embedding_vectors(
+                [left_vector, right_vector],
+                [float(len(left)), float(len(right))],
+            )
+
+    async def _embed_truncated(
+        self,
+        text: str,
+        *,
+        url: str,
+        headers: Dict[str, str],
+        provider: str,
+        build_payload: Any,
+    ) -> List[float]:
+        """Last resort: keep shrinking the prefix until the endpoint accepts it."""
+
+        shortened = str(text or "")
+        last_error: Optional[BaseException] = None
+        for _ in range(4):
+            shortened = shortened[
+                : max(_EMBEDDING_MIN_CHUNK_CHARS // 2, len(shortened) // 2)
+            ]
+            try:
+                return await self._post_embedding(
+                    url=url,
+                    headers=headers,
+                    provider=provider,
+                    payload=build_payload(shortened),
+                )
+            except _InputTooLongError as exc:
+                last_error = exc
+                if not shortened:
+                    break
+        raise RuntimeError(
+            f"embedding input still too long after truncation: {last_error}"
+        ) from last_error
+
+    async def _post_embedding(
+        self,
+        *,
+        url: str,
+        headers: Dict[str, str],
+        provider: str,
+        payload: Dict[str, Any],
+    ) -> List[float]:
         last_error: Optional[BaseException] = None
         for attempt in range(1, self.max_attempts + 1):
             try:
@@ -403,6 +601,10 @@ class EmbeddingAPIAdapter:
                     async with session.post(url, json=payload, headers=headers) as response:
                         raw = await response.text()
                         if response.status >= 400:
+                            if response.status == 400 and _is_input_too_long_error(
+                                raw
+                            ):
+                                raise _InputTooLongError(raw[:300])
                             raise RuntimeError(f"embedding endpoint HTTP {response.status}: {raw[:300]}")
                         data = json.loads(raw)
                 if provider in {"gemini", "google", "google-genai", "googleai"}:
@@ -413,6 +615,8 @@ class EmbeddingAPIAdapter:
                 self._last_success_model_name = self.model_name
                 self._last_success_provider_name = provider
                 return vector.tolist()
+            except _InputTooLongError:
+                raise
             except Exception as exc:
                 last_error = exc
                 if attempt >= self.max_attempts:

@@ -667,7 +667,8 @@ def _request_json(
     ):
         raise ToolExecutionError(
             "github_rate_limited",
-            "GitHub API 请求额度已用尽，请稍后再试。",
+            "GitHub API 请求额度已用尽；在 .env 配置 GITHUB_TOKEN 可显著提高额度，"
+            "或稍后再试。",
         )
     if status == 403:
         raise ToolExecutionError(
