@@ -45,6 +45,7 @@ DEFAULT_TOOL_ALLOWLIST = (
     "list_agent_skills",
     "load_agent_skill",
     "read_agent_skill_resource",
+    "list_my_memories",
 )
 
 
@@ -117,6 +118,10 @@ class RuntimeOptions:
     style: StyleOptions = field(default_factory=StyleOptions)
     meme: MemeOptions = field(default_factory=MemeOptions)
     tools: ToolOptions = field(default_factory=ToolOptions)
+    memory_enabled: bool = True
+    memory_db_path: Path = field(
+        default_factory=lambda: Path(DEFAULT_DATA_DIR) / "memory.db"
+    )
     context_messages: int = 40
     history_keep_messages: int = 300
     history_retention_days: int = 7
@@ -295,6 +300,11 @@ class RuntimeOptions:
                 maximum=262144,
             ),
         )
+        memory_db_path = _resolve_path(
+            project_root,
+            others.get("jianer_mate_memory_db_path"),
+            str(data_dir / "memory.db"),
+        )
         return cls(
             enabled=_as_bool(others.get("jianer_mate_enabled"), True),
             project_root=project_root,
@@ -315,6 +325,10 @@ class RuntimeOptions:
             style=style,
             meme=meme,
             tools=tool_options,
+            memory_enabled=_as_bool(
+                others.get("jianer_mate_memory_enabled"), True
+            ),
+            memory_db_path=memory_db_path,
             context_messages=context_messages,
             history_keep_messages=_clamp_int(
                 others.get("jianer_mate_history_keep_messages"),

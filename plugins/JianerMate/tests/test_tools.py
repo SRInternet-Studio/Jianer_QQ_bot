@@ -20,7 +20,7 @@ class _Actions:
     custom = None
 
 
-def _context(tmp_path, *, actor=None):
+def _context(tmp_path, *, actor=None, long_term=None):
     store = MateStore(tmp_path / "mate.db")
     conversation = store.ensure_conversation(
         "milky", "10001", "group", "222", now=1
@@ -62,7 +62,9 @@ def _context(tmp_path, *, actor=None):
         ),
         canonical_user_id="qq:5",
         runtime={"root_users": ["1"]},
-        memory=MateMemoryFacade(store, conversation.ref),
+        memory=MateMemoryFacade(
+            store, conversation.ref, long_term=long_term, preset="mate"
+        ),
         actor=actor or SimpleNamespace(is_privileged=False),
         model="test",
     )
@@ -190,4 +192,39 @@ def test_readonly_platform_tools_need_privilege_but_no_mutating_flag(tmp_path):
     assert any(name.startswith("milky_get_") for name in privileged_names)
     assert "send_message" not in privileged_names
     asyncio.run(runtime.shutdown())
+    store.close()
+
+
+def test_long_term_memory_tools_round_trip(tmp_path):
+    from plugins.JianerMate.memory import LongTermMemory
+
+    memory = LongTermMemory(tmp_path / "memory.db")
+    assert memory.available, memory.error
+    store, context = _context(tmp_path, long_term=memory)
+    runtime = MateToolRuntime(
+        ToolOptions(
+            allowlist=("create_my_memory", "list_my_memories"),
+            allow_mutating=True,
+        ),
+        project_root=tmp_path,
+    )
+    created = asyncio.run(
+        runtime.execute(
+            "call-1",
+            "create_my_memory",
+            {
+                "scope": "person",
+                "canonical_fact": "用户喜欢猫",
+                "memory_text": "我记得他说过自己很喜欢猫。",
+            },
+            context,
+        )
+    )
+    assert '"ok":true' in created, created
+    listed = asyncio.run(
+        runtime.execute("call-2", "list_my_memories", {"scope": "person"}, context)
+    )
+    assert "喜欢猫" in listed
+    asyncio.run(runtime.shutdown())
+    memory.close()
     store.close()

@@ -28,6 +28,7 @@ from jianer.adapters import (
 from plugins.JianerMate import style as reply_style
 from plugins.JianerMate.config import RuntimeOptions
 from plugins.JianerMate.memes import MemeLibrary
+from plugins.JianerMate.memory import LongTermMemory
 from plugins.JianerMate.moderation import ContentModerator
 from plugins.JianerMate.persona import (
     MAX_MULTIPLE_STYLES,
@@ -179,6 +180,11 @@ class JianerMateService:
             logger=self._logger,
         )
         self._actor_resolver = make_actor_resolver()
+        self.long_term = LongTermMemory(
+            options.memory_db_path,
+            enabled=bool(options.memory_enabled),
+            logger=self._logger,
+        )
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -269,6 +275,8 @@ class JianerMateService:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks.clear()
+        with contextlib.suppress(Exception):
+            self.long_term.close()
         with contextlib.suppress(Exception):
             await self.tool_runtime.shutdown()
         with contextlib.suppress(Exception):
@@ -691,7 +699,12 @@ class JianerMateService:
             conversation=self._framework_key(key),
             canonical_user_id=f"{key.protocol}:{getattr(event, 'user_id', '')}",
             runtime=self.runtime,
-            memory=MateMemoryFacade(self.store, conversation.ref),
+            memory=MateMemoryFacade(
+                self.store,
+                conversation.ref,
+                long_term=self.long_term,
+                preset=self._effective_persona().name,
+            ),
             actor=actor,
             model=str(model or ""),
         )
@@ -1772,6 +1785,13 @@ class JianerMateService:
         self.tool_runtime = MateToolRuntime(
             options.tools,
             project_root=options.project_root,
+            logger=self._logger,
+        )
+        with contextlib.suppress(Exception):
+            self.long_term.close()
+        self.long_term = LongTermMemory(
+            options.memory_db_path,
+            enabled=bool(options.memory_enabled),
             logger=self._logger,
         )
         if hasattr(self.client, "reload"):

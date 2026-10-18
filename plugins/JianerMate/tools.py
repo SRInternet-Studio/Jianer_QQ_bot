@@ -38,9 +38,18 @@ class ChatHistoryRecord:
 class MateMemoryFacade:
     """Adapter that lets JianerAI tools read JianerMate's chat history."""
 
-    def __init__(self, store: Any, conversation_ref: int) -> None:
+    def __init__(
+        self,
+        store: Any,
+        conversation_ref: int,
+        *,
+        long_term: Any | None = None,
+        preset: str = "mate",
+    ) -> None:
         self._store = store
         self._conversation_ref = int(conversation_ref)
+        self._long_term = long_term
+        self._preset = str(preset or "mate")
 
     def query_recent_chat(
         self,
@@ -87,22 +96,61 @@ class MateMemoryFacade:
             )
         return tuple(output)
 
-    # JianerMate has no long-term memory backend: report that clearly instead
-    # of letting the original tools fail with an AttributeError.
-    def _long_memory_disabled(self, *args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise _tool_error(
-            "long_memory_disabled",
-            "本插件没有启用长期记忆，无法读写长期记忆。",
-        )
+    def _long_term_call(self, name: str) -> Any:
+        target = getattr(self._long_term, name, None)
+        if target is None or not getattr(self._long_term, "available", False):
+            detail = getattr(self._long_term, "error", "") if self._long_term else ""
+            raise _tool_error(
+                "long_memory_disabled",
+                "长期记忆不可用" + (f"（{detail}）" if detail else "。"),
+            )
+        return target
 
-    list_scoped_memories = _long_memory_disabled
-    create_scoped_memory = _long_memory_disabled
-    update_scoped_memory = _long_memory_disabled
-    add_scoped_memory_evidence = _long_memory_disabled
-    list_memories = _long_memory_disabled
-    create_memory = _long_memory_disabled
-    update_memory = _long_memory_disabled
+    def _scoped(self, name: str, kwargs: dict[str, Any]) -> Any:
+        kwargs.setdefault("preset", self._preset)
+        canonical = str(kwargs.get("canonical_user_id") or "")
+        if canonical:
+            self._ensure_identity(canonical)
+        return self._long_term_call(name)(**kwargs)
+
+    def _ensure_identity(self, canonical_user_id: str) -> None:
+        """Register the canonical identity on first use (legacy store needs it)."""
+
+        if not getattr(self._long_term, "available", False):
+            return
+        ensure = getattr(self._long_term, "ensure_identity", None)
+        if not callable(ensure):
+            return
+        protocol, _, external = canonical_user_id.partition(":")
+        try:
+            ensure(
+                protocol=protocol or "qq",
+                self_id="",
+                external_id=external or canonical_user_id,
+            )
+        except Exception:  # noqa: BLE001 - memory errors surface on the call
+            pass
+
+    def list_scoped_memories(self, **kwargs: Any) -> Any:
+        return self._scoped("list_scoped_memories", kwargs)
+
+    def create_scoped_memory(self, **kwargs: Any) -> Any:
+        return self._scoped("create_scoped_memory", kwargs)
+
+    def update_scoped_memory(self, **kwargs: Any) -> Any:
+        return self._scoped("update_scoped_memory", kwargs)
+
+    def add_scoped_memory_evidence(self, **kwargs: Any) -> Any:
+        return self._scoped("add_scoped_memory_evidence", kwargs)
+
+    def list_memories(self, **kwargs: Any) -> Any:
+        return self._scoped("list_memories", kwargs)
+
+    def create_memory(self, **kwargs: Any) -> Any:
+        return self._scoped("create_memory", kwargs)
+
+    def update_memory(self, **kwargs: Any) -> Any:
+        return self._scoped("update_memory", kwargs)
 
 
 class MateToolRuntime:

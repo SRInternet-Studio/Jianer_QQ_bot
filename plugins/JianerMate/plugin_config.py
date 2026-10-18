@@ -92,6 +92,10 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
         "skills_dirs": "jianer_mate_tool_skills_dirs",
         "skills_max_file_bytes": "jianer_mate_tool_skills_max_file_bytes",
     },
+    "memory": {
+        "enabled": "jianer_mate_memory_enabled",
+        "db_path": "jianer_mate_memory_db_path",
+    },
 }
 
 
@@ -272,6 +276,12 @@ def build_config_document(options: Any) -> dict[str, Any]:
             ),
         },
         "group_blacklist": list(getattr(options, "group_blacklist", ())),
+        "memory": {
+            "enabled": bool(getattr(options, "memory_enabled", True)),
+            "db_path": _portable(
+                root, getattr(options, "memory_db_path", None)
+            ),
+        },
     }
 
 
