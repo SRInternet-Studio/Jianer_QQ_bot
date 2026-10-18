@@ -379,6 +379,52 @@ chmod 600 aiconfig/*.ai.json
 
 Linux `systemd` 示例会把 `.env` 同时作为 `EnvironmentFile` 加载，因此其中的通用环境变量也能进入机器人进程。Windows 如果只把变量写入 `.env`，只有明确读取 `.env` 的插件能看到；其它变量应配置到运行账号的系统环境，设置后重新启动任务。
 
+### 7.2 切换到 JianerMate（可选，与 JianerAI 互斥）
+
+`plugins/JianerMate`（插件 ID `jianerbot-plugin-jianer-mate`）是单一人设的群聊
+AI：群里被 @ 或私聊时回复，群内可开启主动发言，回复拆成短句多段并带全局共享的
+表情包库。它与 JianerAI **互斥**，同时加载时 JianerMate 不会注册任何消息处理，
+日志会明确提示冲突。
+
+切换步骤：
+
+1. 在群里发送 `~禁用插件 JianerAI`，再发送 `~启用插件 JianerMate`；
+2. 确认 `aiconfig/*.ai.json` 里至少有两个可用模型：Planner 用文本模型即可，
+   Replyer 必须支持图片输入（例如 Qwen-VL、Gemini、GPT-4o 一类的
+   OpenAI 兼容端点）；
+3. 在 `config.json -> others` 设置模型代码：
+
+```json
+{
+  "jianer_mate_enabled": true,
+  "jianer_mate_planner_model": "deepseek",
+  "jianer_mate_replyer_model": "vision-primary"
+}
+```
+
+4. 迁移旧人格：机器人管理员发送 `~人格 导入 Normal`（或换成
+   `prerequisites/current.json` 里的其它预设名），插件会只读旧预设并用模型转写成
+   MaiBot 风格的人格（`personality` / `behavior_style` / `reply_style` /
+   备用说话风格 / 群聊与私聊提示）。也可以直接 `~人格 转换 <原设定文本>`，
+   或回复一条包含原设定的消息后发送 `~人格 转换`；`~人格 重置` 可恢复
+   `config.json` 里的设定。
+5. 重载插件（`~重载插件`），在测试群先执行 `~主动发言 调试`：开启后每次本会
+   主动发言时，群里只会收到一条“[调试] 这次本会主动发言”的预览；也可以用
+   `~主动发言 决策` 回看最近的决策理由。确认效果后再发一次 `~主动发言 调试`
+   关掉调试模式，并执行 `~主动发言 开启`。
+
+注意：JianerMate 只支持 `ResponseType` 为 `OpenAI` / `OpenAI-Compatible` /
+`Chat Completions` 的条目，Gemini 与 Anthropic 条目的模型会在
+`~主动发言 状态` 里显示为不支持。切换期间以下功能不可用：Agent 工具、长期记忆、
+TTS、回复后缀、MCP、飞书身份合并，以及依赖 JianerAI 的 MaimaiDX AI 工具。
+
+运行数据：
+
+- `data/jianer_mate/mate.db`：会话开关、最近消息、决策记录；
+- `data/jianer_mate/memes/`：表情包文件；备份时一并复制该目录。
+
+完整配置项与命令列表见 `plugins/JianerMate/README.md`。
+
 ## 8. 可选插件资源
 
 ### 8.1 MaimaiDX

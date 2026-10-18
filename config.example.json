@@ -75,6 +75,60 @@
             "volume": "+0%",
             "pitch": "+0Hz"
         },
+        "jianer_mate_enabled": true,
+        "jianer_mate_data_dir": "data/jianer_mate",
+        "jianer_mate_planner_model": "deepseek",
+        "jianer_mate_replyer_model": "grok",
+        "jianer_mate_moderation_enabled": false,
+        "jianer_mate_moderation_model": "deepseek",
+        "jianer_mate_persona": {
+            "name": "简儿",
+            "aliases": [
+                "小简",
+                "Jianer"
+            ],
+            "personality": "你是常年混在 QQ 群里的普通群友，性格轻松、嘴甜、有点机灵，不端着，也不刻意卖萌。",
+            "behavior_style": "只在有话可说时开口，优先接住群里正在聊的话题；不刷屏、不抢话、不复读别人刚说过的话；被 @ 时认真回应，不敷衍。",
+            "reply_style": "说话要短，像真人打字：一次最多两三条，每条尽量不超过二十个字；用日常口语，不用 Markdown、不列清单、不写长段落、不复述问题。",
+            "group_chat_prompt": "你正在 QQ 群里和群友聊天，回复尽量简短，一次只接一个话题；控制发言频率，不用回复每个人的消息。",
+            "private_chat_prompt": "你正在私聊里聊天，回复尽量简短、自然，看对方的发言频率决定接话节奏。",
+            "multiple_reply_styles": [
+                "用1-2个字回复",
+                "带点翻译腔，但不要太长"
+            ],
+            "multiple_probability": 0.0
+        },
+        "jianer_mate_reply_max_parts": 3,
+        "jianer_mate_reply_max_chars": 24,
+        "jianer_mate_reply_delay_ms": [
+            600,
+            1800
+        ],
+        "jianer_mate_typo_probability": 0.08,
+        "jianer_mate_typo_correction": true,
+        "jianer_mate_kaomoji_probability": 0.15,
+        "jianer_mate_context_messages": 40,
+        "jianer_mate_history_keep_messages": 300,
+        "jianer_mate_history_retention_days": 7,
+        "jianer_mate_talk_value_default": 0.5,
+        "jianer_mate_min_interval_seconds": 30,
+        "jianer_mate_debounce_seconds": 3,
+        "jianer_mate_max_debounce_seconds": 15,
+        "jianer_mate_quiet_hours_default": "23:00-08:00",
+        "jianer_mate_mentioned_reply": true,
+        "jianer_mate_reply_at": false,
+        "jianer_mate_backoff_base_seconds": 15,
+        "jianer_mate_backoff_cap_seconds": 300,
+        "jianer_mate_backoff_start_count": 2,
+        "jianer_mate_group_blacklist": [],
+        "jianer_mate_max_concurrent_ai": 2,
+        "jianer_mate_meme_enabled": true,
+        "jianer_mate_steal_emoji": true,
+        "jianer_mate_meme_max_entries": 128,
+        "jianer_mate_meme_max_size_mb": 5.0,
+        "jianer_mate_meme_candidates": 8,
+        "jianer_mate_meme_thumbnail_px": 512,
+        "jianer_mate_meme_reuse_cooldown_seconds": 3600,
         "compliment": [
             "谢谢夸奖！",
             "我会继续努力的！"
