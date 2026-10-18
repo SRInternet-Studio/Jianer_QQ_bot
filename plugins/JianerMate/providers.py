@@ -293,6 +293,21 @@ def strip_trailing_commas(value: str) -> str:
     return "".join(output)
 
 
+def _config_directories(
+    value: str | Path | Sequence[str | Path],
+) -> tuple[Path, ...]:
+    """Normalize one path or a list of paths into an ordered tuple."""
+
+    if isinstance(value, (str, Path)):
+        return (Path(value),)
+    directories: list[Path] = []
+    for item in value:
+        path = Path(item)
+        if path not in directories:
+            directories.append(path)
+    return tuple(directories)
+
+
 class JianerAIBridge:
     """Serve non OpenAI-compatible aiconfig entries via JianerAI's registry.
 
@@ -301,12 +316,19 @@ class JianerAIBridge:
     client.  Instead of re-implementing those protocols, the bridge reuses the
     provider layer that already ships in ``plugins.JianerAI`` (module import
     only; the JianerAI plugin itself does not have to be enabled).
+
+    One registry is created per configured model directory; a model code is
+    routed to whichever directory defines it first.
     """
 
-    def __init__(self, config_dir: str | Path) -> None:
-        self._registry: Any | None = None
+    def __init__(
+        self, config_dirs: str | Path | Sequence[str | Path]
+    ) -> None:
+        self._registries: list[Any] = []
         self._chat_request: Any | None = None
         self._media_attachment: Any | None = None
+        self._function_tool: Any | None = None
+        self._tool_result_turn: Any | None = None
         self._error = ""
         try:
             from plugins.JianerAI.providers import (  # noqa: PLC0415
@@ -319,10 +341,12 @@ class JianerAIBridge:
         except Exception as exc:  # noqa: BLE001 - optional dependency
             self._error = f"{exc.__class__.__name__}: {exc}"
             return
-        try:
-            self._registry = ProviderRegistry(Path(config_dir))
-        except Exception as exc:  # noqa: BLE001
-            self._error = f"{exc.__class__.__name__}: {exc}"
+        for directory in _config_directories(config_dirs):
+            try:
+                self._registries.append(ProviderRegistry(directory))
+            except Exception as exc:  # noqa: BLE001
+                self._error = f"{exc.__class__.__name__}: {exc}"
+        if not self._registries:
             return
         self._chat_request = ChatRequest
         self._media_attachment = MediaAttachment
@@ -331,33 +355,41 @@ class JianerAIBridge:
 
     @property
     def available(self) -> bool:
-        return self._registry is not None
+        return bool(self._registries)
 
     @property
     def error(self) -> str:
         return self._error
 
+    def _registry_for(self, key: str) -> Any | None:
+        normalized = str(key or "").strip()
+        if not normalized:
+            return None
+        for registry in self._registries:
+            try:
+                registry.get(normalized)
+            except Exception:  # noqa: BLE001 - unknown in this directory
+                continue
+            return registry
+        return None
+
     def supports(self, key: str) -> bool:
-        if self._registry is None:
-            return False
-        try:
-            self._registry.get(str(key or "").strip())
-        except Exception:  # noqa: BLE001 - unknown model
-            return False
-        return True
+        return self._registry_for(key) is not None
 
     def model_keys(self) -> tuple[str, ...]:
-        if self._registry is None:
-            return ()
-        try:
-            return tuple(sorted(self._registry.list_models()))
-        except Exception:  # noqa: BLE001 - keep the bridge usable
-            return ()
+        keys: set[str] = set()
+        for registry in self._registries:
+            try:
+                keys.update(str(item) for item in registry.list_models())
+            except Exception:  # noqa: BLE001 - keep the bridge usable
+                continue
+        return tuple(sorted(keys))
 
     def supports_tools(self, key: str) -> bool:
-        if self._registry is None:
+        registry = self._registry_for(key)
+        if registry is None:
             return False
-        check = getattr(self._registry, "supports_tools", None)
+        check = getattr(registry, "supports_tools", None)
         if not callable(check):
             return False
         try:
@@ -380,8 +412,9 @@ class JianerAIBridge:
     ) -> str:
         """Tool loop for bridged models that declare tool support."""
 
+        registry = self._registry_for(key)
         if (
-            self._registry is None
+            registry is None
             or self._chat_request is None
             or self._function_tool is None
             or self._tool_result_turn is None
@@ -421,9 +454,7 @@ class JianerAIBridge:
                 max_output_tokens=max_tokens,
             )
             try:
-                response = await self._registry.complete_agent_turn(
-                    key, request
-                )
+                response = await registry.complete_agent_turn(key, request)
             except Exception as exc:  # noqa: BLE001
                 raise ProviderError(
                     f"多协议调用失败：{exc.__class__.__name__}"
@@ -470,10 +501,6 @@ class JianerAIBridge:
             for image in images
             if image.data
         )
-        try:
-            return tuple(sorted(self._registry.list_models()))
-        except Exception:  # noqa: BLE001
-            return ()
 
     async def complete_text(
         self,
@@ -485,8 +512,9 @@ class JianerAIBridge:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> str:
+        registry = self._registry_for(key)
         if (
-            self._registry is None
+            registry is None
             or self._chat_request is None
             or self._media_attachment is None
         ):
@@ -508,7 +536,7 @@ class JianerAIBridge:
             max_output_tokens=max_tokens,
         )
         try:
-            response = await self._registry.complete_request(key, request)
+            response = await registry.complete_request(key, request)
         except Exception as exc:  # noqa: BLE001 - normalize for our callers
             raise ProviderError(
                 f"多协议调用失败：{exc.__class__.__name__}"

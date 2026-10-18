@@ -469,6 +469,33 @@ def test_real_bridge_reads_the_repo_aiconfig():
     assert "example" in bridge.model_keys()
 
 
+def test_real_bridge_accepts_multiple_directories(tmp_path):
+    from plugins.JianerMate.providers import JianerAIBridge
+
+    extra = tmp_path / "aiconfig-extra"
+    extra.mkdir()
+    (extra / "bridge-extra.ai.json").write_text(
+        json.dumps(
+            {
+                "FriendlyName": "桥接备用",
+                "Model": "gemini-2.5-flash",
+                "ResponseType": "Google GenerateContent",
+                "ApiKey": "sk-x",
+                "BaseUrl": "https://example.invalid/",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    bridge = JianerAIBridge(("aiconfig", extra))
+    assert bridge.available is True, bridge.error
+    assert bridge.supports("example") is True
+    assert bridge.supports("bridge-extra") is True
+    assert set(bridge.model_keys()) >= {"example", "bridge-extra"}
+    assert bridge.supports("missing") is False
+
+
 class _ToolBridge(_StubBridge):
     def __init__(self):
         super().__init__('{"messages": ["工具后的结论"]}')
