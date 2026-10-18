@@ -294,6 +294,7 @@ class RuntimeOptions:
     tts_options: SpeechOptions
     memory_auto_inject: bool = True
     memory_auto_inject_max_chars: int = 16000
+    memory_episode_segmentation_model: str = "auto"
     memory_auto_inject_recent_chat: bool = True
     memory_auto_inject_episodes: bool = True
     memory_auto_inject_group: bool = True
@@ -473,6 +474,10 @@ class RuntimeOptions:
             default_model=default_model,
             memory_model=str(
                 others.get("memory_mode") or default_model
+            ).strip(),
+            memory_episode_segmentation_model=str(
+                others.get("memory_episode_segmentation_model", "auto")
+                or "auto"
             ).strip(),
             database_path=database_path.resolve(),
             memory_enabled_default=bool(
@@ -1042,6 +1047,11 @@ class JianerAIService:
                     "retrieval": {
                         "vector_pools": {"mode": "dual"},
                         "sparse": {"enabled": True},
+                    },
+                    "episode": {
+                        "segmentation_model": (
+                            options.memory_episode_segmentation_model
+                        ),
                     },
                 },
                 legacy_store=legacy_memory,

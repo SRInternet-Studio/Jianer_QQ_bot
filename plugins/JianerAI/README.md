@@ -51,6 +51,9 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `content_moderation_timeout_seconds`：单次审核超时，范围 1–120 秒，默认 30 秒；
   超时、提供商失败或非法审核结果都会按 fail closed 拒绝本轮，不会绕过审核
 - `memory_mode`：记忆提炼模型
+- `memory_episode_segmentation_model`：长期记忆 episode 分段使用的模型，默认
+  `auto` 会在 `aiconfig/*.ai.json` 中挑选可用模型；某个模型不可用时可显式填写
+  可用的模型配置名（如 `grok`），避免分段一直回退到规则聚类
 - `memory_enabled_default`
 - `memory_interval_seconds_default`
 - `memory_scheduler_tick_seconds`

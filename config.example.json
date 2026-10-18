@@ -54,6 +54,7 @@
         "default_mode": "grok",
         "memory_backend": "long_memory",
         "memorix_data_dir": "data/jianer_ai_memorix",
+        "memory_episode_segmentation_model": "auto",
         "embedding_config_path": "aiconfig/embedding.json",
         "jianer_ai_memory_console_enabled": false,
         "jianer_ai_memory_console_host": "0.0.0.0",
