@@ -37,6 +37,7 @@
 - 飞书绑定以 JSON 为权威源，通过持久 outbox 幂等合并 AI 身份；回调失败不回滚非 AI 绑定。
 
 ### 修复
+- 修复 Gemini 400 `any_of` schema 报错：构造 functionDeclarations 时把 `anyOf`/`oneOf` 的同级字段（`type`、`properties`、`required`、`description` 等）合并进各分支，OneBot、Milky 与 MCP 工具声明不再与 Gemini 限制冲突。
 - 修复 embedding 接口 512 token 上限导致的 HTTP 400：独立 embedding 端点返回 input too long 时，超长文本自动按自然边界切分、长度加权合并并重新归一化向量，仍超限时逐级截断兜底。
 - GitHub 额度用尽提示补充 `GITHUB_TOKEN` 指引；episode 分段失败日志附带底层错误原因。
 - `web_search` 不再硬编码 DDGS 引擎列表，改为读取当前安装的 `ddgs` 实际启用的 text 引擎；`ddgs` 9.16 起 text 引擎无 `bing`，此时 `bing` 自动改用内置直连 Bing，未启用的引擎直接报错而不是静默回落到 `auto`。

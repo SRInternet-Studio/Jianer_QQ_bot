@@ -1336,13 +1336,76 @@ def _build_gemini_payload(
                     {
                         "name": tool.name,
                         "description": tool.description,
-                        "parametersJsonSchema": dict(tool.parameters),
+                        "parametersJsonSchema": _gemini_parameters_schema(
+                            tool.parameters
+                        ),
                     }
                     for tool in request.tools
                 ]
             }
         ]
     return payload
+
+
+def _gemini_parameters_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a Gemini-compatible view of a tool parameter schema."""
+
+    normalized = _gemini_schema_node(schema)
+    return dict(normalized) if isinstance(normalized, Mapping) else {}
+
+
+def _gemini_schema_node(node: Any) -> Any:
+    """Fold sibling keywords into branches so ``anyOf`` stays the only field.
+
+    Gemini rejects schemas that set ``anyOf``/``oneOf`` next to other keywords
+    such as ``type``, ``properties`` or ``description``.
+    """
+
+    if isinstance(node, Sequence) and not isinstance(
+        node, (str, bytes, bytearray)
+    ):
+        return [_gemini_schema_node(item) for item in node]
+    if not isinstance(node, Mapping):
+        return node
+    normalized = {key: _gemini_schema_node(value) for key, value in node.items()}
+    branch_key = (
+        "anyOf"
+        if "anyOf" in normalized
+        else ("oneOf" if "oneOf" in normalized else None)
+    )
+    if branch_key is None:
+        return normalized
+    branches = normalized.get(branch_key)
+    if not isinstance(branches, Sequence) or isinstance(
+        branches, (str, bytes, bytearray)
+    ):
+        return {
+            key: value for key, value in normalized.items() if key != branch_key
+        }
+    siblings = {
+        key: value for key, value in normalized.items() if key != branch_key
+    }
+    merged_branches: list[Any] = []
+    for branch in branches:
+        merged: dict[str, Any] = dict(siblings)
+        if isinstance(branch, Mapping):
+            for key, value in branch.items():
+                current = merged.get(key)
+                if (
+                    key == "required"
+                    and isinstance(current, Sequence)
+                    and isinstance(value, Sequence)
+                    and not isinstance(value, (str, bytes, bytearray))
+                ):
+                    merged[key] = list(dict.fromkeys([*current, *value]))
+                elif key == "properties" and isinstance(
+                    current, Mapping
+                ) and isinstance(value, Mapping):
+                    merged[key] = {**current, **value}
+                else:
+                    merged[key] = value
+        merged_branches.append(_gemini_schema_node(merged))
+    return {"anyOf": merged_branches}
 
 
 def _is_gemini_3_model(model: str) -> bool:
