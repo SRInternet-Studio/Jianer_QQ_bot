@@ -130,6 +130,10 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
   底层复用 JianerAI 的存储实现；缺 `aiconfig/embedding.json` 或初始化失败时自动
   回退到旧存储并打日志。配置见插件配置文件的 `memory` 段
   （`enabled` / `backend` / `db_path` / `data_dir` / `embedding_config_path`）。
+- 可选的 memorix 控制台：`memory.console_enabled=true` 时复用 JianerAI 的记忆
+  控制台 WebUI（`plugins/JianerAI/memorix_console`），默认监听 `127.0.0.1:8787`
+  （`console_host` / `console_port` 可改）；每次启动会生成一次性 Token 并打印在
+  机器人控制台，前端请求需带 `X-Memory-Token`，插件关闭时线程一并停止。
 - 每次回复成功后会把这次对话排进记忆审查队列（`memory_jobs`，按 exchange 幂等、
   重启续跑），由小模型提炼 `create/update` 记忆动作写入 memorix；连续失败按
   30s→3600s 退避，5 次后标记 `failed`。
@@ -178,7 +182,8 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
 `Chat Completions`）的条目走本插件自己的客户端（支持图片、工具调用与 JSON 模式）；
 Gemini（`Google GenerateContent`）、`Anthropic Messages`、`OpenAI Responses` 条目
 通过 **JianerAI 的 Provider 层桥接**（只导入模块，不需要启用 JianerAI 插件），
-可以正常对话与图片输入，但这几条桥接模型**本轮不支持工具调用**。
+可以正常对话、图片输入与工具调用（桥接模型通过 JianerAI 的 `complete_agent_turn`
+执行同一套工具协议；若该模型未声明工具能力，则自动退化为普通对话）。
 `~主动发言 状态` 会分别列出「多协议桥接模型」和真正不支持的模型。
 
 ## 数据

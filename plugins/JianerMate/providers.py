@@ -250,8 +250,10 @@ class JianerAIBridge:
         try:
             from plugins.JianerAI.providers import (  # noqa: PLC0415
                 ChatRequest,
+                FunctionTool,
                 MediaAttachment,
                 ProviderRegistry,
+                ToolResultTurn,
             )
         except Exception as exc:  # noqa: BLE001 - optional dependency
             self._error = f"{exc.__class__.__name__}: {exc}"
@@ -263,6 +265,8 @@ class JianerAIBridge:
             return
         self._chat_request = ChatRequest
         self._media_attachment = MediaAttachment
+        self._function_tool = FunctionTool
+        self._tool_result_turn = ToolResultTurn
 
     @property
     def available(self) -> bool:
@@ -284,6 +288,127 @@ class JianerAIBridge:
     def model_keys(self) -> tuple[str, ...]:
         if self._registry is None:
             return ()
+        try:
+            return tuple(sorted(self._registry.list_models()))
+        except Exception:  # noqa: BLE001 - keep the bridge usable
+            return ()
+
+    def supports_tools(self, key: str) -> bool:
+        if self._registry is None:
+            return False
+        check = getattr(self._registry, "supports_tools", None)
+        if not callable(check):
+            return False
+        try:
+            return bool(check(str(key or "").strip()))
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def complete_text_with_tools(
+        self,
+        key: str,
+        *,
+        system_prompt: str,
+        user_text: str,
+        tools: Sequence[Mapping[str, Any]],
+        executor: Any = None,
+        max_rounds: int = 3,
+        images: Sequence[ChatImage] = (),
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Tool loop for bridged models that declare tool support."""
+
+        if (
+            self._registry is None
+            or self._chat_request is None
+            or self._function_tool is None
+            or self._tool_result_turn is None
+            or not self.supports_tools(key)
+        ):
+            return await self.complete_text(
+                key,
+                system_prompt=system_prompt,
+                user_text=user_text,
+                images=images,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        declarations = tuple(
+            self._function_tool(
+                name=str((item.get("function") or {}).get("name") or ""),
+                description=str(
+                    (item.get("function") or {}).get("description") or ""
+                ),
+                parameters=dict(
+                    (item.get("function") or {}).get("parameters") or {}
+                ),
+            )
+            for item in tools
+            if (item.get("function") or {}).get("name")
+        )
+        attachments = self._attachments(images)
+        turns: list[Any] = []
+        for _round in range(1, max(1, int(max_rounds)) + 1):
+            request = self._chat_request(
+                message=str(user_text or ""),
+                system_prompt=str(system_prompt or ""),
+                attachments=attachments,
+                tools=declarations,
+                turns=tuple(turns),
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
+            try:
+                response = await self._registry.complete_agent_turn(
+                    key, request
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise ProviderError(
+                    f"多协议调用失败：{exc.__class__.__name__}"
+                ) from exc
+            calls = tuple(getattr(response, "tool_calls", ()) or ())
+            text = str(getattr(response, "text", "") or "").strip()
+            if not calls:
+                if not text:
+                    raise ProviderError("模型返回了空内容")
+                return text
+            turn = getattr(response, "turn", None)
+            if turn is not None:
+                turns.append(turn)
+            for call in calls:
+                if executor is None:
+                    result = "工具执行器不可用。"
+                else:
+                    try:
+                        result = await executor(
+                            str(getattr(call, "id", "")),
+                            str(getattr(call, "name", "")),
+                            dict(getattr(call, "arguments", {}) or {}),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        result = f"工具执行失败：{exc.__class__.__name__}"
+                turns.append(
+                    self._tool_result_turn(
+                        call_id=str(getattr(call, "id", "")),
+                        name=str(getattr(call, "name", "")),
+                        content=str(result)[:8000],
+                    )
+                )
+        raise ProviderError("工具调用轮次超限")
+
+    def _attachments(self, images: Sequence[ChatImage]) -> tuple[Any, ...]:
+        if self._media_attachment is None:
+            return ()
+        return tuple(
+            self._media_attachment(
+                data=bytes(image.data),
+                mime=str(image.mime or "image/jpeg"),
+                source="jianer-mate",
+            )
+            for image in images
+            if image.data
+        )
         try:
             return tuple(sorted(self._registry.list_models()))
         except Exception:  # noqa: BLE001
@@ -564,8 +689,21 @@ class OpenAICompatibleClient:
         bridge = self._bridge_for(key)
         if bridge is not None:
             if tool_schemas:
+                runner = getattr(bridge, "complete_text_with_tools", None)
+                if callable(runner):
+                    return await runner(
+                        key,
+                        system_prompt=system_prompt,
+                        user_text=user_text,
+                        tools=tool_schemas,
+                        executor=executor,
+                        max_rounds=max_rounds,
+                        images=images,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
                 _LOGGER.info(
-                    "模型 %s 走多协议桥接，工具调用在本轮不可用", key
+                    "模型 %s 走多协议桥接且不支持工具，本轮按普通对话处理", key
                 )
             return await bridge.complete_text(
                 key,

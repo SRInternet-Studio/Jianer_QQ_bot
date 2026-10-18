@@ -37,6 +37,14 @@ def test_shipped_example_maps_to_host_style_keys():
     assert flat["jianer_mate_meme_max_entries"] == 128
     assert flat["jianer_mate_max_concurrent_ai"] == 2
     assert flat["jianer_mate_group_blacklist"] == []
+    assert flat["jianer_mate_memory_backend"] == "memorix"
+    assert flat["jianer_mate_memory_console_enabled"] is False
+    assert flat["jianer_mate_memory_console_port"] == 8787
+    assert flat["jianer_mate_suffix_config_path"] == "suffix_config.json"
+    assert flat["jianer_mate_tts_enabled"] is False
+    assert flat["jianer_mate_tool_bash_enabled"] is False
+    assert flat["jianer_mate_tool_subagent_max_tasks"] == 4
+    assert flat["jianer_mate_tool_mcp_enabled"] is False
     assert "jianer_mate_config_path" not in flat
 
 

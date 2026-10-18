@@ -115,6 +115,9 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
         "db_path": "jianer_mate_memory_db_path",
         "data_dir": "jianer_mate_memory_data_dir",
         "embedding_config_path": "jianer_mate_memory_embedding_config_path",
+        "console_enabled": "jianer_mate_memory_console_enabled",
+        "console_host": "jianer_mate_memory_console_host",
+        "console_port": "jianer_mate_memory_console_port",
     },
     "tts": {
         "enabled": "jianer_mate_tts_enabled",
@@ -331,6 +334,15 @@ def build_config_document(options: Any) -> dict[str, Any]:
             "enabled": bool(getattr(options, "memory_enabled", True)),
             "db_path": _portable(
                 root, getattr(options, "memory_db_path", None)
+            ),
+            "console_enabled": bool(
+                getattr(options, "memory_console_enabled", False)
+            ),
+            "console_host": str(
+                getattr(options, "memory_console_host", "127.0.0.1")
+            ),
+            "console_port": int(
+                getattr(options, "memory_console_port", 8787)
             ),
         },
         "tts": {

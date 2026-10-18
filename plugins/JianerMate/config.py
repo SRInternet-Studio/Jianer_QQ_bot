@@ -151,6 +151,9 @@ class RuntimeOptions:
     suffix_config_path: Path = field(
         default_factory=lambda: Path("suffix_config.json")
     )
+    memory_console_enabled: bool = False
+    memory_console_host: str = "127.0.0.1"
+    memory_console_port: int = 8787
     context_messages: int = 40
     history_keep_messages: int = 300
     history_retention_days: int = 7
@@ -461,6 +464,18 @@ class RuntimeOptions:
                 project_root,
                 others.get("jianer_mate_suffix_config_path"),
                 "suffix_config.json",
+            ),
+            memory_console_enabled=_as_bool(
+                others.get("jianer_mate_memory_console_enabled"), False
+            ),
+            memory_console_host=_clean_text(
+                others.get("jianer_mate_memory_console_host"), "127.0.0.1"
+            ),
+            memory_console_port=_clamp_int(
+                others.get("jianer_mate_memory_console_port"),
+                8787,
+                minimum=1,
+                maximum=65535,
             ),
             context_messages=context_messages,
             history_keep_messages=_clamp_int(

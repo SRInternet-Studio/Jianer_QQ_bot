@@ -124,7 +124,10 @@
         "backend": "memorix",
         "db_path": "data/jianer_mate/memory.db",
         "data_dir": "data/jianer_mate/memorix",
-        "embedding_config_path": "aiconfig/embedding.json"
+        "embedding_config_path": "aiconfig/embedding.json",
+        "console_enabled": false,
+        "console_host": "127.0.0.1",
+        "console_port": 8787
     },
     "tts": {
         "enabled": false,

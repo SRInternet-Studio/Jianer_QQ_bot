@@ -428,3 +428,52 @@ def test_real_bridge_reads_the_repo_aiconfig():
     # aiconfig/example.ai.json is a Google GenerateContent entry.
     assert bridge.supports("example") is True
     assert "example" in bridge.model_keys()
+
+
+class _ToolBridge(_StubBridge):
+    def __init__(self):
+        super().__init__('{"messages": ["工具后的结论"]}')
+        self.tool_kwargs = None
+
+    def supports_tools(self, key):
+        return True
+
+    async def complete_text_with_tools(self, key, **kwargs):
+        self.tool_kwargs = {"key": key, **kwargs}
+        return self.payload
+
+
+def test_bridged_models_use_the_tool_loop_when_supported():
+    async def scenario():
+        bridge = _ToolBridge()
+        client = OpenAICompatibleClient({}, bridge=bridge)
+        executed = []
+
+        async def executor(call_id, name, arguments):
+            executed.append(name)
+            return "ok"
+
+        plan = await client.complete_json_with_tools(
+            "gemini",
+            system_prompt="sys",
+            user_text="现在几点",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_current_time",
+                        "description": "clock",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            executor=executor,
+        )
+        assert plan == {"messages": ["工具后的结论"]}
+        assert bridge.tool_kwargs is not None
+        assert bridge.tool_kwargs["tools"][0]["function"]["name"] == (
+            "get_current_time"
+        )
+        assert bridge.tool_kwargs["executor"] is executor
+
+    asyncio.run(scenario())

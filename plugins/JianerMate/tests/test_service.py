@@ -1349,3 +1349,19 @@ def test_tools_command_lists_available_tools(tmp_path):
     )
     assert "只有群主/管理员或机器人管理员" in _sent_text(outsider.sent[-1])
     asyncio.run(service.shutdown())
+
+
+def test_memory_console_skips_when_disabled_or_memory_unavailable(tmp_path):
+    service = _service(tmp_path)
+    _activate(service)
+    # Disabled by default: no console thread, no exception.
+    asyncio.run(service._start_memory_console())
+    assert service._memory_console_thread is None
+
+    service.options = replace(
+        service.options, memory_console_enabled=True
+    )
+    service.long_term = SimpleNamespace(available=False, error="disabled")
+    asyncio.run(service._start_memory_console())
+    assert service._memory_console_thread is None
+    asyncio.run(service.shutdown())

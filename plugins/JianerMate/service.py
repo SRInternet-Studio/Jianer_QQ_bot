@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import random
+import secrets
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -216,6 +217,7 @@ class JianerMateService:
         )
         self.memory_reviewer = MemoryReviewer(self.client, logger=self._logger)
         self._memory_review_task: asyncio.Task[Any] | None = None
+        self._memory_console_thread: Any | None = None
         self._subagent_semaphore = asyncio.Semaphore(
             max(1, int(options.tools.subagent_max_concurrency))
         )
@@ -288,6 +290,8 @@ class JianerMateService:
         self._manager = manager
         self.tool_runtime.set_subagent_runner(self._run_subagent)
         self._memory_review_task = self._spawn(self._memory_review_loop())
+        with contextlib.suppress(Exception):
+            await self._start_memory_console()
         self._spawn(self._load_external_plugin_tools())
         if ensure_config_file(self.options.config_path, self.options):
             self._log_info(f"已生成插件配置文件：{self.options.config_path}")
@@ -327,6 +331,10 @@ class JianerMateService:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks.clear()
+        console, self._memory_console_thread = self._memory_console_thread, None
+        if console is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(console.stop)
         if self.speech is not None:
             with contextlib.suppress(Exception):
                 await self.speech.shutdown()
@@ -807,6 +815,52 @@ class JianerMateService:
             return
         if loaded:
             self._log_info("已加载插件工具：" + "，".join(loaded))
+
+    async def _start_memory_console(self) -> None:
+        """Expose the memorix console (same UI as JianerAI) when enabled."""
+
+        if (
+            not self.options.memory_console_enabled
+            or self._memory_console_thread is not None
+            or not self.long_term.available
+        ):
+            return
+        try:
+            from plugins.JianerAI.memorix_console import (  # noqa: PLC0415
+                ConsoleConfig,
+                start_console_in_thread,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional
+            self._log_info(f"记忆控制台不可用：{exc.__class__.__name__}")
+            return
+        token = secrets.token_urlsafe(32)
+        console_kernel = getattr(self.long_term, "_kernel", None)
+        resolve_kernel = getattr(self.long_term, "_call_kernel", None)
+        if console_kernel is None and callable(resolve_kernel):
+            async def _identity(kernel: Any) -> Any:
+                return kernel
+
+            console_kernel = resolve_kernel(_identity)
+        config = ConsoleConfig(
+            enabled=True,
+            host=self.options.memory_console_host,
+            port=self.options.memory_console_port,
+            token=token,
+        )
+        thread = start_console_in_thread(
+            kernel=console_kernel,
+            memory_store=self.long_term,
+            config=config,
+        )
+        await asyncio.to_thread(thread.wait_until_ready)
+        self._memory_console_thread = thread
+        print(
+            "JianerMate memory console started. "
+            f"Listen: {config.host}:{config.port}; "
+            f"Local URL: http://127.0.0.1:{config.port}; "
+            f"temporary token (valid until shutdown): {token}",
+            flush=True,
+        )
 
     def register_tool(self, spec: Any) -> Any:
         """Sibling-plugin API compatible with JianerAI's ``register_tool``."""
