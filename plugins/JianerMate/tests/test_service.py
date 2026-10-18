@@ -1325,3 +1325,27 @@ def test_subagent_runner_is_wired_after_activation(tmp_path):
     _activate(service)
     assert service.tool_runtime.subagent_runner is not None
     asyncio.run(service.shutdown())
+
+
+def test_tools_command_lists_available_tools(tmp_path):
+    service = _service(tmp_path)
+    _activate(service)
+    _enable_group(service)
+    actions = _FakeActions()
+    asyncio.run(
+        service.tools_command(
+            _event(user_id="1", at=False, text="工具"), actions, ""
+        )
+    )
+    text = _sent_text(actions.sent[-1])
+    assert "已注册" in text
+    assert "get_current_time" in text
+
+    outsider = _FakeActions()
+    asyncio.run(
+        service.tools_command(
+            _event(user_id="9", at=False, text="工具"), outsider, ""
+        )
+    )
+    assert "只有群主/管理员或机器人管理员" in _sent_text(outsider.sent[-1])
+    asyncio.run(service.shutdown())

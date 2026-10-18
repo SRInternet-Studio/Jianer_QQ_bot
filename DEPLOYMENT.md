@@ -405,11 +405,17 @@ AI：群里被 @ 或私聊时回复，群内可开启主动发言，回复拆成
 }
 ```
 
-   插件配置文件的 `tools` 段决定工具调用：默认放开 9 个只读工具（时间、算术、
-   当前用户/会话资料、读/搜聊天记录、联网搜索、GitHub、信息卡）。工具实现直接来自
-   仓库里的 `plugins/JianerAI/tools`，**不需要启用 JianerAI 插件**；`web_browser`、
-   平台 API 与写操作需要显式把 `include_web_browser` / `allow_mutating` 打开。
-   `~主动发言 状态` 会显示当前可用工具数量。
+   插件配置文件的 `tools` 段决定工具调用：默认放开只读工具（时间、算术、当前
+   用户/会话资料、读/搜聊天记录、联网搜索、GitHub、信息卡，以及技能目录存在时的
+   Agent Skills 与 `list_my_memories`）。工具实现直接来自仓库里的
+   `plugins.JianerAI/tools`，**不需要启用 JianerAI 插件**；`web_browser`、
+   平台写操作、MCP、`bash`（人工审批）与 `spawn_subagents` 需要按需打开对应开关。
+   `~工具` 可以查看本会话当前暴露给模型的工具，`~主动发言 状态` 会显示工具总量与
+   多协议桥接模型。
+
+   其余常用段落：`memory`（memorix 长期记忆与 embedding 配置，缺配置自动回退旧
+   存储）、`tts`（文本回复后补发语音，需适配器支持音频）、`suffix`（复用
+   `suffix_config.json` 的全局/特定后缀）、`models`（Planner / Replyer 模型代码）。
 
 4. 迁移旧人格：机器人管理员发送 `~人格 导入 Normal`（或换成
    `prerequisites/current.json` 里的其它预设名），插件会只读旧预设并用模型转写成

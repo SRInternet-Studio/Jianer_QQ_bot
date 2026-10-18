@@ -34,6 +34,10 @@ class _RecordingService:
         self.calls.append(("shell", request_id, approve))
         return True
 
+    async def tools_command(self, event, actions, action=""):
+        self.calls.append(("tools", action))
+        return True
+
     async def meme_command(
         self, event, actions, action="", argument="", extra=""
     ):
@@ -146,6 +150,17 @@ def test_shell_review_commands_are_dispatched():
     handled, calls = _dispatch("~拒绝Shell a1b2c3", service)
     assert handled is True
     assert calls[-1] == ("shell", "a1b2c3", False)
+
+
+def test_tools_command_is_dispatched():
+    service = _RecordingService()
+    handled, calls = _dispatch("~工具", service)
+    assert handled is True
+    assert calls[-1] == ("tools", "")
+
+    handled, calls = _dispatch("~工具 全部", service)
+    assert handled is True
+    assert calls[-1] == ("tools", "全部")
 
 
 def test_unrelated_text_is_not_handled():

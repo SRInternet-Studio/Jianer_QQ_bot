@@ -555,6 +555,13 @@ class MateToolRuntime:
             "names": names,
         }
 
+    def all_tool_names(self) -> tuple[str, ...]:
+        """Every registered tool name, ignoring the per-call allowlist."""
+
+        if self._registry is None:
+            return ()
+        return tuple(sorted(spec.name for spec in self._registry.specs))
+
     async def shutdown(self) -> None:
         manager, self._shell_manager = self._shell_manager, None
         if manager is not None:

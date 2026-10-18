@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 新增
+- 新增目录插件 `plugins/JianerMate/`（`jianerbot-plugin-jianer-mate`）：单人设群聊 AI，支持群内 @/私聊被动对话、按群开启的主动发言、短句多段回复与拟人化后处理（错别字自纠、颜文字/口癖）、全局表情包库（自动收集、视觉挑选、`~偷表情`/`~表情包` 管理）、MaiBot 风格人格（备用说话风格、群聊/私聊提示词、别名点名）、旧预设用 LLM 转写为人格（`~人格 转换/导入/重置`）；模型复用 `aiconfig`，非 OpenAI 兼容条目（Gemini/Anthropic/Responses）通过 JianerAI Provider 层桥接；长期记忆默认走 memorix（缺 embedding 配置自动回退旧存储）并在回复后自动审查写入，工具侧接入内置工具、只读平台 API、Agent Skills、MCP、第三方插件工具、`bash`（人工审批）与 `spawn_subagents`；支持 TTS 语音回复与回复后缀；拥有独立插件配置文件 `data/jianer_mate/config.json`（优先于宿主 `config.others` 的同名键）。
 - `web_search` 支持模型用 `backend` 指定搜索后端；当前模型为 DeepSeek 官方 API 时自动改用 DeepSeek 网页搜索；DDGS 超时或网络错误后按智谱、博查、Bing 中国顺序自动回退，新增 `WEB_SEARCH_FALLBACK_BACKENDS`、`ZHIPUAI_API_KEY`、`BOCHA_API_KEY` 配置。
 - 新增目录插件 `plugins/Wordle/`（参考 `nonebot-plugin-wordle`，MIT）：`~wordle [-l 长度] [-d 词典]` 开局、`~wordle 猜 <单词>` 竞猜、`~wordle 提示/状态/结束`；群内共享一局、任何成员都可猜，开局后也可直接发送单词、提示或结束；用 PIL 渲染棋盘，内置多套词典与释义，长度 3~8、最多“长度+1”次机会，10 分钟超时自动结束。
 - 移植 `nonebot-plugin-maimaidx` v3.1.4 为 JianerCore 目录插件 `plugins/MaimaiDX/`，覆盖成绩、曲目、别名、猜歌、表格、数据源和主题等命令，并保留上游 MIT 许可与绘图署名。
@@ -12,6 +13,7 @@
 - 新增脱敏的 `config.example.json`，提供 OneBot、Milky、Kritor、飞书和 AI 基础配置结构。
 
 ### 变更
+- 舞萌DX 的 AI 工具宿主改为依次查找 JianerAI 与 JianerMate，切换到 JianerMate 后 `b50`、查歌、猜歌等 AI 工具依旧可用。
 - 舞萌DX 不再依赖 JianerAI 插件：移除插件依赖声明，未启用或尚未就绪时跳过 AI 工具注册并在监听启动后重试，命令功能与 `@机器人` 消息让位行为保持不变。
 - 舞萌DX 插件不再响应群聊中 `@机器人` 的消息，这类消息继续交给 JianerAI 处理；`b50 @成员` 等指定其他群成员的查询不受影响。
 - 网页搜索提供方改由宿主配置 `WEB_SEARCH_PROVIDER` 决定（`ddgs` 默认，或 `deepseek` 官方网页搜索 API `POST /v1/tools/search`），不再按当前对话模型的 BaseUrl 自动切换；`deepseek` 也可作为 DDGS 回退链的一环，密钥读取 `DEEPSEEK_API_KEY`。

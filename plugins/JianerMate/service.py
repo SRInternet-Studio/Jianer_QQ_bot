@@ -903,6 +903,65 @@ class JianerMateService:
         await self._reply(actions, event, message)
         return True
 
+    async def tools_command(
+        self,
+        event: Any,
+        actions: Any,
+        action: str = "",
+    ) -> bool:
+        """``~工具`` lists what the model can call in this conversation."""
+
+        if not self._can_manage(event):
+            await self._reply(
+                actions, event, "只有群主/管理员或机器人管理员能查看工具列表。"
+            )
+            return True
+        key = self._conversation_ref(event)
+        conversation = None
+        if key is not None:
+            conversation = self.store.get_conversation(
+                key.protocol, key.self_id, key.kind, key.conversation_id
+            )
+        visible: tuple[str, ...] = ()
+        if key is not None and conversation is not None:
+            context = await self._tool_context(
+                event,
+                actions,
+                key,
+                conversation,
+                model=self._replyer_model_key(),
+            )
+            visible = tuple(
+                item["function"]["name"]
+                for item in self._tool_schemas(context)
+            )
+        status = self.tool_runtime.status()
+        lines = [
+            "工具调用：%s"
+            % (
+                "关闭"
+                if not status.get("enabled")
+                else (
+                    f"不可用（{status.get('error') or '未知原因'}）"
+                    if not status.get("available")
+                    else f"已注册 {len(self.tool_runtime.all_tool_names())} 个"
+                )
+            ),
+            "本会话可用："
+            + ("，".join(sorted(visible)) if visible else "（无）"),
+        ]
+        if str(action or "").strip() in {"全部", "all"}:
+            if not self._is_bot_admin(event):
+                await self._reply(
+                    actions, event, "查看全部工具只有机器人管理员可以。"
+                )
+                return True
+            lines.append(
+                "全部工具：" + "，".join(self.tool_runtime.all_tool_names())
+            )
+        await self._reply(actions, event, "\n".join(lines))
+        return True
+
     # ------------------------------------------------------------------ #
     # automatic memory review
     # ------------------------------------------------------------------ #
