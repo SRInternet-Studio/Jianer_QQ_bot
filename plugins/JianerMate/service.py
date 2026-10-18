@@ -48,6 +48,7 @@ from plugins.JianerMate.plugin_config import (
 from plugins.JianerMate.planner import Planner, PlannerDecision
 from plugins.JianerMate.providers import (
     ChatImage,
+    JianerAIBridge,
     OpenAICompatibleClient,
     ProviderError,
     ResponseParseError,
@@ -165,7 +166,9 @@ class JianerMateService:
             if entries is not None:
                 loaded = dict(entries)
             self._model_errors = errors
-            self.client = OpenAICompatibleClient(loaded)
+            self.client = OpenAICompatibleClient(
+                loaded, bridge=JianerAIBridge(options.ai_config_dir)
+            )
         self._model_errors = getattr(self, "_model_errors", {})
         self.planner = planner or Planner(
             self.client, options=options, logger=self._logger
@@ -2246,6 +2249,10 @@ class JianerMateService:
         )
         if hasattr(self.client, "reload"):
             self.client.reload(entries)
+        if hasattr(self.client, "set_bridge"):
+            self.client.set_bridge(
+                JianerAIBridge(options.ai_config_dir)
+            )
         self.memes.options = options.meme
         self.memes.directory = Path(options.meme_dir)
         self.memes.directory.mkdir(parents=True, exist_ok=True)
@@ -2514,8 +2521,19 @@ class JianerMateService:
         debug = "开" if conversation is not None and conversation.debug_dry_run else "关"
         planner = self._planner_model_key() or "未配置"
         replyer = self._replyer_model_key() or "未配置"
+        serves = getattr(self.client, "serves", None)
         unsupported = [
-            entry.key for entry in self.client.models.values() if not entry.supported
+            entry.key
+            for entry in self.client.models.values()
+            if not entry.supported
+            and not (callable(serves) and serves(entry.key))
+        ]
+        bridged = [
+            entry.key
+            for entry in self.client.models.values()
+            if not entry.supported
+            and callable(serves)
+            and serves(entry.key)
         ]
         lines = [
             "JianerMate 状态",
@@ -2548,6 +2566,10 @@ class JianerMateService:
             lines.append(f"冲突：{self._conflict_detail}")
         if unsupported:
             lines.append("不支持协议的模型：" + "，".join(sorted(unsupported)))
+        if bridged:
+            lines.append(
+                "多协议桥接模型：" + "，".join(sorted(bridged))
+            )
         if self._model_errors:
             lines.append(
                 "配置错误：" + "；".join(sorted(self._model_errors))[:200]

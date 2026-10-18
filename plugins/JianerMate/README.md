@@ -173,9 +173,12 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
 - `jianer_mate_meme_candidates` / `jianer_mate_meme_thumbnail_px`：候选数量与缩略图边长。
 - `jianer_mate_meme_reuse_cooldown_seconds`：同一张表情的最短复用间隔。
 
-模型协议限制：只支持 `ResponseType` 为 OpenAI 兼容（`OpenAI` / `OpenAI-Compatible` /
-`Chat Completions`）的条目；Gemini、Anthropic、OpenAI Responses 条目会在
-`~主动发言 状态` 里标记为「不支持」。
+模型协议：`ResponseType` 为 OpenAI 兼容（`OpenAI` / `OpenAI-Compatible` /
+`Chat Completions`）的条目走本插件自己的客户端（支持图片、工具调用与 JSON 模式）；
+Gemini（`Google GenerateContent`）、`Anthropic Messages`、`OpenAI Responses` 条目
+通过 **JianerAI 的 Provider 层桥接**（只导入模块，不需要启用 JianerAI 插件），
+可以正常对话与图片输入，但这几条桥接模型**本轮不支持工具调用**。
+`~主动发言 状态` 会分别列出「多协议桥接模型」和真正不支持的模型。
 
 ## 数据
 

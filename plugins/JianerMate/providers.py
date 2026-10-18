@@ -11,11 +11,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import aiohttp
+
+
+_LOGGER = logging.getLogger("jianer_mate.providers")
 
 
 OPENAI_CHAT_COMPLETIONS = "openai_chat_completions"
@@ -228,6 +232,107 @@ def parse_json_object(text: str) -> dict[str, Any]:
     return payload
 
 
+class JianerAIBridge:
+    """Serve non OpenAI-compatible aiconfig entries via JianerAI's registry.
+
+    Models configured as ``Google GenerateContent``, ``Anthropic Messages`` or
+    ``OpenAI Responses`` cannot be driven by JianerMate's chat-completions
+    client.  Instead of re-implementing those protocols, the bridge reuses the
+    provider layer that already ships in ``plugins.JianerAI`` (module import
+    only; the JianerAI plugin itself does not have to be enabled).
+    """
+
+    def __init__(self, config_dir: str | Path) -> None:
+        self._registry: Any | None = None
+        self._chat_request: Any | None = None
+        self._media_attachment: Any | None = None
+        self._error = ""
+        try:
+            from plugins.JianerAI.providers import (  # noqa: PLC0415
+                ChatRequest,
+                MediaAttachment,
+                ProviderRegistry,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional dependency
+            self._error = f"{exc.__class__.__name__}: {exc}"
+            return
+        try:
+            self._registry = ProviderRegistry(Path(config_dir))
+        except Exception as exc:  # noqa: BLE001
+            self._error = f"{exc.__class__.__name__}: {exc}"
+            return
+        self._chat_request = ChatRequest
+        self._media_attachment = MediaAttachment
+
+    @property
+    def available(self) -> bool:
+        return self._registry is not None
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+    def supports(self, key: str) -> bool:
+        if self._registry is None:
+            return False
+        try:
+            self._registry.get(str(key or "").strip())
+        except Exception:  # noqa: BLE001 - unknown model
+            return False
+        return True
+
+    def model_keys(self) -> tuple[str, ...]:
+        if self._registry is None:
+            return ()
+        try:
+            return tuple(sorted(self._registry.list_models()))
+        except Exception:  # noqa: BLE001
+            return ()
+
+    async def complete_text(
+        self,
+        key: str,
+        *,
+        system_prompt: str,
+        user_text: str,
+        images: Sequence[ChatImage] = (),
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        if (
+            self._registry is None
+            or self._chat_request is None
+            or self._media_attachment is None
+        ):
+            raise ProviderError("多协议桥接不可用")
+        attachments = tuple(
+            self._media_attachment(
+                data=bytes(image.data),
+                mime=str(image.mime or "image/jpeg"),
+                source="jianer-mate",
+            )
+            for image in images
+            if image.data
+        )
+        request = self._chat_request(
+            message=str(user_text or ""),
+            system_prompt=str(system_prompt or ""),
+            attachments=attachments,
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
+        try:
+            response = await self._registry.complete_request(key, request)
+        except Exception as exc:  # noqa: BLE001 - normalize for our callers
+            raise ProviderError(
+                f"多协议调用失败：{exc.__class__.__name__}"
+            ) from exc
+        text = str(getattr(response, "text", "") or "").strip()
+        if not text:
+            raise ProviderError("模型返回了空内容")
+        return text
+
+
 class OpenAICompatibleClient:
     """Async chat-completions client with image input and JSON answers."""
 
@@ -238,8 +343,10 @@ class OpenAICompatibleClient:
         session: Any | None = None,
         sleep: Any = asyncio.sleep,
         max_retries: int = 2,
+        bridge: Any | None = None,
     ) -> None:
         self._entries: dict[str, ModelEntry] = dict(entries or {})
+        self._bridge = bridge
         self._session = session
         self._owns_session = session is None
         self._sleep = sleep
@@ -254,8 +361,34 @@ class OpenAICompatibleClient:
         self._entries = dict(entries)
 
     def has_model(self, key: str) -> bool:
+        return self.serves(key)
+
+    def serves(self, key: str) -> bool:
+        """Whether this client can drive ``key`` (OpenAI-compatible or bridged)."""
+
         entry = self._entries.get(str(key or "").strip())
-        return entry is not None and entry.supported
+        if entry is not None and entry.supported and entry.api_key:
+            return True
+        bridge = self._bridge
+        return bool(
+            bridge is not None
+            and getattr(bridge, "available", False)
+            and bridge.supports(str(key or "").strip())
+        )
+
+    def set_bridge(self, bridge: Any | None) -> None:
+        self._bridge = bridge
+
+    def _bridge_for(self, key: str) -> Any | None:
+        """Return a bridge when ``key`` is not an OpenAI-compatible entry."""
+
+        entry = self._entries.get(str(key or "").strip())
+        if entry is not None and entry.supported and entry.api_key:
+            return None
+        bridge = self._bridge
+        if bridge is None or not getattr(bridge, "available", False):
+            return None
+        return bridge if bridge.supports(str(key or "").strip()) else None
 
     def entry(self, key: str) -> ModelEntry:
         normalized = str(key or "").strip()
@@ -289,6 +422,16 @@ class OpenAICompatibleClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> str:
+        bridge = self._bridge_for(key)
+        if bridge is not None:
+            return await bridge.complete_text(
+                key,
+                system_prompt=system_prompt,
+                user_text=user_text,
+                images=images,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         entry = self.entry(key)
         payload = _build_payload(
             entry,
@@ -312,6 +455,20 @@ class OpenAICompatibleClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> dict[str, Any]:
+        bridge = self._bridge_for(key)
+        if bridge is not None:
+            text = await bridge.complete_text(
+                key,
+                system_prompt=system_prompt,
+                user_text=user_text,
+                images=images,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            try:
+                return parse_json_object(text)
+            except ValueError as exc:
+                raise ResponseParseError("模型返回的 JSON 无法解析") from exc
         entry = self.entry(key)
         payload = _build_payload(
             entry,
@@ -403,6 +560,21 @@ class OpenAICompatibleClient:
         temperature: float | None,
         json_mode: bool,
     ) -> str:
+        tool_schemas = [dict(item) for item in tools]
+        bridge = self._bridge_for(key)
+        if bridge is not None:
+            if tool_schemas:
+                _LOGGER.info(
+                    "模型 %s 走多协议桥接，工具调用在本轮不可用", key
+                )
+            return await bridge.complete_text(
+                key,
+                system_prompt=system_prompt,
+                user_text=user_text,
+                images=images,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         entry = self.entry(key)
         payload = _build_payload(
             entry,
@@ -413,7 +585,6 @@ class OpenAICompatibleClient:
             temperature=temperature,
             json_mode=json_mode,
         )
-        tool_schemas = [dict(item) for item in tools]
         messages = list(payload.get("messages") or [])
         rounds = 0
         while True:

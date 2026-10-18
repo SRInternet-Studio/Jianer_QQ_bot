@@ -362,3 +362,69 @@ def test_client_runs_tools_in_text_mode():
         assert "response_format" not in session.posts[0]["json"]
 
     asyncio.run(scenario())
+
+
+class _StubBridge:
+    available = True
+
+    def __init__(self, payload='{"messages": ["桥接回复"]}'):
+        self.payload = payload
+        self.calls = []
+
+    def supports(self, key):
+        return key == "gemini"
+
+    async def complete_text(self, key, **kwargs):
+        self.calls.append({"key": key, **kwargs})
+        return self.payload
+
+
+def test_non_openai_models_are_served_through_the_bridge():
+    async def scenario():
+        bridge = _StubBridge()
+        client = OpenAICompatibleClient({}, bridge=bridge)
+        assert client.has_model("gemini") is True
+        assert client.serves("gemini") is True
+        assert client.serves("missing") is False
+
+        text = await client.complete_text(
+            "gemini", system_prompt="sys", user_text="你好"
+        )
+        assert text == '{"messages": ["桥接回复"]}'
+        payload = await client.complete_json(
+            "gemini", system_prompt="sys", user_text="你好"
+        )
+        assert payload == {"messages": ["桥接回复"]}
+
+        # Tools are unavailable on the bridged path; the call still succeeds.
+        plan = await client.complete_json_with_tools(
+            "gemini",
+            system_prompt="sys",
+            user_text="你好",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_current_time",
+                        "description": "clock",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            executor=None,
+        )
+        assert plan == {"messages": ["桥接回复"]}
+        assert len(bridge.calls) == 3
+        assert all("images" in call for call in bridge.calls)
+
+    asyncio.run(scenario())
+
+
+def test_real_bridge_reads_the_repo_aiconfig():
+    from plugins.JianerMate.providers import JianerAIBridge
+
+    bridge = JianerAIBridge("aiconfig")
+    assert bridge.available is True, bridge.error
+    # aiconfig/example.ai.json is a Google GenerateContent entry.
+    assert bridge.supports("example") is True
+    assert "example" in bridge.model_keys()
