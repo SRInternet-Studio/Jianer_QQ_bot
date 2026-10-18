@@ -29,6 +29,7 @@ from plugins.JianerMate import style as reply_style
 from plugins.JianerMate.config import RuntimeOptions
 from plugins.JianerMate.memes import MemeLibrary
 from plugins.JianerMate.memory import LongTermMemory
+from plugins.JianerMate.memory_review import MemoryReviewer
 from plugins.JianerMate.moderation import ContentModerator
 from plugins.JianerMate.persona import (
     MAX_MULTIPLE_STYLES,
@@ -190,6 +191,8 @@ class JianerMateService:
             embedding_config_path=options.memory_embedding_config_path,
             bot_name=options.persona.name,
         )
+        self.memory_reviewer = MemoryReviewer(self.client, logger=self._logger)
+        self._memory_review_task: asyncio.Task[Any] | None = None
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -242,6 +245,7 @@ class JianerMateService:
             )
         )
         removed = 0
+        self._memory_review_task = self._spawn(self._memory_review_loop())
         if ensure_config_file(self.options.config_path, self.options):
             self._log_info(f"已生成插件配置文件：{self.options.config_path}")
             self._refresh_config_metadata()
@@ -595,6 +599,9 @@ class JianerMateService:
         sent = await self._deliver(conversation, event, actions, plan)
         if sent > 0:
             self._reset_backoff(key)
+            self._enqueue_memory_review(
+                conversation, key, event, now=now
+            )
         self.store.add_decision(
             conversation.ref,
             gate_passed=True,
@@ -740,6 +747,200 @@ class JianerMateService:
         return f"开（{status.get('tools', 0)} 个可用）"
 
     # ------------------------------------------------------------------ #
+    # automatic memory review
+    # ------------------------------------------------------------------ #
+    def _enqueue_memory_review(
+        self,
+        conversation: ConversationRecord,
+        key: ConversationRef,
+        event: Any,
+        *,
+        now: float,
+    ) -> None:
+        if not self.long_term.available or not self.options.memory_enabled:
+            return
+        exchange_key = f"{conversation.ref}:{int(now * 1000)}"
+        with contextlib.suppress(Exception):
+            self.store.enqueue_memory_job(
+                conversation.ref,
+                exchange_key=exchange_key,
+                canonical_user_id=(
+                    f"{key.protocol}:{getattr(event, 'user_id', '')}"
+                ),
+                now=int(now),
+            )
+
+    async def _memory_review_loop(self) -> None:
+        while not self._closed:
+            try:
+                await self._run_memory_jobs()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._log_exception("记忆审查循环失败")
+            await asyncio.sleep(30.0)
+
+    async def _run_memory_jobs(self) -> None:
+        if not self.long_term.available:
+            return
+        model_key = self._planner_model_key() or self._replyer_model_key()
+        if not model_key:
+            return
+        now = int(self._clock())
+        for job in self.store.due_memory_jobs(now=now, limit=3):
+            await self._run_memory_job(job, model_key=model_key, now=now)
+
+    async def _run_memory_job(
+        self,
+        job: Mapping[str, Any],
+        *,
+        model_key: str,
+        now: int,
+    ) -> None:
+        job_id = int(job["id"])
+        attempts = int(job.get("attempts") or 0)
+        conversation = self.store.get_conversation_by_ref(
+            int(job["conversation_ref"])
+        )
+        if conversation is None:
+            self.store.finish_memory_job(
+                job_id, status="done", attempts=attempts, now=now
+            )
+            return
+        canonical = str(job.get("canonical_user_id") or "")
+        recent = self.store.recent_messages(
+            conversation.ref, limit=self.options.context_messages
+        )
+        transcript = "\n".join(
+            "%s: %s"
+            % (
+                "自己"
+                if record.direction == "outgoing"
+                else (record.sender_name or record.sender_id or "群友"),
+                record.content,
+            )
+            for record in recent
+            if record.content
+        )
+        persona = self._effective_persona()
+        try:
+            actions = await self.memory_reviewer.review(
+                model_key=model_key,
+                transcript=transcript,
+                persona_text=persona.render("group"),
+                known_memories=self._known_memories(canonical, persona.name),
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the job for a retry
+            next_attempts = attempts + 1
+            if next_attempts >= 5:
+                self.store.finish_memory_job(
+                    job_id,
+                    status="failed",
+                    error=f"{exc.__class__.__name__}: {exc}",
+                    attempts=next_attempts,
+                    now=now,
+                )
+            else:
+                delay = min(3600, 30 * (2 ** (next_attempts - 1)))
+                self.store.finish_memory_job(
+                    job_id,
+                    status="pending",
+                    error=f"{exc.__class__.__name__}: {exc}",
+                    attempts=next_attempts,
+                    next_attempt_at=now + delay,
+                    now=now,
+                )
+            return
+        self._ensure_memory_identity(canonical)
+        for action in actions:
+            with contextlib.suppress(Exception):
+                if action.action == "create":
+                    self.long_term.create_scoped_memory(
+                        scope=action.scope,
+                        canonical_user_id=canonical,
+                        preset=persona.name,
+                        content=action.memory_text,
+                        canonical_fact=action.canonical_fact,
+                        importance=action.importance,
+                        confidence=action.confidence,
+                        protocol=conversation.protocol,
+                        self_id=conversation.self_id,
+                        group_id=(
+                            conversation.conversation_id
+                            if conversation.kind == "group"
+                            else ""
+                        ),
+                    )
+                else:
+                    self.long_term.update_scoped_memory(
+                        scope=action.scope,
+                        canonical_user_id=canonical,
+                        preset=persona.name,
+                        memory_id=action.memory_id,
+                        content=action.memory_text,
+                        canonical_fact=action.canonical_fact,
+                        importance=action.importance,
+                        confidence=action.confidence,
+                    )
+        self.store.finish_memory_job(
+            job_id,
+            status="done",
+            attempts=attempts + 1,
+            now=now,
+        )
+        if actions:
+            self._log_info(f"记忆审查写入 {len(actions)} 条长期记忆")
+
+    def _ensure_memory_identity(self, canonical: str) -> None:
+        if not canonical or not self.long_term.available:
+            return
+        ensure = getattr(self.long_term, "ensure_identity", None)
+        if not callable(ensure):
+            return
+        protocol, _, external = canonical.partition(":")
+        with contextlib.suppress(Exception):
+            ensure(
+                protocol=protocol or "qq",
+                self_id="",
+                external_id=external or canonical,
+            )
+
+    def _known_memories(
+        self, canonical: str, preset: str
+    ) -> tuple[Mapping[str, Any], ...]:
+        if not canonical or not self.long_term.available:
+            return ()
+        self._ensure_memory_identity(canonical)
+        output: list[Mapping[str, Any]] = []
+        for scope in ("person", "group"):
+            listing = getattr(
+                self.long_term, "list_scoped_memories", None
+            )
+            if not callable(listing):
+                continue
+            try:
+                records = listing(
+                    scope=scope,
+                    canonical_user_id=canonical,
+                    preset=preset,
+                    limit=5,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            for record in records or ():
+                output.append(
+                    {
+                        "id": str(getattr(record, "id", "")),
+                        "scope": scope,
+                        "canonical_fact": str(
+                            getattr(record, "canonical_fact", "")
+                            or getattr(record, "content", "")
+                        ),
+                    }
+                )
+        return tuple(output[:6])
+
+    # ------------------------------------------------------------------ #
     # passive fallback
     # ------------------------------------------------------------------ #
     async def handle_fallback(self, event: Any, actions: Any) -> bool:
@@ -833,6 +1034,9 @@ class JianerMateService:
                 actions,
                 plan,
                 at_user_ids=at_user_ids,
+            )
+            self._enqueue_memory_review(
+                conversation, key, event, now=now
             )
         return True
 

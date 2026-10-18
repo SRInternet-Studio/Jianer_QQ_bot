@@ -83,6 +83,23 @@ CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS memory_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_ref INTEGER NOT NULL,
+    exchange_key TEXT NOT NULL UNIQUE,
+    canonical_user_id TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_jobs_due
+    ON memory_jobs(status, next_attempt_at);
 """
 
 
@@ -671,6 +688,100 @@ class MateStore:
             )
             for row in rows
         )
+
+    # ------------------------------------------------------------------ #
+    # memory review jobs
+    # ------------------------------------------------------------------ #
+    def enqueue_memory_job(
+        self,
+        conversation_ref: int,
+        *,
+        exchange_key: str,
+        canonical_user_id: str = "",
+        payload: str = "{}",
+        now: int | None = None,
+    ) -> bool:
+        """Idempotent enqueue; ``False`` when this exchange was queued before."""
+
+        timestamp = int(now if now is not None else time.time())
+        with self._lock:
+            try:
+                self._connection.execute(
+                    """
+                    INSERT INTO memory_jobs (
+                        conversation_ref, exchange_key, canonical_user_id,
+                        payload, status, attempts, created_at, updated_at,
+                        next_attempt_at
+                    ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+                    """,
+                    (
+                        int(conversation_ref),
+                        str(exchange_key),
+                        str(canonical_user_id or ""),
+                        str(payload or "{}"),
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                return False
+            self._connection.commit()
+        return True
+
+    def due_memory_jobs(
+        self,
+        *,
+        now: int,
+        limit: int = 5,
+    ) -> tuple[dict[str, Any], ...]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM memory_jobs
+                WHERE status = 'pending' AND next_attempt_at <= ?
+                ORDER BY id ASC LIMIT ?
+                """,
+                (int(now), max(1, min(int(limit), 50))),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def finish_memory_job(
+        self,
+        job_id: int,
+        *,
+        status: str,
+        error: str = "",
+        attempts: int | None = None,
+        next_attempt_at: int = 0,
+        now: int | None = None,
+    ) -> None:
+        timestamp = int(now if now is not None else time.time())
+        fields = ["status = ?", "last_error = ?", "next_attempt_at = ?", "updated_at = ?"]
+        values: list[Any] = [
+            str(status),
+            str(error or "")[:500],
+            int(next_attempt_at),
+            timestamp,
+        ]
+        if attempts is not None:
+            fields.append("attempts = ?")
+            values.append(int(attempts))
+        values.append(int(job_id))
+        with self._lock:
+            self._connection.execute(
+                f"UPDATE memory_jobs SET {', '.join(fields)} WHERE id = ?",
+                tuple(values),
+            )
+            self._connection.commit()
+
+    def count_memory_jobs(self, *, status: str = "pending") -> int:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS total FROM memory_jobs WHERE status = ?",
+                (str(status),),
+            ).fetchone()
+        return int(row["total"]) if row is not None else 0
 
     def set_state(self, key: str, value: str) -> None:
         with self._lock:
