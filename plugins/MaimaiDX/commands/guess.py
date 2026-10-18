@@ -2,8 +2,6 @@
 
 import asyncio
 
-from jianer.plugins.builtin.alconna import Command
-
 from .. import adapter
 from ..core.handler import draw_chart_info
 from ..core.service import guess
@@ -14,6 +12,7 @@ from .common import (
     require_data,
     require_resources,
 )
+from .matchers import Command
 
 
 _tasks = {}

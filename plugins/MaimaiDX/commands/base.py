@@ -8,7 +8,6 @@ from httpx import HTTPError as HTTPXError
 from PIL import Image
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
-from jianer.plugins.builtin.alconna import Command
 
 from .. import adapter
 from ..config import dfconfig, log, lxnsconfig, maiconfig
@@ -57,6 +56,7 @@ from .common import (
     require_resources,
     require_user,
 )
+from .matchers import Command
 
 
 def _authorize_message(state: str) -> str:

@@ -396,3 +396,109 @@ def test_divingfish_proxy_setting_is_used_by_new_clients(monkeypatch):
         )
     finally:
         DivingFishAPI.base_url = original
+
+
+def test_message_routes_ignore_messages_that_mention_the_bot(monkeypatch):
+    from plugins.MaimaiDX import commands as maimai_commands
+    from plugins.MaimaiDX.commands import base as base_commands
+
+    routed = []
+
+    async def fake_pending_oauth(event, actions):
+        routed.append(event.msg_str)
+        return True
+
+    monkeypatch.setattr(base_commands, "handle_pending_oauth", fake_pending_oauth)
+
+    actions = StubActions()
+    mention_event = _event(
+        "查歌 Test",
+        message=common.Message(segments.At("789"), segments.Text(" 查歌 Test")),
+    )
+    assert asyncio.run(maimai_commands.handle_raw(mention_event, actions)) is False
+    assert routed == []
+    assert actions.sent == []
+
+    plain_event = _event("查歌 Test")
+    assert asyncio.run(maimai_commands.handle_raw(plain_event, actions)) is True
+    assert routed == ["查歌 Test"]
+
+
+def test_command_matchers_ignore_messages_that_mention_the_bot():
+    from plugins.MaimaiDX.commands.matchers import Command
+
+    handled = []
+    matcher = Command("b50")
+
+    async def handler(event=None, actions=None):
+        handled.append(event.msg_str)
+        return True
+
+    # Register on the instance only so the shared Alconna registry stays clean.
+    matcher.handlers.append(handler)
+
+    mention_event = _event(
+        "b50",
+        message=common.Message(segments.At("789"), segments.Text(" b50")),
+    )
+    assert asyncio.run(matcher.dispatch(mention_event, StubActions())) is False
+    assert handled == []
+
+    plain_event = _event("b50")
+    assert asyncio.run(matcher.dispatch(plain_event, StubActions())) is True
+    assert handled == ["b50"]
+
+
+def test_mentions_self_only_matches_the_bot_account():
+    from plugins.MaimaiDX import adapter
+
+    assert adapter.mentions_self(_event("", message=[segments.At("789")])) is True
+    assert adapter.mentions_self(_event("", message=[segments.At("456")])) is False
+    assert adapter.mentions_self(_event("", message=[segments.At("all")])) is False
+    assert adapter.mentions_self(_event("")) is False
+
+
+def test_plugin_manager_dispatch_declines_bot_mentions(tmp_path):
+    from jianer.plugins import PluginManager
+
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / "jianer-ai.py").write_text(
+        "from jianer.plugins import PluginMetadata\n"
+        "\n"
+        '__plugin_meta__ = PluginMetadata(name="jianerbot-plugin-jianer-ai")\n'
+        "\n"
+        "async def on_message_fallback(event, actions):\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    (plugins_dir / "MaimaiDX").symlink_to(PLUGIN_ROOT, target_is_directory=True)
+
+    manager = PluginManager()
+    try:
+        assert manager.load_plugins(plugins_dir).failed == []
+
+        actions = StubActions()
+        actions.protocol = "kritor"
+        mention_event = _event(
+            "b50",
+            message=common.Message(segments.At("789"), segments.Text(" b50")),
+        )
+        assert (
+            asyncio.run(
+                manager.dispatch(mention_event, actions, run_observers=False)
+            )
+            is False
+        )
+        assert actions.sent == []
+
+        plain_event = _event("b50", protocol="kritor")
+        assert (
+            asyncio.run(
+                manager.dispatch(plain_event, actions, run_observers=False)
+            )
+            is True
+        )
+        assert "仅支持 QQ OneBot/Milky 协议" in str(actions.sent[-1][1])
+    finally:
+        asyncio.run(manager.shutdown())

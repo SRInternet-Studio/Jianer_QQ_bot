@@ -3,8 +3,6 @@
 import re
 from textwrap import dedent
 
-from jianer.plugins.builtin.alconna import Command
-
 from .. import adapter
 from ..config import log
 from ..constants import SONGS_PER_PAGE
@@ -22,6 +20,7 @@ from .common import (
     require_data,
     require_resources,
 )
+from .matchers import Command
 
 
 @Command("更新别名库").handle()

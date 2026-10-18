@@ -3,8 +3,6 @@
 import re
 from textwrap import dedent
 
-from jianer.plugins.builtin.alconna import Command
-
 from .. import adapter
 from ..config import log
 from ..core.handler import draw_best50, draw_play_data, draw_song_global_data
@@ -21,6 +19,7 @@ from .common import (
     require_resources,
     require_user,
 )
+from .matchers import Command
 
 
 async def _best50(argument, event, actions, *, all_perfect):

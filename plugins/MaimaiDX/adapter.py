@@ -493,6 +493,19 @@ def mentioned_user_id(event: Any) -> int | None:
     return target
 
 
+def mentions_self(event: Any) -> bool:
+    """Return ``True`` when the message explicitly @s this bot account."""
+
+    self_id = str(getattr(event, "self_id", "") or "")
+    if not self_id:
+        return False
+    return any(
+        isinstance(item, segments.At)
+        and str(getattr(item, "qq", "")) == self_id
+        for item in (getattr(event, "message", ()) or ())
+    )
+
+
 def is_superuser(event: Any) -> bool:
     runtime = plugin_state.get_runtime()
     allowed = {

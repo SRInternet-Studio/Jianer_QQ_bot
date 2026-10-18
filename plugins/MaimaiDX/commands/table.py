@@ -3,7 +3,6 @@
 import re
 
 from PIL import Image
-from jianer.plugins.builtin.alconna import Command
 
 from .. import adapter
 from ..constants import COMBO_PLUS, LEVEL_LIST, PLATE_CN, RANK_PLUS, SYNC_PLUS
@@ -21,6 +20,7 @@ from ..core.merge.models import Category
 from ..message import MessageSegment
 from ..resources import pic_dir
 from .common import reject_unless_superuser, require_resources, require_user
+from .matchers import Command
 
 
 RATING_PATTERN = re.compile(r"^([0-9]+\+?)((s+|ap|fc|fs|fdx)\+?)?\s?完成表$", re.IGNORECASE)
