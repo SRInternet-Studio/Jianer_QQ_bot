@@ -112,6 +112,10 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
   由发起人用 `~批准Shell <请求ID>` / `~拒绝Shell <请求ID>` 决定是否执行；
   `tools.bash_approval_timeout_seconds`（默认 120）与
   `tools.bash_command_timeout_seconds`（默认 60）控制等待与执行上限。
+- `tools.subagents_enabled`：注册 `spawn_subagents`，把一个耗时任务拆给最多
+  `subagent_max_tasks` 个**只读**子代理并行处理（各自独立工具循环与
+  `subagent_timeout_seconds` 超时，并发上限 `subagent_max_concurrency`）；
+  子代理不能再派生、不能发消息、不能写长期记忆，单个子任务失败只影响它自己那条结果。
 - `tools.include_web_browser`：注册 `web_browser`，默认 `false`（会启动浏览器）；
 - `tools.allow_mutating`：允许注册写操作与平台 API 工具，默认 `false`；
 - `tools.max_output_chars`：单次工具结果注入模型的长度上限，默认 `4000`。

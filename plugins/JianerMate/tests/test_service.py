@@ -1315,3 +1315,13 @@ def test_memory_review_job_writes_memory_and_evidence(tmp_path):
     assert long_term.evidence[0]["memory_id"] == "42"
     assert service.store.count_memory_jobs() == 0
     asyncio.run(service.shutdown())
+
+
+def test_subagent_runner_is_wired_after_activation(tmp_path):
+    service = _service(
+        tmp_path,
+        jianer_mate_tool_subagents_enabled=True,
+    )
+    _activate(service)
+    assert service.tool_runtime.subagent_runner is not None
+    asyncio.run(service.shutdown())

@@ -100,6 +100,14 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
         "bash_command_timeout_seconds": (
             "jianer_mate_tool_bash_command_timeout_seconds"
         ),
+        "subagents_enabled": "jianer_mate_tool_subagents_enabled",
+        "subagent_max_concurrency": (
+            "jianer_mate_tool_subagent_max_concurrency"
+        ),
+        "subagent_max_tasks": "jianer_mate_tool_subagent_max_tasks",
+        "subagent_timeout_seconds": (
+            "jianer_mate_tool_subagent_timeout_seconds"
+        ),
     },
     "memory": {
         "enabled": "jianer_mate_memory_enabled",
@@ -304,6 +312,18 @@ def build_config_document(options: Any) -> dict[str, Any]:
             ),
             "bash_command_timeout_seconds": float(
                 getattr(tools, "bash_command_timeout_seconds", 60.0)
+            ),
+            "subagents_enabled": bool(
+                getattr(tools, "subagents_enabled", False)
+            ),
+            "subagent_max_concurrency": int(
+                getattr(tools, "subagent_max_concurrency", 3)
+            ),
+            "subagent_max_tasks": int(
+                getattr(tools, "subagent_max_tasks", 4)
+            ),
+            "subagent_timeout_seconds": float(
+                getattr(tools, "subagent_timeout_seconds", 120.0)
             ),
         },
         "group_blacklist": list(getattr(options, "group_blacklist", ())),

@@ -317,3 +317,48 @@ def test_tool_loop_stops_at_max_rounds():
         assert len(session.posts) == 2
 
     asyncio.run(scenario())
+
+
+def test_client_runs_tools_in_text_mode():
+    async def scenario():
+        session = _FakeSession(
+            [
+                _tool_call_response(),
+                _FakeResponse(
+                    200,
+                    json.dumps(
+                        {"choices": [{"message": {"content": "结论：可以"}}]}
+                    ),
+                ),
+            ]
+        )
+        client = OpenAICompatibleClient(
+            {"test": _entry()}, session=session, max_retries=0
+        )
+        calls = []
+
+        async def executor(call_id, name, arguments):
+            calls.append(name)
+            return "ok"
+
+        text = await client.complete_text_with_tools(
+            "test",
+            system_prompt="sys",
+            user_text="子任务",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_current_time",
+                        "description": "clock",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            executor=executor,
+        )
+        assert text == "结论：可以"
+        assert calls == ["get_current_time"]
+        assert "response_format" not in session.posts[0]["json"]
+
+    asyncio.run(scenario())

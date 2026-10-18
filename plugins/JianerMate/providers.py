@@ -344,6 +344,65 @@ class OpenAICompatibleClient:
     ) -> dict[str, Any]:
         """Chat-completions loop that runs tool calls before the JSON answer."""
 
+        text = await self._run_tool_loop(
+            key,
+            system_prompt=system_prompt,
+            user_text=user_text,
+            tools=tools,
+            executor=executor,
+            max_rounds=max_rounds,
+            images=images,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            json_mode=True,
+        )
+        try:
+            return parse_json_object(text)
+        except ValueError as exc:
+            raise ResponseParseError("模型返回的 JSON 无法解析") from exc
+
+    async def complete_text_with_tools(
+        self,
+        key: str,
+        *,
+        system_prompt: str,
+        user_text: str,
+        tools: Sequence[Mapping[str, Any]] = (),
+        executor: Any = None,
+        max_rounds: int = 3,
+        images: Sequence[ChatImage] = (),
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        """Same loop as :meth:`complete_json_with_tools` but plain text output."""
+
+        return await self._run_tool_loop(
+            key,
+            system_prompt=system_prompt,
+            user_text=user_text,
+            tools=tools,
+            executor=executor,
+            max_rounds=max_rounds,
+            images=images,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            json_mode=False,
+        )
+
+    async def _run_tool_loop(
+        self,
+        key: str,
+        *,
+        system_prompt: str,
+        user_text: str,
+        tools: Sequence[Mapping[str, Any]],
+        executor: Any,
+        max_rounds: int,
+        images: Sequence[ChatImage],
+        max_tokens: int | None,
+        temperature: float | None,
+        json_mode: bool,
+    ) -> str:
         entry = self.entry(key)
         payload = _build_payload(
             entry,
@@ -352,7 +411,7 @@ class OpenAICompatibleClient:
             images=images,
             max_tokens=max_tokens,
             temperature=temperature,
-            json_mode=True,
+            json_mode=json_mode,
         )
         tool_schemas = [dict(item) for item in tools]
         messages = list(payload.get("messages") or [])
@@ -398,11 +457,7 @@ class OpenAICompatibleClient:
                         }
                     )
                 continue
-            text = _message_text(message)
-            try:
-                return parse_json_object(text)
-            except ValueError as exc:
-                raise ResponseParseError("模型返回的 JSON 无法解析") from exc
+            return _message_text(message)
 
     async def _post(self, entry: ModelEntry, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         if self._closed:

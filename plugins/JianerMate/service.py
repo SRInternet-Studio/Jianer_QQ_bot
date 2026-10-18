@@ -82,6 +82,16 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 HINT_INTERVAL_SECONDS = 600.0
 PRUNE_EVERY_MESSAGES = 50
 PERSONA_OVERRIDE_STATE_KEY = "persona_override"
+_SUBAGENT_BLOCKED_TOOLS = frozenset(
+    {
+        "spawn_subagents",
+        "bash",
+        "send_message",
+        "platform_command",
+        "create_my_memory",
+        "update_my_memory",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +213,9 @@ class JianerMateService:
         )
         self.memory_reviewer = MemoryReviewer(self.client, logger=self._logger)
         self._memory_review_task: asyncio.Task[Any] | None = None
+        self._subagent_semaphore = asyncio.Semaphore(
+            max(1, int(options.tools.subagent_max_concurrency))
+        )
         self.speech = speech
         if (
             self.speech is None
@@ -270,6 +283,7 @@ class JianerMateService:
         )
         removed = 0
         self._manager = manager
+        self.tool_runtime.set_subagent_runner(self._run_subagent)
         self._memory_review_task = self._spawn(self._memory_review_loop())
         self._spawn(self._load_external_plugin_tools())
         if ensure_config_file(self.options.config_path, self.options):
@@ -795,6 +809,62 @@ class JianerMateService:
         """Sibling-plugin API compatible with JianerAI's ``register_tool``."""
 
         return self.tool_runtime.register_tool(spec)
+
+    async def _run_subagent(
+        self,
+        prompt: str,
+        tool_names: Sequence[str],
+        context: Any,
+    ) -> str:
+        """Run one read-only child task with its own bounded tool loop."""
+
+        text = str(prompt or "").strip()
+        if not text:
+            raise RuntimeError("子任务内容为空")
+        model_key = self._replyer_model_key() or self._planner_model_key()
+        if not model_key:
+            raise RuntimeError("没有可用的子代理模型")
+        wanted = {
+            str(name).strip() for name in (tool_names or ()) if str(name).strip()
+        }
+        schemas = tuple(
+            item
+            for item in self.tool_runtime.schemas(context)
+            if item["function"]["name"] not in _SUBAGENT_BLOCKED_TOOLS
+            and (not wanted or item["function"]["name"] in wanted)
+        )
+
+        async def executor(
+            call_id: str,
+            name: str,
+            arguments: Mapping[str, Any],
+        ) -> str:
+            return await self.tool_runtime.execute(
+                call_id, name, arguments, context
+            )
+
+        persona = self._effective_persona()
+        system_prompt = (
+            persona.render("group")
+            + "\n\n你是简儿派出的只读子代理：只完成给定任务，"
+            "可以用工具查资料，最后用一两句中文给出结论，不要寒暄。"
+        )
+        async with self._subagent_semaphore:
+            return await asyncio.wait_for(
+                self.client.complete_text_with_tools(
+                    model_key,
+                    system_prompt=system_prompt,
+                    user_text=text,
+                    tools=schemas,
+                    executor=executor,
+                    max_rounds=self.options.tools.max_rounds,
+                    max_tokens=800,
+                    temperature=0.4,
+                ),
+                timeout=max(
+                    5.0, float(self.options.tools.subagent_timeout_seconds)
+                ),
+            )
 
     def unregister_tool(self, registration: Any) -> bool:
         return self.tool_runtime.unregister_tool(registration)
@@ -2161,6 +2231,7 @@ class JianerMateService:
             logger=self._logger,
             runtime=self.runtime,
         )
+        self.tool_runtime.set_subagent_runner(self._run_subagent)
         with contextlib.suppress(Exception):
             self.long_term.close()
         self.long_term = LongTermMemory(

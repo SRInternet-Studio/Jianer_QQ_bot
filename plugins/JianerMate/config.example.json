@@ -112,7 +112,11 @@
         "mcp_servers": [],
         "bash_enabled": false,
         "bash_approval_timeout_seconds": 120,
-        "bash_command_timeout_seconds": 60
+        "bash_command_timeout_seconds": 60,
+        "subagents_enabled": false,
+        "subagent_max_concurrency": 3,
+        "subagent_max_tasks": 4,
+        "subagent_timeout_seconds": 120
     },
     "group_blacklist": [],
     "memory": {

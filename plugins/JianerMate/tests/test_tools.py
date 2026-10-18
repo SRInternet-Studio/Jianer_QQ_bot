@@ -325,3 +325,64 @@ def test_bash_tool_is_admin_only_and_resolution_reports_missing(tmp_path):
         == "unavailable"
     )
     store.close()
+
+
+def test_spawn_subagents_uses_runner_and_caps_tasks(tmp_path):
+    store, context = _context(tmp_path)
+    runtime = MateToolRuntime(
+        ToolOptions(
+            allowlist=None,
+            subagents_enabled=True,
+            subagent_max_tasks=2,
+        ),
+        project_root=tmp_path,
+    )
+    seen = []
+
+    async def runner(prompt, tool_names, child_context):
+        seen.append((prompt, tuple(tool_names)))
+        if prompt == "boom":
+            raise RuntimeError("child failed")
+        return f"done:{prompt}"
+
+    runtime.set_subagent_runner(runner)
+    names = {item["function"]["name"] for item in runtime.schemas(context)}
+    assert "spawn_subagents" in names
+
+    raw = asyncio.run(
+        runtime.execute(
+            "call-1",
+            "spawn_subagents",
+            {
+                "tasks": [
+                    {"prompt": "a", "tools": ["web_search"]},
+                    {"prompt": "boom"},
+                ]
+            },
+            context,
+        )
+    )
+    payload = json.loads(raw)["data"]
+    assert [item["prompt"] for item in payload["results"]] == ["a", "boom"]
+    assert payload["results"][0]["result"] == "done:a"
+    assert payload["results"][1]["ok"] is False
+    assert payload["results"][1]["error"] == "RuntimeError"
+    assert seen[0] == ("a", ("web_search",))
+
+    # The schema itself caps how many children one call may spawn.
+    spec = next(
+        item for item in runtime.schemas(context)
+        if item["function"]["name"] == "spawn_subagents"
+    )
+    assert spec["function"]["parameters"]["properties"]["tasks"]["maxItems"] == 2
+    rejected = asyncio.run(
+        runtime.execute(
+            "call-2",
+            "spawn_subagents",
+            {"tasks": [{"prompt": "a"}, {"prompt": "b"}, {"prompt": "c"}]},
+            context,
+        )
+    )
+    assert '"ok":false' in rejected
+    asyncio.run(runtime.shutdown())
+    store.close()

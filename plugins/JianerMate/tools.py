@@ -10,6 +10,7 @@ working (without tools) if that package is missing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -215,6 +216,7 @@ class MateToolRuntime:
         self._extra_tools: set[str] = set()
         self._mcp_loaded = False
         self._shell_manager: Any | None = None
+        self.subagent_runner: Any | None = None
         if options.enabled:
             self._build()
 
@@ -267,6 +269,7 @@ class MateToolRuntime:
             register_platform_api_tools(registry)
             self._register_skills(registry)
             self._register_bash(registry)
+            self._register_subagents(registry)
             try:
                 register_qweather_tools(
                     registry,
@@ -449,6 +452,28 @@ class MateToolRuntime:
             approve=bool(approve),
         )
 
+    def set_subagent_runner(self, runner: Any) -> None:
+        """Service-provided coroutine: ``runner(prompt, tool_names, context)``."""
+
+        self.subagent_runner = runner
+
+    def tool_error(self, code: str, message: str) -> Any:
+        return _tool_error(code, message)
+
+    def _register_subagents(self, registry: Any) -> None:
+        if not self.options.subagents_enabled:
+            return
+        try:
+            spec = _subagent_spec(self)
+            registry.register(spec)
+        except Exception as exc:  # noqa: BLE001
+            self._log(
+                "warning", f"子代理工具注册失败：{exc.__class__.__name__}"
+            )
+            return
+        self._extra_tools.add("spawn_subagents")
+        self._log("info", "子代理工具已注册（只读子任务，默认关闭）")
+
     @property
     def import_error(self) -> str:
         return self._import_error
@@ -560,6 +585,103 @@ def _tool_error(code: str, message: str) -> Any:
     except Exception:  # noqa: BLE001
         return RuntimeError(message)
     return ToolExecutionError(code, message)
+
+
+def _subagent_spec(runtime: "MateToolRuntime") -> Any:
+    """Build the ``spawn_subagents`` spec backed by the service runner."""
+
+    from plugins.JianerAI.tools import ToolRisk, ToolSpec  # noqa: PLC0415
+
+    max_tasks = max(1, int(runtime.options.subagent_max_tasks))
+    timeout = max(5.0, float(runtime.options.subagent_timeout_seconds)) + 30.0
+
+    async def handler(context: Any, arguments: Mapping[str, Any]) -> Any:
+        runner = runtime.subagent_runner
+        if runner is None:
+            raise runtime.tool_error(
+                "subagents_unavailable", "子代理运行器不可用。"
+            )
+        raw_tasks = arguments.get("tasks")
+        if not isinstance(raw_tasks, Sequence) or isinstance(
+            raw_tasks, (str, bytes)
+        ):
+            raise runtime.tool_error(
+                "invalid_subagent_tasks", "tasks 必须是非空数组。"
+            )
+        tasks = [item for item in raw_tasks if isinstance(item, Mapping)][:max_tasks]
+        if not tasks:
+            raise runtime.tool_error(
+                "invalid_subagent_tasks", "至少需要一个子任务。"
+            )
+        outcomes = await asyncio.gather(
+            *(
+                runner(
+                    str(item.get("prompt") or ""),
+                    tuple(
+                        str(name) for name in (item.get("tools") or ())
+                    ),
+                    context,
+                )
+                for item in tasks
+            ),
+            return_exceptions=True,
+        )
+        results: list[dict[str, Any]] = []
+        for item, outcome in zip(tasks, outcomes):
+            prompt = str(item.get("prompt") or "")
+            if isinstance(outcome, BaseException):
+                results.append(
+                    {
+                        "prompt": prompt,
+                        "ok": False,
+                        "error": outcome.__class__.__name__,
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "prompt": prompt,
+                        "ok": True,
+                        "result": str(outcome)[:2000],
+                    }
+                )
+        return {"results": results}
+
+    return ToolSpec(
+        name="spawn_subagents",
+        description=(
+            "把一个耗时任务拆给若干只读子代理并行处理，返回它们各自的结论。"
+            "子代理不能再派生、不能发消息、不能写长期记忆。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": max_tasks,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string", "minLength": 1},
+                            "tools": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["tasks"],
+            "additionalProperties": False,
+        },
+        handler=handler,
+        risk=ToolRisk.READ_ONLY,
+        timeout_seconds=timeout,
+        max_output_chars=6000,
+    )
 
 
 def make_actor_resolver() -> Any | None:

@@ -66,6 +66,10 @@ class ToolOptions:
     bash_enabled: bool = False
     bash_approval_timeout_seconds: float = 120.0
     bash_command_timeout_seconds: float = 60.0
+    subagents_enabled: bool = False
+    subagent_max_concurrency: int = 3
+    subagent_max_tasks: int = 4
+    subagent_timeout_seconds: float = 120.0
 
 @dataclass(frozen=True, slots=True)
 class StyleOptions:
@@ -361,6 +365,37 @@ class RuntimeOptions:
                 60.0,
                 minimum=1.0,
                 maximum=300.0,
+            ),
+            subagents_enabled=_as_bool(
+                others.get(
+                    "jianer_mate_tool_subagents_enabled",
+                    others.get("agent_subagent_enabled"),
+                ),
+                False,
+            ),
+            subagent_max_concurrency=_clamp_int(
+                others.get(
+                    "jianer_mate_tool_subagent_max_concurrency",
+                    others.get("agent_subagent_max_concurrency"),
+                ),
+                3,
+                minimum=1,
+                maximum=8,
+            ),
+            subagent_max_tasks=_clamp_int(
+                others.get("jianer_mate_tool_subagent_max_tasks"),
+                4,
+                minimum=1,
+                maximum=8,
+            ),
+            subagent_timeout_seconds=_clamp_float(
+                others.get(
+                    "jianer_mate_tool_subagent_timeout_seconds",
+                    others.get("agent_subagent_timeout_seconds"),
+                ),
+                120.0,
+                minimum=5.0,
+                maximum=600.0,
             ),
         )
         memory_db_path = _resolve_path(
