@@ -179,6 +179,7 @@ class JianerMateService:
             options.tools,
             project_root=options.project_root,
             logger=self._logger,
+            runtime=self.runtime,
         )
         self._actor_resolver = make_actor_resolver()
         self.long_term = LongTermMemory(
@@ -245,7 +246,9 @@ class JianerMateService:
             )
         )
         removed = 0
+        self._manager = manager
         self._memory_review_task = self._spawn(self._memory_review_loop())
+        self._spawn(self._load_external_plugin_tools())
         if ensure_config_file(self.options.config_path, self.options):
             self._log_info(f"已生成插件配置文件：{self.options.config_path}")
             self._refresh_config_metadata()
@@ -745,6 +748,26 @@ class JianerMateService:
         if not status.get("available"):
             return f"不可用（{status.get('error') or '未知原因'}）"
         return f"开（{status.get('tools', 0)} 个可用）"
+
+    async def _load_external_plugin_tools(self) -> None:
+        manager = getattr(self, "_manager", None)
+        if manager is None or not self.tool_runtime.available:
+            return
+        try:
+            loaded = await self.tool_runtime.load_external_tools(manager)
+        except Exception:
+            self._log_exception("加载第三方插件工具失败")
+            return
+        if loaded:
+            self._log_info("已加载插件工具：" + "，".join(loaded))
+
+    def register_tool(self, spec: Any) -> Any:
+        """Sibling-plugin API compatible with JianerAI's ``register_tool``."""
+
+        return self.tool_runtime.register_tool(spec)
+
+    def unregister_tool(self, registration: Any) -> bool:
+        return self.tool_runtime.unregister_tool(registration)
 
     # ------------------------------------------------------------------ #
     # automatic memory review
@@ -1995,6 +2018,7 @@ class JianerMateService:
             options.tools,
             project_root=options.project_root,
             logger=self._logger,
+            runtime=self.runtime,
         )
         with contextlib.suppress(Exception):
             self.long_term.close()

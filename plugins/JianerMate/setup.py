@@ -34,6 +34,16 @@ def get_service() -> JianerMateService | None:
     return _service
 
 
+def register_tool(spec: Any) -> Any:
+    """Let sibling plugins publish model-callable tools (JianerAI-compatible)."""
+
+    return _require_service().register_tool(spec)
+
+
+def unregister_tool(registration: Any) -> bool:
+    return _require_service().unregister_tool(registration)
+
+
 def _require_service() -> JianerMateService:
     if _service is None:
         raise RuntimeError("JianerMate service is not available")

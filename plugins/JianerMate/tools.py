@@ -162,13 +162,16 @@ class MateToolRuntime:
         *,
         project_root: str | Path,
         logger: Any | None = None,
+        runtime: Mapping[str, Any] | None = None,
     ) -> None:
         self.options = options
         self.project_root = Path(project_root)
         self._logger = logger or _LOGGER
+        self._runtime: dict[str, Any] = dict(runtime or {})
         self._import_error = ""
         self._registry: Any | None = None
         self._tool_error: Any | None = None
+        self._extra_tools: set[str] = set()
         if options.enabled:
             self._build()
 
@@ -233,6 +236,54 @@ class MateToolRuntime:
     def available(self) -> bool:
         return self._registry is not None
 
+    async def load_external_tools(self, manager: Any) -> tuple[str, ...]:
+        """Register tools exported by other loaded plugins (opt-in hooks)."""
+
+        if self._registry is None or manager is None:
+            return ()
+        try:
+            from plugins.JianerAI.tools.loaded_plugins import (  # noqa: PLC0415
+                load_active_plugin_tools,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional
+            self._log(
+                "info", f"第三方插件工具加载器不可用：{exc.__class__.__name__}"
+            )
+            return ()
+        try:
+            return tuple(
+                await load_active_plugin_tools(
+                    self._registry,
+                    manager,
+                    runtime=self._runtime,
+                    service=None,
+                    logger=self._logger,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log(
+                "warning", f"加载第三方插件工具失败：{exc.__class__.__name__}"
+            )
+            return ()
+
+    def register_tool(self, spec: Any) -> Any:
+        """Public API for sibling plugins (mirrors JianerAI's register_tool)."""
+
+        if self._registry is None:
+            raise RuntimeError("工具系统不可用")
+        registration = self._registry.register(spec)
+        self._extra_tools.add(str(getattr(spec, "name", "")))
+        return registration
+
+    def unregister_tool(self, registration: Any) -> bool:
+        if self._registry is None:
+            return False
+        name = str(getattr(registration, "name", ""))
+        removed = bool(self._registry.unregister(registration))
+        if removed and name:
+            self._extra_tools.discard(name)
+        return removed
+
     def _register_skills(self, registry: Any) -> None:
         roots = []
         for item in self.options.skills_dirs:
@@ -278,7 +329,11 @@ class MateToolRuntime:
         allowed = self.options.allowlist
         output: list[Mapping[str, Any]] = []
         for spec in self._registry.available(context):
-            if allowed is not None and spec.name not in allowed:
+            if (
+                allowed is not None
+                and spec.name not in allowed
+                and spec.name not in self._extra_tools
+            ):
                 continue
             output.append(
                 {
@@ -304,7 +359,11 @@ class MateToolRuntime:
         spec_names = {spec.name for spec in self._registry.available(context)}
         if name not in spec_names:
             return "该工具不存在或当前不可用。"
-        if self.options.allowlist is not None and name not in self.options.allowlist:
+        if (
+            self.options.allowlist is not None
+            and name not in self.options.allowlist
+            and name not in self._extra_tools
+        ):
             return "该工具不在允许列表里，当前不可用。"
         result = await self._registry.execute(
             self._tool_call(id=str(call_id), name=str(name), arguments=dict(arguments)),
@@ -325,7 +384,11 @@ class MateToolRuntime:
         names = sorted(spec.name for spec in self._registry.specs)
         allowed = self.options.allowlist
         if allowed is not None:
-            names = [name for name in names if name in allowed]
+            names = [
+                name
+                for name in names
+                if name in allowed or name in self._extra_tools
+            ]
         return {
             "enabled": True,
             "available": True,

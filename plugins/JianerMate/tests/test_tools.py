@@ -228,3 +228,40 @@ def test_long_term_memory_tools_round_trip(tmp_path):
     asyncio.run(runtime.shutdown())
     memory.close()
     store.close()
+
+
+def test_external_plugin_tools_are_loaded_and_prefixed(tmp_path):
+    from plugins.JianerAI.tools import ToolRisk, ToolSpec
+
+    def provide_agent_tools(context):
+        assert context["plugin_id"] == "jianerbot-plugin-demo"
+
+        def handler(tool_context, arguments):
+            return {"value": "ok"}
+
+        return (
+            ToolSpec(
+                name="lookup",
+                description="demo lookup",
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                handler=handler,
+                risk=ToolRisk.READ_ONLY,
+            ),
+        )
+
+    module = SimpleNamespace(provide_agent_tools=provide_agent_tools)
+    manager = SimpleNamespace(
+        plugins={"jianerbot-plugin-demo": SimpleNamespace(module=module)}
+    )
+    store, context = _context(tmp_path)
+    runtime = MateToolRuntime(ToolOptions(allowlist=None), project_root=tmp_path)
+    loaded = asyncio.run(runtime.load_external_tools(manager))
+    assert loaded == ("jianerbot-plugin-demo",)
+    names = [item["function"]["name"] for item in runtime.schemas(context)]
+    assert any("lookup" in name for name in names), names
+    asyncio.run(runtime.shutdown())
+    store.close()
