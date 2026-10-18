@@ -15,10 +15,51 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jianer import common as Manager
+from jianer import segments as Segments
+
 from plugins.JianerMate.config import ToolOptions
 
 
 _LOGGER = logging.getLogger("jianer_mate.tools")
+
+
+class MateMessageSink:
+    """Minimal sink expected by JianerAI's privileged tools (e.g. ``bash``)."""
+
+    def __init__(self, event: Any, actions: Any) -> None:
+        self.event = event
+        self.actions = actions
+
+    @staticmethod
+    def _target(event: Any) -> dict[str, Any]:
+        group_id = getattr(event, "group_id", None)
+        if group_id is not None:
+            return {"group_id": group_id}
+        return {"user_id": getattr(event, "user_id", None)}
+
+    async def send(
+        self,
+        text: str,
+        *,
+        at_user_ids: Sequence[str] = (),
+        reply_to_message_id: str | None = None,
+        source: str = "agent",
+        **kwargs: Any,
+    ) -> str:
+        del reply_to_message_id, source, kwargs
+        segments: list[Any] = []
+        for user_id in at_user_ids:
+            mention = str(user_id or "").strip()
+            if mention:
+                segments.append(Segments.At(mention))
+        segments.append(Segments.Text(str(text)))
+        result = await self.actions.send(
+            message=Manager.Message(*segments), **self._target(self.event)
+        )
+        data = getattr(result, "data", None)
+        message_id = getattr(data, "message_id", None)
+        return "" if message_id is None else str(message_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +214,7 @@ class MateToolRuntime:
         self._tool_error: Any | None = None
         self._extra_tools: set[str] = set()
         self._mcp_loaded = False
+        self._shell_manager: Any | None = None
         if options.enabled:
             self._build()
 
@@ -200,9 +242,18 @@ class MateToolRuntime:
         self._tool_call = ToolCall
         self._tool_error = ToolExecutionError
         risks = {ToolRisk.READ_ONLY, ToolRisk.PRESENTATION}
+        mutating_tools: frozenset[str] | None = None
         if self.options.allow_mutating:
             risks.add(ToolRisk.MUTATING)
-        registry = ToolRegistry(allowed_risks=frozenset(risks))
+        if self.options.bash_enabled:
+            # ``bash`` is a mutating tool guarded by its own approval queue.
+            risks.add(ToolRisk.MUTATING)
+            if not self.options.allow_mutating:
+                mutating_tools = frozenset({"bash"})
+        registry = ToolRegistry(
+            allowed_risks=frozenset(risks),
+            allowed_mutating_tools=mutating_tools,
+        )
         try:
             register_builtin_tools(
                 registry,
@@ -215,6 +266,7 @@ class MateToolRuntime:
             # unless ``allow_mutating`` is enabled.
             register_platform_api_tools(registry)
             self._register_skills(registry)
+            self._register_bash(registry)
             try:
                 register_qweather_tools(
                     registry,
@@ -352,6 +404,51 @@ class MateToolRuntime:
             except Exception as exc:  # noqa: BLE001
                 self._log("warning", f"注册技能工具失败：{exc}")
 
+    def _register_bash(self, registry: Any) -> None:
+        """Register the admin-only Shell tool with its approval queue."""
+
+        if not self.options.bash_enabled:
+            return
+        try:
+            from plugins.JianerAI.tools.bash import (  # noqa: PLC0415
+                ShellApprovalManager,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional
+            self._log("warning", f"Shell 工具不可用：{exc.__class__.__name__}")
+            return
+        try:
+            manager = ShellApprovalManager(
+                project_root=self.project_root,
+                approval_timeout_seconds=self.options.bash_approval_timeout_seconds,
+                command_timeout_seconds=self.options.bash_command_timeout_seconds,
+            )
+            spec = manager.tool()
+            registry.register(spec)
+        except Exception as exc:  # noqa: BLE001
+            self._log("warning", f"Shell 工具注册失败：{exc.__class__.__name__}")
+            return
+        self._shell_manager = manager
+        self._extra_tools.add(str(getattr(spec, "name", "bash")))
+        self._log("info", "Shell 工具已注册（仅机器人管理员，需人工批准）")
+
+    def resolve_shell(
+        self,
+        *,
+        request_id: str,
+        scope: Sequence[str],
+        speaker_external_id: str,
+        approve: bool,
+    ) -> str:
+        manager = self._shell_manager
+        if manager is None:
+            return "unavailable"
+        return manager.resolve(
+            request_id=str(request_id),
+            scope=tuple(str(item) for item in scope),
+            speaker_external_id=str(speaker_external_id or ""),
+            approve=bool(approve),
+        )
+
     @property
     def import_error(self) -> str:
         return self._import_error
@@ -434,6 +531,12 @@ class MateToolRuntime:
         }
 
     async def shutdown(self) -> None:
+        manager, self._shell_manager = self._shell_manager, None
+        if manager is not None:
+            try:
+                manager.close()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
         registry, self._registry = self._registry, None
         if registry is not None:
             try:
@@ -479,6 +582,7 @@ def build_tool_context(
     memory: Any,
     actor: Any,
     model: str,
+    message_sink: Any = None,
 ) -> Any | None:
     """Create JianerAI's ``ToolContext`` for one JianerMate turn."""
 
@@ -495,6 +599,7 @@ def build_tool_context(
         memory=memory,
         actor=actor,
         model=str(model or ""),
+        message_sink=message_sink,
     )
 
 

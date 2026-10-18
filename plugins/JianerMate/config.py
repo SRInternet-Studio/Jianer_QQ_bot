@@ -63,6 +63,9 @@ class ToolOptions:
     skills_max_file_bytes: int = 65536
     mcp_enabled: bool = False
     mcp_servers: tuple[Mapping[str, Any], ...] = ()
+    bash_enabled: bool = False
+    bash_approval_timeout_seconds: float = 120.0
+    bash_command_timeout_seconds: float = 60.0
 
 @dataclass(frozen=True, slots=True)
 class StyleOptions:
@@ -333,6 +336,31 @@ class RuntimeOptions:
                     "jianer_mate_tool_mcp_servers",
                     others.get("agent_mcp_servers"),
                 )
+            ),
+            bash_enabled=_as_bool(
+                others.get(
+                    "jianer_mate_tool_bash_enabled",
+                    others.get("agent_bash_enabled"),
+                ),
+                False,
+            ),
+            bash_approval_timeout_seconds=_clamp_float(
+                others.get(
+                    "jianer_mate_tool_bash_approval_timeout_seconds",
+                    others.get("agent_bash_approval_timeout_seconds"),
+                ),
+                120.0,
+                minimum=5.0,
+                maximum=600.0,
+            ),
+            bash_command_timeout_seconds=_clamp_float(
+                others.get(
+                    "jianer_mate_tool_bash_command_timeout_seconds",
+                    others.get("agent_bash_command_timeout_seconds"),
+                ),
+                60.0,
+                minimum=1.0,
+                maximum=300.0,
             ),
         )
         memory_db_path = _resolve_path(

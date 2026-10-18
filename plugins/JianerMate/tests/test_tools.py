@@ -291,3 +291,37 @@ def test_mcp_servers_degrade_gracefully(tmp_path):
     asyncio.run(runtime.ensure_ready())  # second call is a no-op
     asyncio.run(runtime.shutdown())
     store.close()
+
+
+def test_bash_tool_is_admin_only_and_resolution_reports_missing(tmp_path):
+    store, anonymous = _context(tmp_path)
+    _store, privileged = _context(
+        tmp_path / "priv", actor=SimpleNamespace(is_privileged=True)
+    )
+    runtime = MateToolRuntime(
+        ToolOptions(allowlist=None, bash_enabled=True), project_root=tmp_path
+    )
+    plain = {item["function"]["name"] for item in runtime.schemas(anonymous)}
+    admins = {item["function"]["name"] for item in runtime.schemas(privileged)}
+    assert "bash" not in plain
+    assert "bash" in admins
+    assert (
+        runtime.resolve_shell(
+            request_id="deadbeef",
+            scope=("milky", "10001", "group", "222"),
+            speaker_external_id="5",
+            approve=True,
+        )
+        == "not_found"
+    )
+    asyncio.run(runtime.shutdown())
+    assert (
+        runtime.resolve_shell(
+            request_id="deadbeef",
+            scope=("milky", "10001", "group", "222"),
+            speaker_external_id="5",
+            approve=True,
+        )
+        == "unavailable"
+    )
+    store.close()

@@ -93,6 +93,13 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
         "skills_max_file_bytes": "jianer_mate_tool_skills_max_file_bytes",
         "mcp_enabled": "jianer_mate_tool_mcp_enabled",
         "mcp_servers": "jianer_mate_tool_mcp_servers",
+        "bash_enabled": "jianer_mate_tool_bash_enabled",
+        "bash_approval_timeout_seconds": (
+            "jianer_mate_tool_bash_approval_timeout_seconds"
+        ),
+        "bash_command_timeout_seconds": (
+            "jianer_mate_tool_bash_command_timeout_seconds"
+        ),
     },
     "memory": {
         "enabled": "jianer_mate_memory_enabled",
@@ -291,6 +298,13 @@ def build_config_document(options: Any) -> dict[str, Any]:
             "mcp_servers": [
                 dict(item) for item in getattr(tools, "mcp_servers", ()) or ()
             ],
+            "bash_enabled": bool(getattr(tools, "bash_enabled", False)),
+            "bash_approval_timeout_seconds": float(
+                getattr(tools, "bash_approval_timeout_seconds", 120.0)
+            ),
+            "bash_command_timeout_seconds": float(
+                getattr(tools, "bash_command_timeout_seconds", 60.0)
+            ),
         },
         "group_blacklist": list(getattr(options, "group_blacklist", ())),
         "memory": {

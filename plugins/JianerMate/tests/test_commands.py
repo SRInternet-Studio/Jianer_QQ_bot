@@ -30,6 +30,10 @@ class _RecordingService:
         self.calls.append(("steal",))
         return True
 
+    async def resolve_shell_review(self, event, actions, request_id, approve):
+        self.calls.append(("shell", request_id, approve))
+        return True
+
     async def meme_command(
         self, event, actions, action="", argument="", extra=""
     ):
@@ -131,6 +135,17 @@ def test_persona_commands_are_dispatched():
     handled, calls = _dispatch("~人格 风格", service)
     assert handled is True
     assert calls[-1] == ("persona", "风格", "")
+
+
+def test_shell_review_commands_are_dispatched():
+    service = _RecordingService()
+    handled, calls = _dispatch("~批准Shell a1b2c3", service)
+    assert handled is True
+    assert calls[-1] == ("shell", "a1b2c3", True)
+
+    handled, calls = _dispatch("~拒绝Shell a1b2c3", service)
+    assert handled is True
+    assert calls[-1] == ("shell", "a1b2c3", False)
 
 
 def test_unrelated_text_is_not_handled():

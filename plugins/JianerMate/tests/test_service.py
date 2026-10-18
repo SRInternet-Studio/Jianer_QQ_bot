@@ -22,6 +22,7 @@ from plugins.JianerMate.config import MemeOptions, RuntimeOptions
 from plugins.JianerMate.memes import MemeLibrary
 from plugins.JianerMate.moderation import ModerationDecision
 from plugins.JianerMate.persona import Persona
+from plugins.JianerMate.memory_review import MemoryAction
 from plugins.JianerMate.planner import PlannerDecision
 from plugins.JianerMate.providers import (
     OPENAI_CHAT_COMPLETIONS,
@@ -1234,3 +1235,83 @@ def test_tts_sends_voice_when_enabled(tmp_path):
     assert speech.texts and "在的" in speech.texts[0][0]
     asyncio.run(service.shutdown())
     assert speech.closed is True
+
+
+class _StubLongTerm:
+    def __init__(self):
+        self.available = True
+        self.error = ""
+        self.created = []
+        self.updated = []
+        self.evidence = []
+
+    def ensure_identity(self, **kwargs):
+        del kwargs
+        return "qq:5"
+
+    def list_scoped_memories(self, **kwargs):
+        del kwargs
+        return ()
+
+    def create_scoped_memory(self, **kwargs):
+        self.created.append(kwargs)
+        return SimpleNamespace(id="42")
+
+    def update_scoped_memory(self, **kwargs):
+        self.updated.append(kwargs)
+        return SimpleNamespace(id=kwargs.get("memory_id", ""))
+
+    def add_scoped_memory_evidence(self, **kwargs):
+        self.evidence.append(kwargs)
+        return True
+
+    def close(self):
+        return None
+
+
+class _StubReviewer:
+    def __init__(self, actions):
+        self.actions = tuple(actions)
+        self.calls = []
+
+    async def review(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.actions
+
+
+def test_memory_review_job_writes_memory_and_evidence(tmp_path):
+    service = _service(tmp_path)
+    _activate(service)
+    conversation = _enable_group(service)
+    service.store.append_message(
+        conversation.ref,
+        direction="incoming",
+        content="我超喜欢猫",
+        sender_id="5",
+        sender_name="小明",
+        now=int(time.time()),
+    )
+    long_term = _StubLongTerm()
+    service.long_term = long_term
+    service.memory_reviewer = _StubReviewer(
+        [
+            MemoryAction(
+                action="create",
+                scope="person",
+                canonical_fact="用户喜欢猫",
+                memory_text="我记得他喜欢猫。",
+            )
+        ]
+    )
+    assert service.store.enqueue_memory_job(
+        conversation.ref, exchange_key="k1", canonical_user_id="qq:5"
+    )
+    asyncio.run(service._run_memory_jobs())
+
+    assert long_term.created
+    assert long_term.created[0]["canonical_fact"] == "用户喜欢猫"
+    assert long_term.evidence
+    assert "喜欢猫" in long_term.evidence[0]["excerpt"]
+    assert long_term.evidence[0]["memory_id"] == "42"
+    assert service.store.count_memory_jobs() == 0
+    asyncio.run(service.shutdown())

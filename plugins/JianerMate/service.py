@@ -57,6 +57,7 @@ from plugins.JianerMate.replyer import MemeCandidateView, ReplyPlan, Replyer
 from plugins.JianerMate.store import ConversationRecord, MateStore, MessageRecord
 from plugins.JianerMate.tools import (
     MateMemoryFacade,
+    MateMessageSink,
     MateToolRuntime,
     build_tool_context,
     make_actor_resolver,
@@ -750,6 +751,7 @@ class JianerMateService:
             ),
             actor=actor,
             model=str(model or ""),
+            message_sink=MateMessageSink(event, actions),
         )
 
     def _tool_schemas(self, tool_context: Any) -> tuple[Mapping[str, Any], ...]:
@@ -796,6 +798,37 @@ class JianerMateService:
 
     def unregister_tool(self, registration: Any) -> bool:
         return self.tool_runtime.unregister_tool(registration)
+
+    async def resolve_shell_review(
+        self,
+        event: Any,
+        actions: Any,
+        request_id: str,
+        approve: bool,
+    ) -> bool:
+        """Handle ``~批准Shell`` / ``~拒绝Shell`` for the pending queue."""
+
+        key = self._conversation_ref(event)
+        if key is None:
+            await self._reply(actions, event, "无法识别当前会话。")
+            return True
+        result = self.tool_runtime.resolve_shell(
+            request_id=str(request_id or ""),
+            scope=(key.protocol, key.self_id, key.kind, key.conversation_id),
+            speaker_external_id=str(getattr(event, "user_id", "") or ""),
+            approve=bool(approve),
+        )
+        message = {
+            "approved": "已批准，正在执行这条 Shell 命令。",
+            "rejected": "已拒绝这条 Shell 命令。",
+            "not_found": "没有找到这个请求 ID（可能已过期）。",
+            "wrong_conversation": "该请求不属于当前会话。",
+            "not_requester": "只有发起命令的人可以批准或拒绝。",
+            "already_resolved": "这条请求已经处理过了。",
+            "unavailable": "当前没有待审核的 Shell 命令。",
+        }.get(result, "处理失败，请稍后再试。")
+        await self._reply(actions, event, message)
+        return True
 
     # ------------------------------------------------------------------ #
     # automatic memory review
@@ -903,10 +936,12 @@ class JianerMateService:
                 )
             return
         self._ensure_memory_identity(canonical)
+        applied: list[tuple[Any, str]] = []
         for action in actions:
+            result = None
             with contextlib.suppress(Exception):
                 if action.action == "create":
-                    self.long_term.create_scoped_memory(
+                    result = self.long_term.create_scoped_memory(
                         scope=action.scope,
                         canonical_user_id=canonical,
                         preset=persona.name,
@@ -923,7 +958,7 @@ class JianerMateService:
                         ),
                     )
                 else:
-                    self.long_term.update_scoped_memory(
+                    result = self.long_term.update_scoped_memory(
                         scope=action.scope,
                         canonical_user_id=canonical,
                         preset=persona.name,
@@ -933,6 +968,20 @@ class JianerMateService:
                         importance=action.importance,
                         confidence=action.confidence,
                     )
+            memory_id = str(
+                getattr(result, "id", "")
+                or getattr(result, "fact_id", "")
+                or action.memory_id
+            )
+            if memory_id:
+                applied.append((action, memory_id))
+        self._attach_memory_evidence(
+            applied,
+            canonical=canonical,
+            preset=persona.name,
+            excerpt=transcript[-600:],
+            observed_at=now,
+        )
         self.store.finish_memory_job(
             job_id,
             status="done",
@@ -941,6 +990,33 @@ class JianerMateService:
         )
         if actions:
             self._log_info(f"记忆审查写入 {len(actions)} 条长期记忆")
+
+    def _attach_memory_evidence(
+        self,
+        applied: Sequence[tuple[Any, str]],
+        *,
+        canonical: str,
+        preset: str,
+        excerpt: str,
+        observed_at: int,
+    ) -> None:
+        """Record where a memory came from, mirroring JianerAI's evidence rows."""
+
+        if not applied or not excerpt.strip():
+            return
+        attach = getattr(self.long_term, "add_scoped_memory_evidence", None)
+        if not callable(attach):
+            return
+        for action, memory_id in applied:
+            with contextlib.suppress(Exception):
+                attach(
+                    scope=action.scope,
+                    canonical_user_id=canonical,
+                    preset=preset,
+                    memory_id=memory_id,
+                    excerpt=excerpt,
+                    observed_at=int(observed_at),
+                )
 
     def _ensure_memory_identity(self, canonical: str) -> None:
         if not canonical or not self.long_term.available:

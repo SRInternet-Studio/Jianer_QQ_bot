@@ -20,6 +20,7 @@ __plugin_meta__ = PluginMetadata(
         "{reminder}人格 [状态|转换 <文本>|导入 <旧预设>|重置|概率 0.2|风格|风格添加|风格删除] —> 管理员人格设定\n"
         "{reminder}设置提示 <文本> / {reminder}清空提示 —> 当前会话补充要求\n"
         "{reminder}偷表情 —> 把回复的图片收进全局表情包库\n"
+        "{reminder}批准Shell / {reminder}拒绝Shell <请求ID> —> 审核管理员 Shell 命令\n"
         "{reminder}表情包 [状态|列表 1|删除 <编号>|标签 <编号> <标签>|清空 确认] —> 管理表情包库"
     ),
     requires={"jianerbot-plugin-alconna"},
@@ -175,6 +176,28 @@ async def _clear_conversation_prompt(
 @Command(Alconna(f"{_REMINDER}偷表情")).handle()
 async def _steal_meme(event: Any = None, actions: Any = None) -> bool:
     return await _require_service().steal_meme_command(event, actions)
+
+
+@Command(Alconna(f"{_REMINDER}批准Shell", Args["request_id", str])).handle()
+async def _approve_shell(
+    request_id: str = "",
+    event: Any = None,
+    actions: Any = None,
+) -> bool:
+    return await _require_service().resolve_shell_review(
+        event, actions, request_id, True
+    )
+
+
+@Command(Alconna(f"{_REMINDER}拒绝Shell", Args["request_id", str])).handle()
+async def _reject_shell(
+    request_id: str = "",
+    event: Any = None,
+    actions: Any = None,
+) -> bool:
+    return await _require_service().resolve_shell_review(
+        event, actions, request_id, False
+    )
 
 
 @Command(

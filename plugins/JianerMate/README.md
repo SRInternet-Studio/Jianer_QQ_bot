@@ -108,6 +108,10 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
 - `tools.mcp_enabled` / `tools.mcp_servers`：MCP 服务（stdio 或 Streamable HTTP），
   启用后把 `mcp_<server>_<tool>` 注册进同一工具表；单个服务连不上只会记录日志，
   不会影响其它工具（也兼容宿主 `config.others.agent_mcp_*`）。
+- `tools.bash_enabled`：注册 `bash` 工具（仅机器人管理员），命令会先发到当前会话，
+  由发起人用 `~批准Shell <请求ID>` / `~拒绝Shell <请求ID>` 决定是否执行；
+  `tools.bash_approval_timeout_seconds`（默认 120）与
+  `tools.bash_command_timeout_seconds`（默认 60）控制等待与执行上限。
 - `tools.include_web_browser`：注册 `web_browser`，默认 `false`（会启动浏览器）；
 - `tools.allow_mutating`：允许注册写操作与平台 API 工具，默认 `false`；
 - `tools.max_output_chars`：单次工具结果注入模型的长度上限，默认 `4000`。
