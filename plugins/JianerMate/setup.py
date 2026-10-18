@@ -18,6 +18,7 @@ __plugin_meta__ = PluginMetadata(
         "@机器人 [问题] —> 群聊 AI 对话（裸 At 也会回应）；私聊直接发送问题\n"
         "{reminder}主动发言 [状态|开启|关闭|频率 0.5|免打扰 23:00-08:00|提示|决策|调试] —> 管理本群主动发言\n"
         "{reminder}人格 [状态|转换 <文本>|导入 <旧预设>|重置|概率 0.2|风格|风格添加|风格删除] —> 管理员人格设定\n"
+        "{reminder}模型 [代码|重置] —> 查看可用模型并切换本会话回复模型\n"
         "{reminder}设置提示 <文本> / {reminder}清空提示 —> 当前会话补充要求\n"
         "{reminder}偷表情 —> 把回复的图片收进全局表情包库\n"
         "{reminder}批准Shell / {reminder}拒绝Shell <请求ID> —> 审核管理员 Shell 命令\n"
@@ -152,6 +153,19 @@ async def _persona_command(
 async def _persona_status(event: Any = None, actions: Any = None) -> bool:
     return await _require_service().handle_persona_command(
         event, actions, "", ""
+    )
+
+
+@Command(
+    Alconna(f"{_REMINDER}模型", Args["rest", MultiVar(str, "*")])
+).handle()
+async def _model_command(
+    rest: tuple[str, ...] = (),
+    event: Any = None,
+    actions: Any = None,
+) -> bool:
+    return await _require_service().model_command(
+        event, actions, " ".join(str(item) for item in (rest or ()))
     )
 
 

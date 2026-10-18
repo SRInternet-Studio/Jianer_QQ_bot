@@ -29,6 +29,9 @@ MaiBot 风格的群聊 AI：群里被 @ 或私聊时正常回话，群内可以�
 - `~主动发言 免打扰 23:00-08:00` / `~主动发言 免打扰 关闭`
 - `~主动发言 决策 [条数]`：查看最近的主动发言决策与理由
 - `~设置提示 <文本>` / `~清空提示`（`~设置群提示` / `~清空群提示` 同样可用）
+- `~模型`：查看本会话回复模型、Planner 模型与可用模型列表
+- `~模型 <代码>`：把本会话的回复模型切换成指定 aiconfig 模型（只影响这个群/私聊）
+- `~模型 重置`：恢复成插件配置里的默认回复模型
 - `~偷表情`（回复一张图片后发送）
 - `~表情包` / `~表情包 列表 1` / `~表情包 查看 <编号>`（回复图片便于改标签）
 
@@ -158,6 +161,8 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
 - `jianer_mate_replyer_model`：Replyer 使用的模型代码，必须支持图片输入（视觉挑选表情包）。
 - 两者留空时会自动采用宿主 `default_mode`（没有则取第一个可用模型），
   启动日志会分别列出「原生模型 / 桥接模型 / 不支持」，方便确认加载了哪些模型。
+- `~模型 <代码>` 的会话级切换保存在 `mate.db` 的 `state` 表
+  （`replyer_model:<会话 ref>`），优先级高于上面的默认值，重启后仍然生效。
 - `jianer_mate_moderation_enabled` / `jianer_mate_moderation_model`：可选审核，默认关闭。
 - `jianer_mate_persona`：单一人设，
   `{name, personality, behavior_style, reply_style, group_chat_prompt, private_chat_prompt, multiple_reply_styles, multiple_probability}`。

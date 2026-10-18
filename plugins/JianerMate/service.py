@@ -88,6 +88,7 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 HINT_INTERVAL_SECONDS = 600.0
 PRUNE_EVERY_MESSAGES = 50
 PERSONA_OVERRIDE_STATE_KEY = "persona_override"
+MODEL_OVERRIDE_STATE_PREFIX = "replyer_model:"
 _SUBAGENT_BLOCKED_TOOLS = frozenset(
     {
         "spawn_subagents",
@@ -585,7 +586,7 @@ class JianerMateService:
             )
             return
         planner_model = self._planner_model_key()
-        replyer_model = self._replyer_model_key()
+        replyer_model = self._replyer_model_key(conversation)
         if not planner_model or not replyer_model:
             self.store.add_decision(
                 conversation.ref,
@@ -1030,7 +1031,7 @@ class JianerMateService:
                 actions,
                 key,
                 conversation,
-                model=self._replyer_model_key(),
+                model=self._replyer_model_key(conversation),
             )
             visible = tuple(
                 item["function"]["name"]
@@ -1326,14 +1327,14 @@ class JianerMateService:
                 prompt = BARE_MENTION_PROMPT
             else:
                 prompt = "（对方发来了图片）"
-        replyer_model = self._replyer_model_key()
-        if not replyer_model:
-            await self._maybe_send_config_hint(key, event, actions)
-            return True
         conversation = self.store.ensure_conversation(
             key.protocol, key.self_id, key.kind, key.conversation_id,
             now=int(self._clock()),
         )
+        replyer_model = self._replyer_model_key(conversation)
+        if not replyer_model:
+            await self._maybe_send_config_hint(key, event, actions)
+            return True
         lock = self._conversation_locks.setdefault(key, asyncio.Lock())
         async with lock:
             now = self._clock()
@@ -2157,6 +2158,66 @@ class JianerMateService:
     # ------------------------------------------------------------------ #
     # conversation prompts
     # ------------------------------------------------------------------ #
+    async def model_command(
+        self,
+        event: Any,
+        actions: Any,
+        value: str = "",
+    ) -> bool:
+        """``~模型`` lists or switches the reply model of this conversation."""
+
+        key = self._conversation_ref(event)
+        if key is None:
+            await self._reply(actions, event, "无法识别当前会话。")
+            return True
+        conversation = self.store.ensure_conversation(
+            key.protocol, key.self_id, key.kind, key.conversation_id,
+            now=int(self._clock()),
+        )
+        native, bridged = self._available_models()
+        available = native + bridged
+        wanted = str(value or "").strip()
+        override = self._model_override(conversation)
+        if not wanted:
+            current = self._replyer_model_key(conversation) or "未配置"
+            lines = [
+                "本会话回复模型：%s%s"
+                % (current, "（会话指定）" if override else "（插件默认）"),
+                "Planner 模型：%s" % (self._planner_model_key() or "未配置"),
+                "可用模型：" + ("，".join(available) if available else "（无）"),
+            ]
+            if bridged:
+                lines.append("桥接模型：" + "，".join(bridged))
+            lines.append(
+                "用法：~模型 <代码> 切换本会话回复模型，"
+                "~模型 重置 恢复插件默认。"
+            )
+            await self._reply(actions, event, "\n".join(lines))
+            return True
+        if not self._can_manage(event):
+            await self._reply(
+                actions, event, "只有群主/管理员或机器人管理员能切换模型。"
+            )
+            return True
+        if wanted in {"重置", "默认", "reset", "default"}:
+            self._set_model_override(conversation, "")
+            self._notice_state.pop("vision_failures", None)
+            default = self._replyer_model_key() or "未配置"
+            await self._reply(actions, event, f"已恢复插件默认模型：{default}")
+            return True
+        if not self.client.has_model(wanted):
+            await self._reply(
+                actions,
+                event,
+                "没有这个模型：%s\n可用模型：%s"
+                % (wanted, "，".join(available) if available else "（无）"),
+            )
+            return True
+        self._set_model_override(conversation, wanted)
+        self._notice_state.pop("vision_failures", None)
+        await self._reply(actions, event, f"本会话回复模型已切换为：{wanted}")
+        return True
+
     async def set_group_prompt(self, event: Any, actions: Any, text: str) -> bool:
         return await self.set_conversation_prompt(event, actions, text)
 
@@ -2427,9 +2488,38 @@ class JianerMateService:
         candidate = self.options.planner_model or self.options.replyer_model
         return candidate if self.client.has_model(candidate) else ""
 
-    def _replyer_model_key(self) -> str:
+    def _replyer_model_key(
+        self, conversation: ConversationRecord | None = None
+    ) -> str:
+        if conversation is not None:
+            override = self._model_override(conversation)
+            if override and self.client.has_model(override):
+                return override
         candidate = self.options.replyer_model or self.options.planner_model
         return candidate if self.client.has_model(candidate) else ""
+
+    def _model_override(self, conversation: ConversationRecord) -> str:
+        with contextlib.suppress(Exception):
+            return str(
+                self.store.get_state(
+                    f"{MODEL_OVERRIDE_STATE_PREFIX}{int(conversation.ref)}", ""
+                )
+            ).strip()
+        return ""
+
+    def _set_model_override(
+        self, conversation: ConversationRecord, model: str
+    ) -> None:
+        self.store.set_state(
+            f"{MODEL_OVERRIDE_STATE_PREFIX}{int(conversation.ref)}",
+            str(model or "").strip(),
+        )
+
+    def _available_models(self) -> tuple[list[str], list[str]]:
+        """Model codes this client can actually drive, native first."""
+
+        native, bridged, _unsupported = self._model_groups()
+        return native, bridged
 
     def _replyer_supports_images(self, model_key: str) -> bool:
         """Assume vision support and degrade after repeated failures."""
@@ -2690,7 +2780,9 @@ class JianerMateService:
         )
         debug = "开" if conversation is not None and conversation.debug_dry_run else "关"
         planner = self._planner_model_key() or "未配置"
-        replyer = self._replyer_model_key() or "未配置"
+        replyer = self._replyer_model_key(conversation) or "未配置"
+        if conversation is not None and self._model_override(conversation):
+            replyer = f"{replyer}（会话指定）"
         serves = getattr(self.client, "serves", None)
         unsupported = [
             entry.key
@@ -2774,7 +2866,18 @@ class JianerMateService:
     def _spawn(self, coroutine: Any) -> asyncio.Task[Any]:
         task = asyncio.create_task(coroutine)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def _finish(completed: asyncio.Task[Any]) -> None:
+            self._tasks.discard(completed)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is not None:
+                self._log_error(
+                    "后台任务失败：%s: %s" % (error.__class__.__name__, error)
+                )
+
+        task.add_done_callback(_finish)
         return task
 
     def _transcript_text(self, recent: Sequence[MessageRecord]) -> str:

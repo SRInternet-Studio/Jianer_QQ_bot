@@ -38,6 +38,10 @@ class _RecordingService:
         self.calls.append(("tools", action))
         return True
 
+    async def model_command(self, event, actions, value=""):
+        self.calls.append(("model", value))
+        return True
+
     async def meme_command(
         self, event, actions, action="", argument="", extra=""
     ):
@@ -161,6 +165,21 @@ def test_tools_command_is_dispatched():
     handled, calls = _dispatch("~工具 全部", service)
     assert handled is True
     assert calls[-1] == ("tools", "全部")
+
+
+def test_model_command_is_dispatched():
+    service = _RecordingService()
+    handled, calls = _dispatch("~模型", service)
+    assert handled is True
+    assert calls[-1] == ("model", "")
+
+    handled, calls = _dispatch("~模型 gemini", service)
+    assert handled is True
+    assert calls[-1] == ("model", "gemini")
+
+    handled, calls = _dispatch("~模型 重置", service)
+    assert handled is True
+    assert calls[-1] == ("model", "重置")
 
 
 def test_unrelated_text_is_not_handled():

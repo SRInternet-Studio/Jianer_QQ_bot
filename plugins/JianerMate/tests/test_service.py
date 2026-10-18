@@ -292,11 +292,12 @@ def _service(
     store=None,
     library=None,
     speech=None,
+    client=None,
     **overrides,
 ):
     runtime = _runtime(tmp_path, **overrides)
     options = RuntimeOptions.from_runtime(runtime)
-    client = _StubClient()
+    client = client or _StubClient()
     return JianerMateService(
         options,
         runtime=runtime,
@@ -363,6 +364,70 @@ def test_passive_group_mention_and_private_reply(tmp_path):
     ]
     assert "incoming" not in directions
     assert directions.count("outgoing") >= 1
+    asyncio.run(service.shutdown())
+
+
+def _model_entry(key, model, *, api_key="sk-test", response_type=None):
+    return ModelEntry(
+        key=key,
+        friendly_name=key.title(),
+        response_type=response_type or OPENAI_CHAT_COMPLETIONS,
+        model=model,
+        api_key=api_key,
+        base_url="https://api.example.com/v1",
+    )
+
+
+def test_model_command_switches_replyer_per_conversation(tmp_path):
+    client = _StubClient(
+        {
+            "test": _model_entry("test", "test-model"),
+            "vision": _model_entry("vision", "vision-model"),
+            "placeholder": _model_entry(
+                "placeholder", "unset", response_type="google_generate_content"
+            ),
+        }
+    )
+    service = _service(tmp_path, client=client)
+    _activate(service)
+    actions = _FakeActions()
+    admin = _event(user_id="1", at=True, text="")
+
+    assert asyncio.run(service.model_command(admin, actions, "")) is True
+    menu = _sent_text(actions.sent[-1])
+    assert "test" in menu and "vision" in menu
+    assert "placeholder" not in menu
+
+    assert asyncio.run(service.model_command(admin, actions, "vision")) is True
+    assert "vision" in _sent_text(actions.sent[-1])
+    conversation = service.store.get_conversation("milky", "10001", "group", "222")
+    assert service._model_override(conversation) == "vision"
+
+    assert (
+        asyncio.run(service.handle_fallback(_event(at=True, text="在吗"), actions))
+        is True
+    )
+    assert service.replyer.calls[-1]["model_key"] == "vision"
+
+    other = _event(group_id="333", user_id="1", at=True, text="在吗")
+    assert asyncio.run(service.handle_fallback(other, actions)) is True
+    assert service.replyer.calls[-1]["model_key"] == "test"
+
+    stranger = _event(user_id="9")
+    assert asyncio.run(service.model_command(stranger, actions, "test")) is True
+    assert "管理员" in _sent_text(actions.sent[-1])
+    assert service._model_override(conversation) == "vision"
+
+    assert asyncio.run(service.model_command(admin, actions, "nope")) is True
+    assert "没有这个模型" in _sent_text(actions.sent[-1])
+
+    assert asyncio.run(service.model_command(admin, actions, "重置")) is True
+    assert service._model_override(conversation) == ""
+    assert (
+        asyncio.run(service.handle_fallback(_event(at=True, text="在吗"), actions))
+        is True
+    )
+    assert service.replyer.calls[-1]["model_key"] == "test"
     asyncio.run(service.shutdown())
 
 

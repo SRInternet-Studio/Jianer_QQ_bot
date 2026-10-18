@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 新增
+- JianerMate 新增 `~模型` / `~模型 <代码>` / `~模型 重置`：列出可用模型并把本会话回复模型切换成任意原生或桥接模型，覆盖值存在 `mate.db` 的 `state` 表里，只影响当前群/私聊且重启后仍然生效。
 - 新增目录插件 `plugins/JianerMate/`（`jianerbot-plugin-jianer-mate`）：单人设群聊 AI，支持群内 @/私聊被动对话、按群开启的主动发言、短句多段回复与拟人化后处理（错别字自纠、颜文字/口癖）、全局表情包库（自动收集、视觉挑选、`~偷表情`/`~表情包` 管理）、MaiBot 风格人格（备用说话风格、群聊/私聊提示词、别名点名）、旧预设用 LLM 转写为人格（`~人格 转换/导入/重置`）；模型复用 `aiconfig`，非 OpenAI 兼容条目（Gemini/Anthropic/Responses）通过 JianerAI Provider 层桥接；长期记忆默认走 memorix（缺 embedding 配置自动回退旧存储）并在回复后自动审查写入，工具侧接入内置工具、只读平台 API、Agent Skills、MCP、第三方插件工具、`bash`（人工审批）与 `spawn_subagents`；支持 TTS 语音回复与回复后缀；拥有独立插件配置文件 `data/jianer_mate/config.json`（优先于宿主 `config.others` 的同名键）。
 - `web_search` 支持模型用 `backend` 指定搜索后端；当前模型为 DeepSeek 官方 API 时自动改用 DeepSeek 网页搜索；DDGS 超时或网络错误后按智谱、博查、Bing 中国顺序自动回退，新增 `WEB_SEARCH_FALLBACK_BACKENDS`、`ZHIPUAI_API_KEY`、`BOCHA_API_KEY` 配置。
 - 新增目录插件 `plugins/Wordle/`（参考 `nonebot-plugin-wordle`，MIT）：`~wordle [-l 长度] [-d 词典]` 开局、`~wordle 猜 <单词>` 竞猜、`~wordle 提示/状态/结束`；群内共享一局、任何成员都可猜，开局后也可直接发送单词、提示或结束；用 PIL 渲染棋盘，内置多套词典与释义，长度 3~8、最多“长度+1”次机会，10 分钟超时自动结束。
@@ -43,6 +44,7 @@
 - 飞书绑定以 JSON 为权威源，通过持久 outbox 幂等合并 AI 身份；回调失败不回滚非 AI 绑定。
 
 ### 修复
+- JianerMate 的后台任务（表情包收集、主动发言、记忆审查、第三方工具加载）现在会记录异常，不再是静默消失的 `Task exception was never retrieved`。
 - 修复 JianerMate 被动回复整体不可用：`on_message_fallback` 调用了不存在的 `_has_media`，群里只有 `@` 或只发图片时直接抛 `AttributeError` 并中断派发；现在补齐该方法，纯 `@` 走「只是 @ 了你」提示，纯媒体按图片/语音/视频判定。
 - `~人格 转换` 遇到模型返回非 JSON 时不再只回一句「模型返回的 JSON 无法解析」：先以更严格的“只输出 JSON”提示重试一次，仍失败时提示所用模型并建议换模型或缩短设定；JSON 解析同时容忍对象/数组结尾的多余逗号。
 - 修复 Gemini 400 `any_of` schema 报错：构造 functionDeclarations 时把 `anyOf`/`oneOf` 的同级字段（`type`、`properties`、`required`、`description` 等）合并进各分支，OneBot、Milky 与 MCP 工具声明不再与 Gemini 限制冲突。
