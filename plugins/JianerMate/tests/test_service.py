@@ -286,6 +286,7 @@ def _service(
     moderator=None,
     store=None,
     library=None,
+    speech=None,
     **overrides,
 ):
     runtime = _runtime(tmp_path, **overrides)
@@ -304,6 +305,7 @@ def _service(
         rng=random.Random(7),
         sleep=_noop_sleep,
         logger=_SilentLogger(),
+        speech=speech,
     )
 
 
@@ -1169,3 +1171,66 @@ def test_tools_can_be_disabled_by_config(tmp_path):
     )
     assert "工具调用：关闭" in status
     asyncio.run(service.shutdown())
+
+
+def test_suffix_is_appended_to_the_last_message(tmp_path):
+    suffix_path = tmp_path / "suffix.json"
+    suffix_path.write_text(
+        json.dumps({"global_suffix": " ♡"}), encoding="utf-8"
+    )
+    service = _service(
+        tmp_path,
+        replyer=_StubReplyer(ReplyPlan(messages=("在的",))),
+        jianer_mate_suffix_enabled=True,
+        jianer_mate_suffix_config_path=str(suffix_path),
+    )
+    _activate(service)
+    actions = _FakeActions()
+    asyncio.run(service.handle_fallback(_event(at=True, text="在吗"), actions))
+    assert _sent_text(actions.sent[-1]).endswith("♡")
+    asyncio.run(service.shutdown())
+
+
+def test_tts_sends_voice_when_enabled(tmp_path):
+    class _StubSpeech:
+        def __init__(self, path):
+            self.path = path
+            self.texts = []
+            self.closed = False
+
+        async def synthesize_artifact(self, text, options):
+            self.texts.append((text, dict(options)))
+            return SimpleNamespace(path=self.path)
+
+        async def shutdown(self):
+            self.closed = True
+
+    voice_path = tmp_path / "voice.mp3"
+    voice_path.write_bytes(b"ID3")
+    speech = _StubSpeech(voice_path)
+    service = _service(
+        tmp_path,
+        replyer=_StubReplyer(ReplyPlan(messages=("在的",))),
+        speech=speech,
+        jianer_mate_tts_enabled=True,
+    )
+    _activate(service)
+    actions = _FakeActions()
+    actions.capabilities = frozenset(
+        {
+            Capability.SEND_REPLY,
+            Capability.SEND_IMAGE,
+            Capability.SEND_AUDIO,
+        }
+    )
+    asyncio.run(service.handle_fallback(_event(at=True, text="在吗"), actions))
+    records = [
+        segment
+        for item in actions.sent
+        for segment in item["message"]
+        if isinstance(segment, segments.Record)
+    ]
+    assert records and records[0].file.endswith("voice.mp3")
+    assert speech.texts and "在的" in speech.texts[0][0]
+    asyncio.run(service.shutdown())
+    assert speech.closed is True

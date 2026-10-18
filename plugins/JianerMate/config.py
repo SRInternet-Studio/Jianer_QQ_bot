@@ -129,6 +129,19 @@ class RuntimeOptions:
     memory_embedding_config_path: Path = field(
         default_factory=lambda: Path(DEFAULT_AI_CONFIG_DIR) / "embedding.json"
     )
+    tts_enabled: bool = False
+    tts_options: Mapping[str, Any] = field(
+        default_factory=lambda: {
+            "voice": "zh-CN-XiaoyiNeural",
+            "rate": "+0%",
+            "volume": "+0%",
+            "pitch": "+0Hz",
+        }
+    )
+    suffix_enabled: bool = True
+    suffix_config_path: Path = field(
+        default_factory=lambda: Path("suffix_config.json")
+    )
     context_messages: int = 40
     history_keep_messages: int = 300
     history_retention_days: int = 7
@@ -348,6 +361,28 @@ class RuntimeOptions:
                 project_root,
                 others.get("jianer_mate_memory_embedding_config_path"),
                 str(Path(DEFAULT_AI_CONFIG_DIR) / "embedding.json"),
+            ),
+            tts_enabled=_as_bool(
+                others.get("jianer_mate_tts_enabled"), False
+            ),
+            tts_options=(
+                dict(others.get("jianer_mate_tts"))
+                if isinstance(others.get("jianer_mate_tts"), Mapping)
+                else {}
+            )
+            or {
+                "voice": "zh-CN-XiaoyiNeural",
+                "rate": "+0%",
+                "volume": "+0%",
+                "pitch": "+0Hz",
+            },
+            suffix_enabled=_as_bool(
+                others.get("jianer_mate_suffix_enabled"), True
+            ),
+            suffix_config_path=_resolve_path(
+                project_root,
+                others.get("jianer_mate_suffix_config_path"),
+                "suffix_config.json",
             ),
             context_messages=context_messages,
             history_keep_messages=_clamp_int(

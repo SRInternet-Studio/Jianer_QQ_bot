@@ -109,5 +109,25 @@
         ],
         "skills_max_file_bytes": 65536
     },
-    "group_blacklist": []
+    "group_blacklist": [],
+    "memory": {
+        "enabled": true,
+        "backend": "memorix",
+        "db_path": "data/jianer_mate/memory.db",
+        "data_dir": "data/jianer_mate/memorix",
+        "embedding_config_path": "aiconfig/embedding.json"
+    },
+    "tts": {
+        "enabled": false,
+        "options": {
+            "voice": "zh-CN-XiaoyiNeural",
+            "rate": "+0%",
+            "volume": "+0%",
+            "pitch": "+0Hz"
+        }
+    },
+    "suffix": {
+        "enabled": true,
+        "config_path": "suffix_config.json"
+    }
 }

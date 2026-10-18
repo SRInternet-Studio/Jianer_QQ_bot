@@ -112,6 +112,22 @@ JSON。工具实现直接复用仓库里 JianerAI 的 `plugins/JianerAI/tools`�
 权限沿用 JianerAI 的工具契约：声明需要权限的工具只对群主/管理员或机器人管理员
 可见；长期记忆类工具在本插件里会明确回复“没有启用长期记忆”，不会静默失败。
 
+## 长期记忆 / 语音 / 后缀
+
+- 长期记忆默认走 **memorix** 内核（FAISS + SQLite FTS5 双路检索 + Episode/画像），
+  底层复用 JianerAI 的存储实现；缺 `aiconfig/embedding.json` 或初始化失败时自动
+  回退到旧存储并打日志。配置见插件配置文件的 `memory` 段
+  （`enabled` / `backend` / `db_path` / `data_dir` / `embedding_config_path`）。
+- 每次回复成功后会把这次对话排进记忆审查队列（`memory_jobs`，按 exchange 幂等、
+  重启续跑），由小模型提炼 `create/update` 记忆动作写入 memorix；连续失败按
+  30s→3600s 退避，5 次后标记 `failed`。
+- 语音回复：`tts.enabled=true` 时复用 JianerAI 的 Edge TTS 工作区，在文本回复后
+  补发一条语音（需要适配器支持 `SEND_AUDIO`）；`tts.options` 支持
+  `voice/rate/volume/pitch`。
+- 回复后缀：`suffix.enabled=true` 时读取 `suffix.config_path`（默认宿主已有的
+  `suffix_config.json`），对最后一条回复应用全局/特定后缀，宿主命令与系统消息
+  不受影响。
+
 ## 配置
 
 优先读取插件配置文件 `data/jianer_mate/config.json`，宿主 `config.others` 作为兜底；

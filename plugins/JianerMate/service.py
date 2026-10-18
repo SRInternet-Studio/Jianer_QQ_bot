@@ -62,6 +62,13 @@ from plugins.JianerMate.tools import (
     make_actor_resolver,
 )
 
+try:  # Optional parity helpers from the JianerAI package.
+    from plugins.JianerAI.speech import SpeechSynthesizer as _SpeechSynthesizer
+    from plugins.JianerAI.suffix import SuffixStore as _SuffixStore
+except Exception:  # noqa: BLE001 - plugin must keep working without them
+    _SpeechSynthesizer = None  # type: ignore[assignment]
+    _SuffixStore = None  # type: ignore[assignment]
+
 
 _LOGGER = logging.getLogger("jianer_mate")
 
@@ -120,6 +127,7 @@ class JianerMateService:
         sleep: Any = asyncio.sleep,
         logger: Any | None = None,
         entries: Mapping[str, Any] | None = None,
+        speech: Any | None = None,
     ) -> None:
         self.options = options
         self.runtime = runtime or {}
@@ -194,6 +202,20 @@ class JianerMateService:
         )
         self.memory_reviewer = MemoryReviewer(self.client, logger=self._logger)
         self._memory_review_task: asyncio.Task[Any] | None = None
+        self.speech = speech
+        if (
+            self.speech is None
+            and options.tts_enabled
+            and _SpeechSynthesizer is not None
+        ):
+            with contextlib.suppress(Exception):
+                self.speech = _SpeechSynthesizer(
+                    temp_parent=options.project_root / "temps"
+                )
+        self.suffixes = None
+        if options.suffix_enabled and _SuffixStore is not None:
+            with contextlib.suppress(Exception):
+                self.suffixes = _SuffixStore(options.suffix_config_path)
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -287,6 +309,10 @@ class JianerMateService:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks.clear()
+        if self.speech is not None:
+            with contextlib.suppress(Exception):
+                await self.speech.shutdown()
+            self.speech = None
         with contextlib.suppress(Exception):
             self.long_term.close()
         with contextlib.suppress(Exception):
@@ -1081,6 +1107,10 @@ class JianerMateService:
         if not texts:
             return 0
         capabilities = self._capabilities(actions)
+        if self.suffixes is not None and texts:
+            identity = f"{conversation.protocol}:{getattr(event, 'user_id', '')}"
+            with contextlib.suppress(Exception):
+                texts[-1] = self.suffixes.apply_ai_reply(texts[-1], identity)
         typo_index = len(texts) - 1
         sent: list[tuple[str, str]] = []
         typo_original = ""
@@ -1147,7 +1177,40 @@ class JianerMateService:
                     conversation, "[表情包]", "", now=int(self._clock())
                 )
                 self.memes.mark_used(plan.meme_id, now=int(self._clock()))
+        await self._send_speech(actions, event, texts, capabilities)
         return len(sent)
+
+    async def _send_speech(
+        self,
+        actions: Any,
+        event: Any,
+        texts: Sequence[str],
+        capabilities: frozenset[Any],
+    ) -> None:
+        """Reuse JianerAI's TTS workspace to answer with a voice message."""
+
+        if self.speech is None or Capability.SEND_AUDIO not in capabilities:
+            return
+        answer = " ".join(str(item).strip() for item in texts).strip()
+        if not answer:
+            return
+        artifact = None
+        try:
+            artifact = await self.speech.synthesize_artifact(
+                answer, self.options.tts_options
+            )
+            if artifact is None:
+                return
+            await actions.send(
+                message=Manager.Message(Segments.Record(str(artifact.path))),
+                **self._target_kwargs(event),
+            )
+        except Exception:
+            self._log_info("TTS 合成或发送失败")
+        finally:
+            if artifact is not None:
+                with contextlib.suppress(OSError):
+                    artifact.path.unlink()
 
     async def _compose_reply(
         self,

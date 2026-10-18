@@ -99,6 +99,14 @@ _SECTION_KEYS: dict[str, dict[str, str]] = {
         "data_dir": "jianer_mate_memory_data_dir",
         "embedding_config_path": "jianer_mate_memory_embedding_config_path",
     },
+    "tts": {
+        "enabled": "jianer_mate_tts_enabled",
+        "options": "jianer_mate_tts",
+    },
+    "suffix": {
+        "enabled": "jianer_mate_suffix_enabled",
+        "config_path": "jianer_mate_suffix_config_path",
+    },
 }
 
 
@@ -283,6 +291,16 @@ def build_config_document(options: Any) -> dict[str, Any]:
             "enabled": bool(getattr(options, "memory_enabled", True)),
             "db_path": _portable(
                 root, getattr(options, "memory_db_path", None)
+            ),
+        },
+        "tts": {
+            "enabled": bool(getattr(options, "tts_enabled", False)),
+            "options": dict(getattr(options, "tts_options", {}) or {}),
+        },
+        "suffix": {
+            "enabled": bool(getattr(options, "suffix_enabled", True)),
+            "config_path": _portable(
+                root, getattr(options, "suffix_config_path", None)
             ),
         },
     }
