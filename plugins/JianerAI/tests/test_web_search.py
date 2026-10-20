@@ -635,3 +635,114 @@ def test_duplicate_and_invalid_urls_are_dropped(
     assert [item["url"] for item in result["results"]] == [
         "https://a.example"
     ]
+
+
+def _anysearch_response() -> _FakeResponse:
+    return _FakeResponse(
+        {
+            "code": 0,
+            "message": "success",
+            "request_id": "req-1",
+            "data": {
+                "results": [
+                    {
+                        "title": "AnySearch 结果",
+                        "url": "https://anysearch.example/result",
+                        "snippet": "AnySearch 摘要",
+                    }
+                ],
+                "metadata": {"total_results": 1},
+            },
+        }
+    )
+
+
+def test_anysearch_provider_sends_key_and_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ddgs_calls = _install_ddgs(monkeypatch, results=[_first_result()])
+    seen: list[dict[str, Any]] = []
+
+    def post(url: str, kwargs: dict[str, Any]) -> _FakeResponse:
+        assert url == "https://api.anysearch.com/v1/search"
+        seen.append(kwargs)
+        return _anysearch_response()
+
+    client = _install_http(monkeypatch, post=post)
+    spec = web_search_tool(
+        environ={
+            "WEB_SEARCH_PROVIDER": "anysearch",
+            "ANYSEARCH_API_KEY": "as_sk_test",
+            "ANYSEARCH_ZONE": "intl",
+            "ANYSEARCH_LANGUAGE": "en",
+        }
+    )
+    result = spec.handler(_context(), {"query": "hello", "max_results": 3})
+    assert ddgs_calls == []
+    assert client.posts
+    assert seen[0]["headers"]["Authorization"] == "Bearer as_sk_test"
+    assert seen[0]["json"] == {
+        "query": "hello",
+        "max_results": 3,
+        "format": "json",
+        "zone": "intl",
+        "language": "en",
+    }
+    assert result["backend"] == "anysearch"
+    assert result["results"][0]["url"] == "https://anysearch.example/result"
+
+
+def test_anysearch_provider_supports_anonymous_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def post(url: str, kwargs: dict[str, Any]) -> _FakeResponse:
+        seen.append(kwargs)
+        return _anysearch_response()
+
+    _install_http(monkeypatch, post=post)
+    spec = web_search_tool(environ={"WEB_SEARCH_PROVIDER": "anysearch"})
+    result = spec.handler(_context(), {"query": "hello"})
+    assert "Authorization" not in seen[0]["headers"]
+    assert seen[0]["json"]["zone"] == "cn"
+    assert seen[0]["json"]["language"] == "zh-CN"
+    assert result["backend"] == "anysearch"
+
+
+def test_anysearch_error_body_is_not_leaked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_body = (
+        '{"code":-1,"message":"api_key=as_sk_secret_should_not_leak"}'
+    )
+    _install_http(
+        monkeypatch,
+        post=lambda url, kwargs: _FakeResponse(
+            status_code=402,
+            text=secret_body,
+        ),
+    )
+    spec = web_search_tool(environ={"WEB_SEARCH_PROVIDER": "anysearch"})
+    with pytest.raises(ToolExecutionError) as error:
+        spec.handler(_context(), {"query": "hello"})
+    assert error.value.code == "web_search_unavailable"
+    assert "as_sk_secret_should_not_leak" not in str(error.value)
+
+
+def test_anysearch_can_serve_as_ddgs_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ddgs.exceptions import TimeoutException
+
+    _install_ddgs(monkeypatch, error=TimeoutException("timed out"))
+    client = _install_http(
+        monkeypatch,
+        post=lambda url, kwargs: _anysearch_response(),
+    )
+    spec = web_search_tool(
+        environ={"WEB_SEARCH_FALLBACK_BACKENDS": "anysearch,bing_cn"}
+    )
+    result = spec.handler(_context(), {"query": "hello"})
+    assert client.posts[0][0] == "https://api.anysearch.com/v1/search"
+    assert result["backend"] == "anysearch"

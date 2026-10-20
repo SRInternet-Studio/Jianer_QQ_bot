@@ -154,11 +154,18 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `deepseek`：使用 DeepSeek 官方网页搜索 API `POST /v1/tools/search`，读取
   `DEEPSEEK_API_KEY`，与当前对话模型无关，任何模型下都可启用。该模式下忽略
   `backend` 参数，DeepSeek 搜索失败不会回退到 DDGS。
+- `anysearch`：调用 AnySearch 统一搜索 API
+  `POST https://api.anysearch.com/v1/search`。`ANYSEARCH_API_KEY` 可选，留空时使用
+  匿名访问（按 IP 限制的每日免费额度）；`ANYSEARCH_ZONE` 可选 `cn`/`intl`（默认
+  `cn`），`ANYSEARCH_LANGUAGE` 默认 `zh-CN`，`ANYSEARCH_TAG` 可指定垂直领域标签
+  （如 `code.doc`）。AnySearch 也可以写进 `WEB_SEARCH_FALLBACK_BACKENDS`，作为
+  DDGS 超时或网络错误后的回退后端。
 
 DDGS 超时、限流或网络错误时，按 `WEB_SEARCH_FALLBACK_BACKENDS`（默认
 `zhipu,bocha,bing_cn`）依次回退：智谱联网搜索读取 `ZHIPUAI_API_KEY`，博查
 Web Search 读取 `BOCHA_API_KEY`，DeepSeek 网页搜索读取 `DEEPSEEK_API_KEY`；
-未配置 key 的后端自动跳过。Bing 中国（`cn.bing.com`）无需 key，作为最后兜底。
+AnySearch 读取可选的 `ANYSEARCH_API_KEY`；未配置 key 的付费后端自动跳过。Bing 中国
+（`cn.bing.com`）和 AnySearch 匿名模式无需 key，可作为兜底。
 搜索后端变量与密钥可由进程环境或仓库根 `.env` 提供；`WEB_SEARCH_PROVIDER` 或
 `WEB_SEARCH_FALLBACK_BACKENDS` 填了不支持的值会直接报错。DDGS 区域固定为
 `cn-zh`，安全搜索固定为 `moderate`；模型不能指定代理、请求头或待抓取 URL。若

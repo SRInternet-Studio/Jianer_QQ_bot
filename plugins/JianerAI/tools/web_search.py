@@ -40,6 +40,7 @@ _DDGS_ENGINE_HINTS = (
 _CHINA_BACKENDS = ("zhipu", "bocha", "bing_cn")
 _DIRECT_BING_BACKEND = "bing_cn"
 _DEEPSEEK_BACKEND = "deepseek"
+_ANYSEARCH_BACKEND = "anysearch"
 _KEYED_DIRECT_BACKENDS = {
     "zhipu": "ZHIPUAI_API_KEY",
     "bocha": "BOCHA_API_KEY",
@@ -47,12 +48,13 @@ _KEYED_DIRECT_BACKENDS = {
 # Search providers selected by the host, not by the model.
 _DDGS_PROVIDER = "ddgs"
 _DEEPSEEK_PROVIDER = _DEEPSEEK_BACKEND
-_SEARCH_PROVIDERS = (_DDGS_PROVIDER, _DEEPSEEK_PROVIDER)
+_SEARCH_PROVIDERS = (_DDGS_PROVIDER, _DEEPSEEK_PROVIDER, _ANYSEARCH_BACKEND)
 _DEFAULT_DDGS_BACKEND = "bing"
 _DEFAULT_FALLBACK_BACKENDS = _CHINA_BACKENDS
 
 _DDGS_TIMEOUT_SECONDS = 8
 _DEEPSEEK_TIMEOUT_SECONDS = 10.0
+_ANYSEARCH_TIMEOUT_SECONDS = 15.0
 _FALLBACK_ATTEMPT_TIMEOUT_SECONDS = 6.0
 _FALLBACK_TOTAL_TIMEOUT_SECONDS = 12.0
 _TOOL_TIMEOUT_SECONDS = 22.0
@@ -66,6 +68,7 @@ _ZHIPU_MAX_QUERY_CHARS = 70
 _TIMELIMIT_DAYS = {"d": 1, "w": 7, "m": 30, "y": 365}
 
 _DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
+_ANYSEARCH_SEARCH_URL = "https://api.anysearch.com/v1/search"
 _ZHIPU_SEARCH_URL = "https://open.bigmodel.cn/api/paas/v4/web_search"
 _BOCHA_SEARCH_URL = "https://api.bochaai.com/v1/web-search"
 _BING_CN_SEARCH_URLS = (
@@ -157,7 +160,7 @@ def web_search_tool(
         name="web_search",
         description=(
             "搜索互联网上的当前公开信息，返回标题、URL 和搜索摘要。"
-            "宿主可配置使用 DDGS 聚合搜索或 DeepSeek 官方网页搜索 API；"
+            "宿主可配置使用 DDGS 聚合搜索、DeepSeek 官方搜索 API 或 AnySearch；"
             "使用 DDGS 时可用 backend 指定搜索引擎，省略则使用宿主默认后端。"
             "适合需要最新资料的问题，结果中的 URL 仅供回答依据；除非用户明确要求"
             "来源、出处、引用或链接，否则不要在最终回答中展示来源或 URL。"
@@ -221,7 +224,8 @@ def _web_search(
     )
 
     del context
-    if _search_provider(project_root, environ) == _DEEPSEEK_PROVIDER:
+    provider = _search_provider(project_root, environ)
+    if provider == _DEEPSEEK_PROVIDER:
         return _deepseek_provider_search(
             query,
             max_results=max_results,
@@ -229,6 +233,21 @@ def _web_search(
             project_root=project_root,
             environ=environ,
         )
+    if provider == _ANYSEARCH_BACKEND:
+        try:
+            results = _anysearch_search(
+                query,
+                max_results=max_results,
+                project_root=project_root,
+                environ=environ,
+                timeout=_ANYSEARCH_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            _LOGGER.warning(
+                "AnySearch web search failed: %s", type(exc).__name__
+            )
+            raise _unavailable_error() from exc
+        return _payload(query, _ANYSEARCH_BACKEND, results)
 
     backend = _resolve_backend(arguments.get("backend"), project_root, environ)
     if backend == "bing" and "bing" not in _ddgs_text_engines():
@@ -363,6 +382,50 @@ def _deepseek_query(query: str, timelimit: str | None) -> str:
     return f"{query[:room]}{suffix}"
 
 
+def _anysearch_search(
+    query: str,
+    *,
+    max_results: int,
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+    timeout: float,
+) -> list[dict[str, str]]:
+    body: dict[str, Any] = {
+        "query": query,
+        "max_results": max(1, min(max_results, 10)),
+        "format": "json",
+        "zone": _config_value("ANYSEARCH_ZONE", project_root, environ) or "cn",
+        "language": (
+            _config_value("ANYSEARCH_LANGUAGE", project_root, environ)
+            or "zh-CN"
+        ),
+    }
+    tag = _config_value("ANYSEARCH_TAG", project_root, environ)
+    if tag:
+        body["tag"] = tag
+    headers = {"Content-Type": "application/json"}
+    api_key = _config_value("ANYSEARCH_API_KEY", project_root, environ)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    with _http_client(timeout=timeout) as client:
+        response = client.post(_ANYSEARCH_SEARCH_URL, headers=headers, json=body)
+        response.raise_for_status()
+        payload = response.json()
+    if not isinstance(payload, Mapping) or str(payload.get("code")) != "0":
+        # Never surface the body: HTTP 402 responses may contain credentials.
+        raise RuntimeError("anysearch returned an error envelope")
+    items = _mapping_value(payload, "data", "results")
+    return _normalize_results(
+        _map_items(
+            items,
+            title_keys=("title",),
+            url_keys=("url",),
+            snippet_keys=("snippet", "content"),
+        ),
+        limit=max_results,
+    )
+
+
 def _search_explicit_direct_backend(
     backend: str,
     query: str,
@@ -446,6 +509,14 @@ def _search_direct_backend(
 ) -> list[dict[str, str]]:
     if backend == "bing_cn":
         return _bing_cn_search(query, max_results=max_results, timeout=timeout)
+    if backend == _ANYSEARCH_BACKEND:
+        return _anysearch_search(
+            query,
+            max_results=max_results,
+            project_root=project_root,
+            environ=environ,
+            timeout=timeout,
+        )
     api_key = _backend_api_key(backend, project_root, environ)
     if not api_key:
         raise _BackendUnavailable(backend)
@@ -635,7 +706,11 @@ def _fallback_backends(
         backend = item.strip().casefold()
         if not backend or backend in backends:
             continue
-        if backend != _DEEPSEEK_BACKEND and backend not in _CHINA_BACKENDS:
+        if (
+            backend != _DEEPSEEK_BACKEND
+            and backend != _ANYSEARCH_BACKEND
+            and backend not in _CHINA_BACKENDS
+        ):
             raise ValueError(
                 "WEB_SEARCH_FALLBACK_BACKENDS contains an unsupported backend"
             )

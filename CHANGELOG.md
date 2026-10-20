@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 新增
+- `web_search` 新增 AnySearch 提供方（`WEB_SEARCH_PROVIDER=anysearch`）：调用 `POST https://api.anysearch.com/v1/search`，API Key 可选（匿名走每日免费额度），支持 `ANYSEARCH_ZONE`、`ANYSEARCH_LANGUAGE`、`ANYSEARCH_TAG` 配置，也可加入 `WEB_SEARCH_FALLBACK_BACKENDS` 作为 DDGS 失败后的回退后端。
 - JianerMate 新增 `~模型` / `~模型 <代码>` / `~模型 重置`：列出可用模型并把本会话回复模型切换成任意原生或桥接模型，覆盖值存在 `mate.db` 的 `state` 表里，只影响当前群/私聊且重启后仍然生效。
 - 新增目录插件 `plugins/JianerMate/`（`jianerbot-plugin-jianer-mate`）：单人设群聊 AI，支持群内 @/私聊被动对话、按群开启的主动发言、短句多段回复与拟人化后处理（错别字自纠、颜文字/口癖）、全局表情包库（自动收集、视觉挑选、`~偷表情`/`~表情包` 管理）、MaiBot 风格人格（备用说话风格、群聊/私聊提示词、别名点名）、旧预设用 LLM 转写为人格（`~人格 转换/导入/重置`）；模型复用 `aiconfig`，非 OpenAI 兼容条目（Gemini/Anthropic/Responses）通过 JianerAI Provider 层桥接；长期记忆默认走 memorix（缺 embedding 配置自动回退旧存储）并在回复后自动审查写入，工具侧接入内置工具、只读平台 API、Agent Skills、MCP、第三方插件工具、`bash`（人工审批）与 `spawn_subagents`；支持 TTS 语音回复与回复后缀；拥有独立插件配置文件 `data/jianer_mate/config.json`（优先于宿主 `config.others` 的同名键）。
 - `web_search` 支持模型用 `backend` 指定搜索后端；当前模型为 DeepSeek 官方 API 时自动改用 DeepSeek 网页搜索；DDGS 超时或网络错误后按智谱、博查、Bing 中国顺序自动回退，新增 `WEB_SEARCH_FALLBACK_BACKENDS`、`ZHIPUAI_API_KEY`、`BOCHA_API_KEY` 配置。
