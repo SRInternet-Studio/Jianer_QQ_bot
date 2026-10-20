@@ -1266,37 +1266,91 @@ def _build_gemini_payload(
             }
         )
     contents.append({"role": "user", "parts": parts})
-    pending_results: list[dict[str, Any]] = []
+    pending_results: list[ToolResultTurn] = []
+    pending_call_parts: list[Mapping[str, Any]] = []
+    pending_kind = "text"
     for turn in request.turns:
         if isinstance(turn, ToolResultTurn):
-            pending_results.append(_gemini_function_response(turn))
+            pending_results.append(turn)
             continue
         if pending_results:
-            contents.append({"role": "user", "parts": pending_results})
+            if pending_kind == "function" and pending_call_parts:
+                contents.append(
+                    {
+                        "role": "user",
+                        "parts": _gemini_aligned_function_responses(
+                            pending_call_parts,
+                            pending_results,
+                        ),
+                    }
+                )
+            else:
+                contents.append(_gemini_text_tool_results(pending_results))
             pending_results = []
+            pending_call_parts = []
         if turn.provider_content is not None:
             provider_content = _sanitize_gemini_content(turn.provider_content)
             if provider_content is not None:
                 provider_content.setdefault("role", "model")
-                contents.append(provider_content)
+                call_parts = [
+                    part
+                    for part in provider_content.get("parts", ())
+                    if isinstance(part, Mapping)
+                    and _gemini_function_call_part(part) is not None
+                ]
+                if _gemini_replayable_content(provider_content):
+                    contents.append(provider_content)
+                    pending_kind = "function" if call_parts else "text"
+                    pending_call_parts = call_parts
+                else:
+                    visible_parts = _gemini_visible_text_parts(provider_content)
+                    if visible_parts:
+                        contents.append(
+                            {"role": "model", "parts": visible_parts}
+                        )
+                    pending_kind = "text"
+                    pending_call_parts = []
             continue
         model_parts: list[dict[str, Any]] = []
         if turn.text:
             model_parts.append({"text": turn.text})
-        model_parts.extend(
-            {
-                "functionCall": {
-                    "id": call.id,
-                    "name": call.name,
-                    "args": _arguments_mapping(call.arguments),
+        if turn.tool_calls and _is_gemini_3_model(config.model):
+            # Without raw provider content there is no thought_signature to
+            # replay, so use plain text results instead of invalid calls.
+            pending_kind = "text"
+            pending_call_parts = []
+        else:
+            model_parts.extend(
+                {
+                    "functionCall": {
+                        "id": call.id,
+                        "name": call.name,
+                        "args": _arguments_mapping(call.arguments),
+                    }
                 }
-            }
-            for call in turn.tool_calls
-        )
+                for call in turn.tool_calls
+            )
+            pending_kind = "function" if turn.tool_calls else "text"
+            pending_call_parts = [
+                part
+                for part in model_parts
+                if _gemini_function_call_part(part) is not None
+            ]
         if model_parts:
             contents.append({"role": "model", "parts": model_parts})
     if pending_results:
-        contents.append({"role": "user", "parts": pending_results})
+        if pending_kind == "function" and pending_call_parts:
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": _gemini_aligned_function_responses(
+                        pending_call_parts,
+                        pending_results,
+                    ),
+                }
+            )
+        else:
+            contents.append(_gemini_text_tool_results(pending_results))
     generation_config: dict[str, Any] = {
         "temperature": (
             request.temperature
@@ -2063,6 +2117,87 @@ def _gemini_part_signature(part: Mapping[str, Any]) -> str:
 def _gemini_function_call_part(part: Mapping[str, Any]) -> Mapping[str, Any] | None:
     function = part.get("functionCall") or part.get("function_call")
     return function if isinstance(function, Mapping) else None
+
+
+def _gemini_replayable_content(content: Mapping[str, Any]) -> bool:
+    call_parts = [
+        part
+        for part in content.get("parts", ())
+        if isinstance(part, Mapping)
+        and _gemini_function_call_part(part) is not None
+    ]
+    if not call_parts:
+        return True
+    return all(_gemini_part_signature(part) for part in call_parts)
+
+
+def _gemini_visible_text_parts(content: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        dict(part)
+        for part in content.get("parts", ())
+        if isinstance(part, Mapping)
+        and isinstance(part.get("text"), str)
+        and part.get("thought") is not True
+    ]
+
+
+def _gemini_text_tool_results(
+    results: Sequence[ToolResultTurn],
+) -> dict[str, Any]:
+    return {
+        "role": "user",
+        "parts": [
+            {
+                "text": (
+                    f"工具 {item.name} 返回结果："
+                    f"{str(item.content or '').strip()}"
+                )
+            }
+            for item in results
+        ],
+    }
+
+
+def _gemini_aligned_function_responses(
+    call_parts: Sequence[Mapping[str, Any]],
+    results: Sequence[ToolResultTurn],
+) -> list[dict[str, Any]]:
+    """Pair every replayed function call with exactly one response part."""
+
+    by_id: dict[str, ToolResultTurn] = {}
+    by_name: dict[str, ToolResultTurn] = {}
+    for item in results:
+        call_id = str(item.call_id or "").strip()
+        if call_id:
+            by_id.setdefault(call_id, item)
+        name = str(item.name or "").strip()
+        if name:
+            by_name.setdefault(name, item)
+    used: set[int] = set()
+    parts: list[dict[str, Any]] = []
+    for part in call_parts:
+        call = _gemini_function_call_part(part) or {}
+        name = str(call.get("name") or "").strip()
+        call_id = str(call.get("id") or "").strip()
+        match = by_id.get(call_id) if call_id else None
+        if match is not None and id(match) in used:
+            match = None
+        if match is None:
+            match = by_name.get(name)
+            if match is not None and id(match) in used:
+                match = None
+        if match is not None:
+            used.add(id(match))
+            parts.append(_gemini_function_response(match))
+            continue
+        response: dict[str, Any] = {
+            "name": name,
+            "response": {"error": "工具未执行或结果缺失"},
+        }
+        if call_id:
+            response["id"] = call_id
+        parts.append({"functionResponse": response})
+    return parts
 
 
 def _sanitize_gemini_content(content: Mapping[str, Any]) -> dict[str, Any] | None:

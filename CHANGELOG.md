@@ -50,6 +50,7 @@
 - 修复 JianerMate 被动回复整体不可用：`on_message_fallback` 调用了不存在的 `_has_media`，群里只有 `@` 或只发图片时直接抛 `AttributeError` 并中断派发；现在补齐该方法，纯 `@` 走「只是 @ 了你」提示，纯媒体按图片/语音/视频判定。
 - `~人格 转换` 遇到模型返回非 JSON 时不再只回一句「模型返回的 JSON 无法解析」：先以更严格的“只输出 JSON”提示重试一次，仍失败时提示所用模型并建议换模型或缩短设定；JSON 解析同时容忍对象/数组结尾的多余逗号。
 - 修复 Gemini 400 `any_of` schema 报错：构造 functionDeclarations 时把 `anyOf`/`oneOf` 的同级字段（`type`、`properties`、`required`、`description` 等）合并进各分支，OneBot、Milky 与 MCP 工具声明不再与 Gemini 限制冲突。
+- 修复 Gemini 3 缺少 `thoughtSignature` 的 400：回放时把单独的签名 part 合并到 functionCall；若上游完全没返回签名，则把工具结果降级为纯文本，不再发送会被拒绝的 functionCall/functionResponse，也不会产生可被模型模仿的 `[工具调用]` 标记。
 - 修复 embedding 接口 512 token 上限导致的 HTTP 400：独立 embedding 端点返回 input too long 时，超长文本自动按自然边界切分、长度加权合并并重新归一化向量，仍超限时逐级截断兜底。
 - GitHub 额度用尽提示补充 `GITHUB_TOKEN` 指引；episode 分段失败日志附带底层错误原因。
 - `web_search` 不再硬编码 DDGS 引擎列表，改为读取当前安装的 `ddgs` 实际启用的 text 引擎；`ddgs` 9.16 起 text 引擎无 `bing`，此时 `bing` 自动改用内置直连 Bing，未启用的引擎直接报错而不是静默回落到 `auto`。
