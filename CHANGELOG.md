@@ -51,6 +51,7 @@
 - `~人格 转换` 遇到模型返回非 JSON 时不再只回一句「模型返回的 JSON 无法解析」：先以更严格的“只输出 JSON”提示重试一次，仍失败时提示所用模型并建议换模型或缩短设定；JSON 解析同时容忍对象/数组结尾的多余逗号。
 - 修复 Gemini 400 `any_of` schema 报错：构造 functionDeclarations 时把 `anyOf`/`oneOf` 的同级字段（`type`、`properties`、`required`、`description` 等）合并进各分支，OneBot、Milky 与 MCP 工具声明不再与 Gemini 限制冲突。
 - 修复 Gemini 3 缺少 `thoughtSignature` 的 400：回放时把单独的签名 part 合并到 functionCall；若上游完全没返回签名，则终止该轮工具回放，并把“工具调用失败：上游未返回 thoughtSignature”的原因直接返回给用户。
+- 修复 `claude-haiku-5-5` 等严格模型拒绝 non-default `top_p` 的 400：OpenAI Chat Completions、Responses、Anthropic、Gemini 四个请求构造器在 `TopP=1.0`（默认）时不再发送 `top_p`/`topP`，只有显式配置非默认值时才发送。
 - 修复 embedding 接口 512 token 上限导致的 HTTP 400：独立 embedding 端点返回 input too long 时，超长文本自动按自然边界切分、长度加权合并并重新归一化向量，仍超限时逐级截断兜底。
 - GitHub 额度用尽提示补充 `GITHUB_TOKEN` 指引；episode 分段失败日志附带底层错误原因。
 - `web_search` 不再硬编码 DDGS 引擎列表，改为读取当前安装的 `ddgs` 实际启用的 text 引擎；`ddgs` 9.16 起 text 引擎无 `bing`，此时 `bing` 自动改用内置直连 Bing，未启用的引擎直接报错而不是静默回落到 `auto`。

@@ -1231,8 +1231,9 @@ def _build_openai_payload(
             if request.max_output_tokens is not None
             else config.max_tokens
         ),
-        "top_p": config.top_p,
     }
+    if config.top_p != 1.0:
+        payload["top_p"] = config.top_p
     _merge_safe_extra(payload, config.extra_parameters)
     _merge_safe_extra(payload, config.extra_body)
     if request.json_mode:
@@ -1367,13 +1368,14 @@ def _build_gemini_payload(
             if request.temperature is not None
             else config.temperature
         ),
-        "topP": config.top_p,
         "maxOutputTokens": (
             request.max_output_tokens
             if request.max_output_tokens is not None
             else config.max_tokens
         ),
     }
+    if config.top_p != 1.0:
+        generation_config["topP"] = config.top_p
     if request.json_mode:
         generation_config["responseMimeType"] = "application/json"
     thinking_level = config.thinking_level
@@ -1537,13 +1539,14 @@ def _build_responses_payload(
             if request.temperature is not None
             else config.temperature
         ),
-        "top_p": config.top_p,
         "max_output_tokens": (
             request.max_output_tokens
             if request.max_output_tokens is not None
             else config.max_tokens
         ),
     }
+    if config.top_p != 1.0:
+        payload["top_p"] = config.top_p
     system_prompt = _final_system_prompt(config, request)
     if system_prompt:
         payload["instructions"] = system_prompt
@@ -1739,13 +1742,14 @@ def _build_anthropic_payload(
             if request.temperature is not None
             else config.temperature
         ),
-        "top_p": config.top_p,
         "max_tokens": (
             request.max_output_tokens
             if request.max_output_tokens is not None
             else config.max_tokens
         ),
     }
+    if config.top_p != 1.0:
+        payload["top_p"] = config.top_p
     system_prompt = _final_system_prompt(config, request)
     if system_prompt:
         payload["system"] = system_prompt
