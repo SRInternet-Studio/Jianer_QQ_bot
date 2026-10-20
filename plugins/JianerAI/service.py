@@ -63,6 +63,7 @@ from plugins.JianerAI.presets import (
     UnknownPresetError,
 )
 from plugins.JianerAI.providers import (
+    GeminiThoughtSignatureError,
     MediaAttachment,
     MediaCapabilityError,
     ProviderError,
@@ -2440,19 +2441,30 @@ class JianerAIService:
                 reply=True,
             )
             return
-        except ProviderError:
+        except ProviderError as exc:
+            signature_error = isinstance(
+                exc, GeminiThoughtSignatureError
+            )
             self._log_ai_dialogue_failure(
                 dialogue_context,
                 final_prompt,
                 sensitive_values,
                 dialogue_started_at,
-                error_code="provider_error",
+                error_code=(
+                    "provider_tool_signature_missing"
+                    if signature_error
+                    else "provider_error"
+                ),
             )
             self._log_exception("JianerAI provider request failed")
             await self._send_text(
                 event,
                 actions,
-                f"{self.options.bot_name}暂时无法连接AI服务，请稍后再试。",
+                (
+                    exc.safe_message
+                    if signature_error
+                    else f"{self.options.bot_name}暂时无法连接AI服务，请稍后再试。"
+                ),
                 reply=True,
             )
             return

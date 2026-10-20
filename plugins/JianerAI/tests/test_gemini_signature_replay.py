@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from plugins.JianerAI.providers import (
     AssistantTurn,
     ChatRequest,
+    GeminiThoughtSignatureError,
     ModelConfig,
     ToolResultTurn,
     _build_gemini_payload,
@@ -96,7 +99,7 @@ def test_gemini_payload_replays_function_call_with_signature() -> None:
     assert "functionCall" in model_content["parts"][0]
 
 
-def test_unsigned_function_call_degrades_to_text_results() -> None:
+def test_unsigned_function_call_fails_with_reason() -> None:
     config = ModelConfig(
         key="peachgemini",
         friendly_name="peachgemini",
@@ -114,31 +117,19 @@ def test_unsigned_function_call_degrades_to_text_results() -> None:
             ],
         },
     )
-    payload = _build_gemini_payload(
-        config,
-        ChatRequest(
-            message="hello",
-            turns=(
-                turn,
-                ToolResultTurn("call-1", "web_search", '{"ok":true}'),
+    with pytest.raises(GeminiThoughtSignatureError) as error:
+        _build_gemini_payload(
+            config,
+            ChatRequest(
+                message="hello",
+                turns=(
+                    turn,
+                    ToolResultTurn("call-1", "web_search", '{"ok":true}'),
+                ),
             ),
-        ),
-    )
-    flattened = [
-        part
-        for content in payload["contents"]
-        for part in content.get("parts", ())
-    ]
-    assert all("functionCall" not in part for part in flattened)
-    assert all("functionResponse" not in part for part in flattened)
-    assert any(
-        "工具 web_search 返回结果" in str(part.get("text", ""))
-        for part in flattened
-    )
-    assert all(
-        "[工具调用]" not in str(part.get("text", ""))
-        for part in flattened
-    )
+        )
+    assert "thoughtSignature" in error.value.safe_message
+    assert "工具调用失败" in error.value.safe_message
 
 
 def test_signed_parallel_calls_get_aligned_responses() -> None:

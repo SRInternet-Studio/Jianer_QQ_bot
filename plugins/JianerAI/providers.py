@@ -68,6 +68,14 @@ class ToolsUnsupportedError(ProviderError):
     """The configured endpoint explicitly rejected function tools."""
 
 
+class GeminiThoughtSignatureError(ProviderError):
+    """Gemini 3 tool replay cannot continue without a thought signature."""
+
+    def __init__(self, safe_message: str) -> None:
+        self.safe_message = str(safe_message or "").strip()
+        super().__init__(self.safe_message)
+
+
 class MediaCapabilityError(ProviderError):
     """The selected protocol cannot safely consume an attachment."""
 
@@ -1266,6 +1274,7 @@ def _build_gemini_payload(
             }
         )
     contents.append({"role": "user", "parts": parts})
+    require_signature = _is_gemini_3_model(config.model)
     pending_results: list[ToolResultTurn] = []
     pending_call_parts: list[Mapping[str, Any]] = []
     pending_kind = "text"
@@ -1298,44 +1307,45 @@ def _build_gemini_payload(
                     if isinstance(part, Mapping)
                     and _gemini_function_call_part(part) is not None
                 ]
-                if _gemini_replayable_content(provider_content):
+                if _gemini_replayable_content(
+                    provider_content,
+                    require_signature=require_signature,
+                ):
                     contents.append(provider_content)
                     pending_kind = "function" if call_parts else "text"
                     pending_call_parts = call_parts
                 else:
-                    visible_parts = _gemini_visible_text_parts(provider_content)
-                    if visible_parts:
-                        contents.append(
-                            {"role": "model", "parts": visible_parts}
-                        )
-                    pending_kind = "text"
-                    pending_call_parts = []
+                    raise GeminiThoughtSignatureError(
+                        "工具调用失败：上游 Gemini 未返回 thoughtSignature"
+                        f"（模型 {config.model}），无法继续工具调用回放。"
+                    )
             continue
         model_parts: list[dict[str, Any]] = []
         if turn.text:
             model_parts.append({"text": turn.text})
-        if turn.tool_calls and _is_gemini_3_model(config.model):
+        if turn.tool_calls and require_signature:
             # Without raw provider content there is no thought_signature to
-            # replay, so use plain text results instead of invalid calls.
-            pending_kind = "text"
-            pending_call_parts = []
-        else:
-            model_parts.extend(
-                {
-                    "functionCall": {
-                        "id": call.id,
-                        "name": call.name,
-                        "args": _arguments_mapping(call.arguments),
-                    }
-                }
-                for call in turn.tool_calls
+            # replay; fail the tool call with a visible reason instead.
+            raise GeminiThoughtSignatureError(
+                "工具调用失败：上游 Gemini 未返回 thoughtSignature"
+                f"（模型 {config.model}），无法继续工具调用。"
             )
-            pending_kind = "function" if turn.tool_calls else "text"
-            pending_call_parts = [
-                part
-                for part in model_parts
-                if _gemini_function_call_part(part) is not None
-            ]
+        model_parts.extend(
+            {
+                "functionCall": {
+                    "id": call.id,
+                    "name": call.name,
+                    "args": _arguments_mapping(call.arguments),
+                }
+            }
+            for call in turn.tool_calls
+        )
+        pending_kind = "function" if turn.tool_calls else "text"
+        pending_call_parts = [
+            part
+            for part in model_parts
+            if _gemini_function_call_part(part) is not None
+        ]
         if model_parts:
             contents.append({"role": "model", "parts": model_parts})
     if pending_results:
@@ -2119,26 +2129,20 @@ def _gemini_function_call_part(part: Mapping[str, Any]) -> Mapping[str, Any] | N
     return function if isinstance(function, Mapping) else None
 
 
-def _gemini_replayable_content(content: Mapping[str, Any]) -> bool:
+def _gemini_replayable_content(
+    content: Mapping[str, Any],
+    *,
+    require_signature: bool,
+) -> bool:
     call_parts = [
         part
         for part in content.get("parts", ())
         if isinstance(part, Mapping)
         and _gemini_function_call_part(part) is not None
     ]
-    if not call_parts:
+    if not call_parts or not require_signature:
         return True
     return all(_gemini_part_signature(part) for part in call_parts)
-
-
-def _gemini_visible_text_parts(content: Mapping[str, Any]) -> list[dict[str, Any]]:
-    return [
-        dict(part)
-        for part in content.get("parts", ())
-        if isinstance(part, Mapping)
-        and isinstance(part.get("text"), str)
-        and part.get("thought") is not True
-    ]
 
 
 def _gemini_text_tool_results(
