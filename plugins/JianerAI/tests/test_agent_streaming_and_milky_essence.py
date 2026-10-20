@@ -297,8 +297,8 @@ def test_gemini_replay_drops_empty_parts_from_previous_provider_content():
         provider_content={
             "role": "model",
             "parts": [
-                # Gemini may return a signature-only part. It cannot be sent
-                # back because Part.data is a required oneof on the wire.
+                # Gemini may return a signature-only part. It cannot be echoed
+                # as-is, so the signature is moved onto the function call.
                 {"thoughtSignature": "signature-only"},
                 {"inlineData": {"mimeType": "image/png", "data": ""}},
                 {"inlineData": {"mimeType": "image/png"}},
@@ -329,7 +329,10 @@ def test_gemini_replay_drops_empty_parts_from_previous_provider_content():
         "role": "model",
         "parts": [
             {"text": "先前的可见文本"},
-            {"functionCall": {"name": "lookup", "args": {}}},
+            {
+                "functionCall": {"name": "lookup", "args": {}},
+                "thoughtSignature": "signature-only",
+            },
         ],
     }
 

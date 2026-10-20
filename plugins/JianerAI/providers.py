@@ -2052,8 +2052,21 @@ def _gemini_part_has_payload(part: Mapping[str, Any]) -> bool:
     return False
 
 
+def _gemini_part_signature(part: Mapping[str, Any]) -> str:
+    for key in ("thoughtSignature", "thought_signature"):
+        value = part.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _gemini_function_call_part(part: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    function = part.get("functionCall") or part.get("function_call")
+    return function if isinstance(function, Mapping) else None
+
+
 def _sanitize_gemini_content(content: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Drop response-only/empty Gemini parts before replaying a turn."""
+    """Drop response-only parts and keep thought signatures on function calls."""
 
     raw_parts = content.get("parts")
     if not isinstance(raw_parts, Sequence) or isinstance(
@@ -2061,13 +2074,26 @@ def _sanitize_gemini_content(content: Mapping[str, Any]) -> dict[str, Any] | Non
         (str, bytes, bytearray),
     ):
         return None
+    raw = [part for part in raw_parts if isinstance(part, Mapping)]
+    signatures = [
+        signature
+        for signature in (_gemini_part_signature(part) for part in raw)
+        if signature
+    ]
     parts = [
         dict(part)
-        for part in raw_parts
-        if isinstance(part, Mapping) and _gemini_part_has_payload(part)
+        for part in raw
+        if _gemini_part_has_payload(part)
     ]
     if not parts:
         return None
+    if signatures:
+        for part in parts:
+            if (
+                _gemini_function_call_part(part) is not None
+                and not _gemini_part_signature(part)
+            ):
+                part["thoughtSignature"] = signatures[0]
     cleaned = dict(content)
     cleaned["parts"] = parts
     return cleaned

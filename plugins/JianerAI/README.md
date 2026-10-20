@@ -172,11 +172,6 @@ AnySearch 读取可选的 `ANYSEARCH_API_KEY`；未配置 key 的付费后端自
 `cn-zh`，安全搜索固定为 `moderate`；模型不能指定代理、请求头或待抓取 URL。若
 配置了 `agent_allowed_tools` 白名单，需要显式加入 `web_search`。
 
-图片搜索由 `image_search` 提供，使用当前安装的 `ddgs` images 引擎（默认 `auto`，
-可选 `bing`、`duckduckgo`），返回图片直链、缩略图、来源页与宽高，区域固定为
-`cn-zh`、安全搜索固定为 `moderate`。若配置了 `agent_allowed_tools` 白名单，需要
-显式加入 `image_search`。
-
 GitHub 仓库读取由 `github_repository` 提供，只连接固定的 GitHub.com REST API，
 支持仓库概况、目录和 UTF-8 文本代码、提交、Pull Request 与 Issue 的只读查看。
 公开仓库默认可匿名读取；宿主可通过 `GITHUB_TOKEN` 提高请求额度并访问该令牌获权
@@ -402,9 +397,8 @@ def provide_agent_tools(context):
 
 内置工具包括当前时间、安全算术、当前发言人资料、当前会话资料、当前 canonical
 用户 + preset 的长期记忆读取、创建与修改、只返回标题/URL/摘要的 `web_search`、只读的
-`image_search`、只读的 `github_repository`、通用制图
-`render_information_card`，以及可查看和操作网页的高权限 `web_browser`。主对话
-Agent 只在用户明确要求“记住”或明确纠正既有记忆时直接使用写
+`github_repository`、通用制图 `render_information_card`，以及可查看和操作网页的
+高权限 `web_browser`。主对话 Agent 只在用户明确要求“记住”或明确纠正既有记忆时直接使用写
 记忆工具；普通对话在回复成功发送后，由独立 `memory_mode` 异步审查一次，不增加用户等待
 时间。`list_my_memories`、`create_my_memory` 和 `update_my_memory` 都接受
 `scope=person|group`：person 只能操作当前 canonical 用户，group 只能在群聊中操作当前群；
