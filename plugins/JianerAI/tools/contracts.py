@@ -43,6 +43,11 @@ class ToolContext:
         repr=False,
         compare=False,
     )
+    attachments: tuple[Any, ...] = field(
+        default_factory=tuple,
+        repr=False,
+        compare=False,
+    )
     sensitive_values: set[str] = field(
         default_factory=set,
         repr=False,

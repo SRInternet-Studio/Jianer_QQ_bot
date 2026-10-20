@@ -2229,6 +2229,28 @@ class JianerAIService:
                 prompt,
                 key,
             )
+        try:
+            reference_text, attachments = await self._resolve_inputs(
+                event, actions, key
+            )
+        except MediaCapabilityError as exc:
+            self._log_info(
+                "JianerAI media input rejected | "
+                + format_log_data(
+                    {
+                        "protocol": key.protocol,
+                        "conversation_kind": key.kind.value,
+                        "reason": exc.safe_message,
+                    }
+                )
+            )
+            await self._send_text(
+                event,
+                actions,
+                exc.safe_message,
+                reply=True,
+            )
+            return
         tool_context = self._tool_context(
             event,
             actions,
@@ -2237,6 +2259,7 @@ class JianerAIService:
             sensitive_values=sensitive_values,
             actor=actor,
             model=model,
+            attachments=attachments,
             memory_snapshot=(
                 memory_snapshot
                 if self.options.memory_auto_inject_subagents
@@ -2282,28 +2305,6 @@ class JianerAIService:
             if system_prompt
             else _RESPONSE_SYSTEM_RULES
         )
-        try:
-            reference_text, attachments = await self._resolve_inputs(
-                event, actions, key
-            )
-        except MediaCapabilityError as exc:
-            self._log_info(
-                "JianerAI media input rejected | "
-                + format_log_data(
-                    {
-                        "protocol": key.protocol,
-                        "conversation_kind": key.kind.value,
-                        "reason": exc.safe_message,
-                    }
-                )
-            )
-            await self._send_text(
-                event,
-                actions,
-                exc.safe_message,
-                reply=True,
-            )
-            return
         final_prompt = prompt.strip()
         if reference_text:
             final_prompt = (
@@ -3577,6 +3578,7 @@ class JianerAIService:
         sensitive_values: set[str] | None = None,
         actor: Any = None,
         model: str = "",
+        attachments: Sequence[Any] = (),
         memory_snapshot: Any = None,
         interrupt_event: asyncio.Event | None = None,
     ) -> ToolContext:
@@ -3595,6 +3597,7 @@ class JianerAIService:
             runtime=self.runtime,
             memory=self.memory,
             history=history,
+            attachments=tuple(attachments),
             sensitive_values=(
                 sensitive_values
                 if sensitive_values is not None

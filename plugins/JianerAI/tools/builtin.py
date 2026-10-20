@@ -20,6 +20,9 @@ from plugins.JianerAI.tools.contracts import (
 from plugins.JianerAI.tools.github_repository import github_repository_tool
 from plugins.JianerAI.tools.html_card import html_card_tool
 from plugins.JianerAI.tools.qweather import register_qweather_tools
+from plugins.JianerAI.tools.reverse_image_search import (
+    reverse_image_search_tool,
+)
 from plugins.JianerAI.tools.registry import ToolRegistry
 from plugins.JianerAI.tools.web_browser import (
     BrowserOptions,
@@ -53,6 +56,7 @@ def register_builtin_tools(
     logger: logging.Logger | None = None,
 ) -> None:
     registry.register(web_search_tool(project_root=project_root))
+    registry.register(reverse_image_search_tool(project_root=project_root))
     registry.register(github_repository_tool())
     registry.register(html_card_tool())
     if include_web_browser:
