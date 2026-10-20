@@ -746,3 +746,42 @@ def test_anysearch_can_serve_as_ddgs_fallback(
     result = spec.handler(_context(), {"query": "hello"})
     assert client.posts[0][0] == "https://api.anysearch.com/v1/search"
     assert result["backend"] == "anysearch"
+
+
+def test_anysearch_tag_and_params_are_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def post(url: str, kwargs: dict[str, Any]) -> _FakeResponse:
+        seen.append(kwargs)
+        return _anysearch_response()
+
+    _install_http(monkeypatch, post=post)
+    spec = web_search_tool(
+        environ={
+            "WEB_SEARCH_PROVIDER": "anysearch",
+            "ANYSEARCH_TAG": "code.doc",
+            "ANYSEARCH_PARAMS": '{"library": "react"}',
+        }
+    )
+    result = spec.handler(_context(), {"query": "hooks"})
+    assert seen[0]["json"]["tag"] == "code.doc"
+    assert seen[0]["json"]["params"] == {"library": "react"}
+    assert result["backend"] == "anysearch"
+
+
+def test_anysearch_invalid_params_reports_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_http(monkeypatch, post=lambda url, kwargs: _anysearch_response())
+    spec = web_search_tool(
+        environ={
+            "WEB_SEARCH_PROVIDER": "anysearch",
+            "ANYSEARCH_PARAMS": "not-json",
+        }
+    )
+    with pytest.raises(ToolExecutionError) as error:
+        spec.handler(_context(), {"query": "hello"})
+    assert error.value.code == "web_search_backend_not_configured"
+    assert "ANYSEARCH_PARAMS" in error.value.safe_message

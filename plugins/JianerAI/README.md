@@ -158,8 +158,9 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
   `POST https://api.anysearch.com/v1/search`。`ANYSEARCH_API_KEY` 可选，留空时使用
   匿名访问（按 IP 限制的每日免费额度）；`ANYSEARCH_ZONE` 可选 `cn`/`intl`（默认
   `cn`），`ANYSEARCH_LANGUAGE` 默认 `zh-CN`，`ANYSEARCH_TAG` 可指定垂直领域标签
-  （如 `code.doc`）。AnySearch 也可以写进 `WEB_SEARCH_FALLBACK_BACKENDS`，作为
-  DDGS 超时或网络错误后的回退后端。
+  （如 `code.doc`），标签要求额外参数时用 `ANYSEARCH_PARAMS` 传 JSON 对象（如
+  `{"library":"react"}`）。AnySearch 也可以写进 `WEB_SEARCH_FALLBACK_BACKENDS`，
+  作为 DDGS 超时或网络错误后的回退后端。
 
 DDGS 超时、限流或网络错误时，按 `WEB_SEARCH_FALLBACK_BACKENDS`（默认
 `zhipu,bocha,bing_cn`）依次回退：智谱联网搜索读取 `ZHIPUAI_API_KEY`，博查

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -242,6 +243,8 @@ def _web_search(
                 environ=environ,
                 timeout=_ANYSEARCH_TIMEOUT_SECONDS,
             )
+        except ToolExecutionError:
+            raise
         except Exception as exc:
             _LOGGER.warning(
                 "AnySearch web search failed: %s", type(exc).__name__
@@ -403,6 +406,9 @@ def _anysearch_search(
     tag = _config_value("ANYSEARCH_TAG", project_root, environ)
     if tag:
         body["tag"] = tag
+    params = _anysearch_params(project_root, environ)
+    if params:
+        body["params"] = params
     headers = {"Content-Type": "application/json"}
     api_key = _config_value("ANYSEARCH_API_KEY", project_root, environ)
     if api_key:
@@ -424,6 +430,28 @@ def _anysearch_search(
         ),
         limit=max_results,
     )
+
+
+def _anysearch_params(
+    project_root: Path | None,
+    environ: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    raw = _config_value("ANYSEARCH_PARAMS", project_root, environ)
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ToolExecutionError(
+            "web_search_backend_not_configured",
+            "ANYSEARCH_PARAMS 必须是 JSON 对象。",
+        ) from exc
+    if not isinstance(value, Mapping):
+        raise ToolExecutionError(
+            "web_search_backend_not_configured",
+            "ANYSEARCH_PARAMS 必须是 JSON 对象。",
+        )
+    return dict(value)
 
 
 def _search_explicit_direct_backend(
