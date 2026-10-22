@@ -223,6 +223,16 @@ Function Calling；兼容端点明确拒绝 tools 参数时，本 generation 会
 | `Google GenerateContent` | Google GenAI SDK `generate_content` | 原生图片、语音和视频 |
 | `Anthropic Messages` | Anthropic SDK `messages` | 图片；当前 Anthropic 协议不接收语音或视频 |
 
+`OpenAI Chat Completions` 支持 `SystemPromptMode`：
+
+- `auto`（默认）：官方 OpenAI/DeepSeek 地址使用标准 `system` role；自定义
+  `BaseUrl` 中转站使用 user 前缀，避免中转站静默丢弃 `system`。
+- `system`：强制发送标准 `system` role。
+- `user`：强制把人格与系统规则作为当前请求前的 user 指令发送。
+
+如果中转站仍然忽略人格，可在对应的 `*.ai.json` 中显式设置
+`"SystemPromptMode": "user"`。
+
 所有协议都支持 `BaseUrl` 自定义端点。`Google GenerateContent` 通过官方
 `google-genai` SDK 的 `HttpOptions(base_url=...)` 发送异步请求；若配置地址以
 `/v1`、`/v1alpha` 或 `/v1beta` 结尾，JianerAI 会把末段识别为 SDK 的 API 版本，避免

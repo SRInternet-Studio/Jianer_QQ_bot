@@ -8,5 +8,6 @@
   "MaxTokens": 2000,
   "max_history_messages": 20,
   "max_history_chars": 24000,
+  "SystemPromptMode": "auto",
   "ToolsEnabled": "auto"
 }

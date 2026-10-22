@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from plugins.JianerAI.media_input import (
     MediaProcessingError,
@@ -40,6 +41,12 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "system",
         "tools",
         "tool_choice",
+    }
+)
+_SYSTEM_ROLE_OPENAI_HOSTS = frozenset(
+    {
+        "api.openai.com",
+        "api.deepseek.com",
     }
 )
 
@@ -143,6 +150,7 @@ class ModelConfig:
     empty_response_text: str = "模型没有返回任何内容"
     max_history_messages: int = 20
     max_history_chars: int = 24000
+    system_prompt_mode: str = "auto"
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT
     endpoint_style: str = ""
     tools_enabled: str = "auto"
@@ -173,6 +181,11 @@ class ModelConfig:
             raise ModelConfigError(
                 f"model config {key!r} has an invalid max_history_chars"
             )
+        system_prompt_mode = str(self.system_prompt_mode or "auto").strip().casefold()
+        if system_prompt_mode not in {"auto", "system", "user"}:
+            raise ModelConfigError(
+                f"model config {key!r} has an invalid SystemPromptMode"
+            )
         if self.request_timeout_seconds <= 0:
             raise ModelConfigError(f"model config {key!r} has an invalid timeout")
         object.__setattr__(self, "key", key)
@@ -183,6 +196,7 @@ class ModelConfig:
         object.__setattr__(self, "base_url", str(self.base_url or "").strip())
         object.__setattr__(self, "personality", str(self.personality or ""))
         object.__setattr__(self, "max_history_chars", int(self.max_history_chars))
+        object.__setattr__(self, "system_prompt_mode", system_prompt_mode)
         object.__setattr__(
             self,
             "transcription_model",
@@ -1065,6 +1079,10 @@ def load_model_config(path: str | Path) -> ModelConfig:
             max_history_chars=int(
                 raw.get("max_history_chars", raw.get("MaxHistoryChars", 24000))
             ),
+            system_prompt_mode=raw.get(
+                "SystemPromptMode",
+                raw.get("system_prompt_mode", "auto"),
+            ),
             request_timeout_seconds=float(
                 raw.get("RequestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT)
             ),
@@ -1161,6 +1179,25 @@ def _final_system_prompt(config: ModelConfig, request: ChatRequest) -> str:
     return config.personality.strip()
 
 
+def _uses_user_system_prompt(config: ModelConfig) -> bool:
+    if config.system_prompt_mode == "user":
+        return True
+    if config.system_prompt_mode == "system":
+        return False
+    if config.provider != "openai_chat_completions":
+        return False
+    base_url = str(config.base_url or "").strip()
+    if not base_url:
+        return False
+    try:
+        host = str(urlsplit(base_url).hostname or "").casefold()
+    except ValueError:
+        return True
+    # OpenAI-compatible relays commonly accept the request but silently drop
+    # the ``system`` role. Keep official endpoints on the standard protocol.
+    return host not in _SYSTEM_ROLE_OPENAI_HOSTS
+
+
 async def _normalized_image_attachment(
     attachment: MediaAttachment,
 ) -> MediaAttachment:
@@ -1189,9 +1226,23 @@ def _build_openai_payload(
 ) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     system_prompt = _final_system_prompt(config, request)
-    if system_prompt:
+    user_system_prompt = bool(system_prompt) and _uses_user_system_prompt(config)
+    if system_prompt and not user_system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(_history_messages(config, request.history))
+    if user_system_prompt:
+        # Some OpenAI-compatible relays silently discard the ``system`` role.
+        # Keep the persona as a user-visible instruction immediately before
+        # the current request.
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "以下是当前会话的角色与系统设定，必须在后续回复中严格遵守：\n\n"
+                    f"{system_prompt}"
+                ),
+            }
+        )
     if request.attachments:
         content: list[dict[str, Any]] = [{"type": "text", "text": request.message}]
         for attachment in request.attachments:
