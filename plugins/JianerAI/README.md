@@ -24,7 +24,9 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 
 - `~ai管理菜单`、`~切换AI [代码]`
 - `~角色扮演`、`~切换角色 [名称]`
-- `~添加预设 [名称] [简介] : [内容]`、`~删除预设 [名称]`
+- `~添加预设 [名称] [简介] : [内容]`（先保存原文，再用 LLM 生成结构化人格）、
+  `~删除预设 [名称]`
+- `~重建人格 [名称]`、`~人格 迁移 [强制]`
 - `~简儿记忆 [帮助|状态|开启|关闭|间隔|立即生成|列表|删除|清空|恢复]`
 - `~设置全局后缀`、`~删除全局后缀`
 - `~设置特定后缀`、`~删除特定后缀`
@@ -51,6 +53,8 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `content_moderation_timeout_seconds`：单次审核超时，范围 1–120 秒，默认 30 秒；
   超时、提供商失败或非法审核结果都会按 fail closed 拒绝本轮，不会绕过审核
 - `memory_mode`：记忆提炼模型
+- `persona_generation_model`：添加预设或重建人格时使用的模型；未配置时优先使用
+  当前会话模型，再回退到 `default_mode`
 - `memory_episode_segmentation_model`：长期记忆 episode 分段使用的模型，默认
   `auto` 会在 `aiconfig/*.ai.json` 中挑选可用模型；某个模型不可用时可显式填写
   可用的模型配置名（如 `grok`），避免分段一直回退到规则聚类
@@ -201,9 +205,10 @@ python -m playwright install chromium
 Worker，并允许下载。页面只以正文和最新快照元素编号提供给模型，不开放 CSS、
 XPath、任意 JavaScript、坐标或截图。
 
-模型配置继续从 `aiconfig/*.ai.json` 读取；角色数据继续使用
-`prerequisites/current.json` 与相邻模板；后缀继续使用
-`suffix_config.json`。模型配置可用 `ToolsEnabled: true/false/"auto"` 控制
+模型配置继续从 `aiconfig/*.ai.json` 读取；角色元数据继续使用
+`prerequisites/current.json` 与相邻原始模板，结构化人格使用
+`prerequisites/personas/*.json`；后缀继续使用 `suffix_config.json`。模型配置可用
+`ToolsEnabled: true/false/"auto"` 控制
 Function Calling；兼容端点明确拒绝 tools 参数时，本 generation 会自动退回普通
 对话。部分 DeepSeek 兼容网关把调用返回为 DSML 文本；插件会把完整合法的 DSML
 转换为结构化工具调用，并拒绝把损坏的调用标记发送给用户。不要提交包含密钥的本地配置。
@@ -264,10 +269,48 @@ base64 请求上超时，归一化后这类图片不会再让整轮对话失败�
 `{self.event_user}`、`{self.event_user_id}` 外，还可使用：
 
 - `{agent_tools}`：当前会话实际可调用的工具名称，以逗号分隔；没有时为“无”
-- `{agent_tools_info}`：当前会话实际可调用工具的描述、调用形式和参数说明；没有时为“无”
+- `{agent_tools_info}`：当前会话实际可调用工具的紧凑调用目录；完整描述和参数
+  schema 仍由本轮原生 `tools` 声明传递，避免在人设里重复一遍；没有工具时为“无”
 
 两项 Agent 变量会按 Agent 状态、当前模型的 tools 能力、当前协议/适配器能力以及
 `agent_allowed_tools` 白名单动态过滤，不会列出本轮无法调用的工具。
+
+## 结构化人格
+
+`current.json` 仍然只保存预设元数据。每个预设可以在
+`prerequisites/personas/<preset_key>.json` 保存一份由 LLM 生成并审计的结构化
+人格；原始 `.txt` 人设始终保留，作为事实来源和回退模板。
+
+结构化文件包含：
+
+- `identity`：身份、背景、关系和专有事实
+- `personality`：性格、价值观和情绪倾向
+- `behavior_style`：行动准则、插话时机和处理任务方式
+- `reply_style`：语气、长度、口癖、格式和表达禁忌
+- `group_chat_prompt` / `private_chat_prompt`：群聊和私聊补充要求
+- `hard_constraints`：原文明确要求始终遵守的规则
+- `speech_examples`：原文中的代表性表达
+- `extra_settings`：可选的外观、装备、世界观、特殊机制等内容
+
+运行时优先使用结构完整且 `source_sha256` 与原始模板一致的 JSON。JSON 缺失、
+损坏、版本不支持或原始模板已修改时，自动回退原文模板；普通聊天不会触发 LLM
+调用。管理员可通过 `~重建人格 [名称]` 更新单个预设，或用
+`~人格 迁移` 批量处理旧预设。原始人设修改后，旧结构化 JSON 会显示为“待重建”。
+
+人格生成使用原始全文，最多 24,000 字符，不做静默截断；生成后还会执行一次还原
+审计，尽量保留原文中的独特事实、关系、称呼、口癖、格式要求、禁忌和特殊设定。
+通用工具、安全、隐私和提示词注入规则由宿主统一提供，不写入结构化人格。
+
+批量迁移也可以从命令行执行；默认只预览，加 `--apply` 才会写入：
+
+```bash
+python -m plugins.JianerAI.migrate_personas --model gemini
+python -m plugins.JianerAI.migrate_personas --model gemini --apply
+```
+
+模型配置可用 `max_history_messages` 和 `max_history_chars` 同时限制短期历史；
+字符预算从最新消息向前保留，默认 24000 字符，设为 `0` 表示不限制。当前请求和
+完整人设不参与该裁剪，避免长历史挤占人设与工具声明的空间。
 
 ## 会话与插话
 

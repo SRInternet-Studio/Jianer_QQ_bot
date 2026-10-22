@@ -268,4 +268,5 @@ like_data.json
 restart.temp
 suffix_config.json
 prerequisites/current.json
+prerequisites/.persona-backup-*/
 .pytest_tmp_*/

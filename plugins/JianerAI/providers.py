@@ -142,6 +142,7 @@ class ModelConfig:
     personality: str = ""
     empty_response_text: str = "模型没有返回任何内容"
     max_history_messages: int = 20
+    max_history_chars: int = 24000
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT
     endpoint_style: str = ""
     tools_enabled: str = "auto"
@@ -168,6 +169,10 @@ class ModelConfig:
             raise ModelConfigError(
                 f"model config {key!r} has an invalid max_history_messages"
             )
+        if self.max_history_chars < 0:
+            raise ModelConfigError(
+                f"model config {key!r} has an invalid max_history_chars"
+            )
         if self.request_timeout_seconds <= 0:
             raise ModelConfigError(f"model config {key!r} has an invalid timeout")
         object.__setattr__(self, "key", key)
@@ -177,6 +182,7 @@ class ModelConfig:
         object.__setattr__(self, "api_key", api_key)
         object.__setattr__(self, "base_url", str(self.base_url or "").strip())
         object.__setattr__(self, "personality", str(self.personality or ""))
+        object.__setattr__(self, "max_history_chars", int(self.max_history_chars))
         object.__setattr__(
             self,
             "transcription_model",
@@ -1056,6 +1062,9 @@ def load_model_config(path: str | Path) -> ModelConfig:
                 "if_return_none", "模型没有返回任何内容"
             ),
             max_history_messages=int(raw.get("max_history_messages", 20)),
+            max_history_chars=int(
+                raw.get("max_history_chars", raw.get("MaxHistoryChars", 24000))
+            ),
             request_timeout_seconds=float(
                 raw.get("RequestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT)
             ),
@@ -1117,8 +1126,33 @@ def _history_messages(
             continue
         valid.append({"role": role, "content": str(content)})
     if config.max_history_messages:
-        return valid[-config.max_history_messages :]
-    return valid
+        valid = valid[-config.max_history_messages :]
+    if not config.max_history_chars:
+        return valid
+
+    selected: list[dict[str, str]] = []
+    used = 0
+    for item in reversed(valid):
+        size = len(item["content"])
+        remaining = config.max_history_chars - used
+        if remaining <= 0:
+            break
+        if size <= remaining:
+            selected.append(item)
+            used += size
+            continue
+        # The newest history tail is more useful than older complete turns.
+        # Never let history consume the room reserved for persona and tools.
+        if not selected:
+            selected.append(
+                {
+                    "role": item["role"],
+                    "content": item["content"][-remaining:],
+                }
+            )
+        break
+    selected.reverse()
+    return selected
 
 
 def _final_system_prompt(config: ModelConfig, request: ChatRequest) -> str:

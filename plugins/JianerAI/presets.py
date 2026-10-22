@@ -5,10 +5,15 @@ import os
 import re
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
 from typing import Any
+
+from plugins.JianerAI.persona import (
+    PersonaError,
+    PersonaProfile,
+)
 
 
 DEFAULT_PRESET_ID = "XingYu"
@@ -39,6 +44,7 @@ class Preset:
     template: str
     path: str
     legacy_user_ids: tuple[str, ...] = ()
+    persona: PersonaProfile | None = None
 
     def __post_init__(self) -> None:
         _validate_preset_id(self.key)
@@ -56,9 +62,18 @@ class Preset:
     def id(self) -> str:
         return self.key
 
+    @property
+    def persona_status(self) -> str:
+        if self.persona is None:
+            return "legacy"
+        if self.persona.is_current_for(self.template):
+            return "structured"
+        return "stale"
+
     def render(
         self,
         *,
+        mode: str = "neutral",
         bot_name: str,
         bot_name_en: str,
         event_user: str,
@@ -66,6 +81,16 @@ class Preset:
         agent_tools: str = "无",
         agent_tools_info: str = "无",
     ) -> str:
+        if self.persona is not None and self.persona_status == "structured":
+            return self.persona.render(
+                mode=mode,
+                bot_name=bot_name,
+                bot_name_en=bot_name_en,
+                event_user=event_user,
+                event_user_id=event_user_id,
+                agent_tools=agent_tools,
+                agent_tools_info=agent_tools_info,
+            )
         values = {
             "bot_name": str(bot_name),
             "bot_name_en": str(bot_name_en),
@@ -97,12 +122,15 @@ class PresetStore:
             else self.config_path.parent
         )
         self.default_key = _validate_preset_id(default_key)
+        self.persona_dir = self.preset_dir / "personas"
         self._lock = RLock()
         self._presets: dict[str, Preset] = {}
+        self._persona_errors: dict[str, str] = {}
         self.reload()
 
     def reload(self) -> Mapping[str, Preset]:
         with self._lock:
+            self._persona_errors = {}
             if not self.config_path.exists():
                 self._presets = {}
                 return {}
@@ -144,6 +172,7 @@ class PresetStore:
                     template=template,
                     path=relative_path,
                     legacy_user_ids=tuple(str(item) for item in legacy_users),
+                    persona=self._load_persona(normalized_key, template),
                 )
             self._presets = loaded
             return dict(loaded)
@@ -188,6 +217,7 @@ class PresetStore:
         self,
         key_or_name: str,
         *,
+        mode: str = "neutral",
         bot_name: str,
         bot_name_en: str,
         event_user: str,
@@ -196,6 +226,7 @@ class PresetStore:
         agent_tools_info: str = "无",
     ) -> str:
         return self.get(key_or_name).render(
+            mode=mode,
             bot_name=bot_name,
             bot_name_en=bot_name_en,
             event_user=event_user,
@@ -227,6 +258,7 @@ class PresetStore:
                 template=template,
                 path=relative_path,
                 legacy_user_ids=tuple(str(item) for item in legacy_user_ids),
+                persona=existing.persona if existing is not None else None,
             )
             self.preset_dir.mkdir(parents=True, exist_ok=True)
             _atomic_write_text(target, preset.template)
@@ -253,7 +285,58 @@ class PresetStore:
                 template_path.unlink(missing_ok=True)
             except OSError as exc:
                 raise PresetError("preset metadata was saved but template removal failed") from exc
+            self._persona_path(normalized_key).unlink(missing_ok=True)
             return True
+
+    def persona_path(self, key: str) -> Path:
+        return self._persona_path(_validate_preset_id(key))
+
+    def template_path(self, key: str) -> Path:
+        preset = self.get(_validate_preset_id(key))
+        return self._resolve_template_path(preset.path)
+
+    def write_persona(self, key: str, persona: PersonaProfile) -> Preset:
+        normalized_key = _validate_preset_id(key)
+        with self._lock:
+            preset = self._presets.get(normalized_key)
+            if preset is None:
+                raise UnknownPresetError(f"unknown preset: {normalized_key}")
+            if not persona.is_current_for(preset.template):
+                raise PresetError("structured persona does not match source template")
+            target = self._persona_path(normalized_key)
+            _atomic_write_text(target, persona.to_json() + "\n")
+            updated_preset = replace(preset, persona=persona)
+            updated = dict(self._presets)
+            updated[normalized_key] = updated_preset
+            self._presets = updated
+            self._persona_errors.pop(normalized_key, None)
+            return updated_preset
+
+    def persona_error(self, key: str) -> str:
+        with self._lock:
+            return self._persona_errors.get(str(key or ""), "")
+
+    def _load_persona(
+        self,
+        key: str,
+        template: str,
+    ) -> PersonaProfile | None:
+        path = self._persona_path(key)
+        if not path.is_file():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, Mapping):
+                raise PersonaError("persona JSON must contain an object")
+            if not str(raw.get("source_sha256") or "").strip():
+                raise PersonaError("persona JSON is missing source_sha256")
+            return PersonaProfile.from_mapping(raw, source_text=template)
+        except (OSError, json.JSONDecodeError, PersonaError, TypeError, ValueError) as exc:
+            self._persona_errors[key] = f"{type(exc).__name__}: {exc}"
+            return None
+
+    def _persona_path(self, key: str) -> Path:
+        return self.persona_dir / f"{key}.json"
 
     def _write_metadata(self, presets: Mapping[str, Preset]) -> None:
         raw: dict[str, dict[str, Any]] = {}

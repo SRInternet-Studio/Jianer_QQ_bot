@@ -320,6 +320,7 @@ JianerAI 从 `aiconfig/*.ai.json` 读取模型，不以 `config.json` 里旧的 
   "BaseUrl": "https://your-provider.example/v1",
   "Temperature": 0.7,
   "MaxTokens": 2000,
+  "max_history_chars": 24000,
   "ToolsEnabled": "auto"
 }
 ```
@@ -338,9 +339,14 @@ JianerAI 从 `aiconfig/*.ai.json` 读取模型，不以 `config.json` 里旧的 
 ```json
 {
   "default_mode": "primary",
-  "memory_mode": "primary"
+  "memory_mode": "primary",
+  "persona_generation_model": "primary"
 }
 ```
+
+`persona_generation_model` 用于 `~添加预设`、`~重建人格` 和 `~人格 迁移` 的人格
+结构化；未配置时依次回退到当前会话模型和 `default_mode`。结构化结果单独保存在
+`prerequisites/personas/<preset_key>.json`，原始 `.txt` 人设不会被覆盖。
 
 Linux 上收紧模型文件权限：
 
@@ -700,7 +706,7 @@ Stop-ScheduledTask -TaskName "JianerBot"
 | `help_mode_settings.json` | 用户帮助显示偏好 | 建议 |
 | `like_data.json` | 点赞插件状态 | 建议 |
 | `suffix_config.json` | JianerAI 后缀 | 使用时必须 |
-| `prerequisites/` | 当前人设和自定义人设模板 | 修改人设时必须 |
+| `prerequisites/` | 当前人设、自定义人设模板和 `personas/*.json` 结构化人格 | 修改人设时必须 |
 | `data/maimaidx/static/` | 大型舞萌静态资源 | 可重新取得时可不备份，否则建议 |
 
 这些文件大多已被 Git 忽略；“`git status` 看不到”不等于“不需要备份”。

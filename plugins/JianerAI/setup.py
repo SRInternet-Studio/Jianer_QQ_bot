@@ -1,6 +1,6 @@
 from typing import Any
 
-from arclet.alconna import Alconna, Args
+from arclet.alconna import Alconna, Args, MultiVar
 from jianer import submit_awaitable
 from jianer.plugins import PluginMetadata
 from jianer.plugins.builtin.alconna import Command
@@ -22,6 +22,8 @@ __plugin_meta__ = PluginMetadata(
         "{reminder}ai管理菜单 / {reminder}切换AI [代码] —> 管理当前会话模型\n"
         "{reminder}角色扮演 / {reminder}切换角色 [名称] —> 管理当前会话角色\n"
         "{reminder}添加预设 / {reminder}删除预设 —> 管理角色预设\n"
+        "{reminder}重建人格 [名称] —> 重新生成结构化人格\n"
+        "{reminder}人格 迁移 [强制] —> 批量迁移旧预设\n"
         "{reminder}设置全局后缀 / {reminder}删除全局后缀 —> 管理 AI 全局后缀\n"
         "{reminder}设置特定后缀 / {reminder}删除特定后缀 —> 管理个人 AI 后缀\n"
         "{reminder}注销 —> 清空当前会话的短期上下文\n"
@@ -203,6 +205,31 @@ async def _switch_persona(name: str, event: Any, actions: Any) -> bool:
 @Command(f"{_REMINDER}添加预设 <definition>").handle()
 async def _add_persona(definition: str, event: Any, actions: Any) -> bool:
     return await _invoke("add_persona", event, actions, definition)
+
+
+@Command(f"{_REMINDER}重建人格 <name>").handle()
+async def _rebuild_persona(name: str, event: Any, actions: Any) -> bool:
+    return await _invoke("rebuild_persona", event, actions, name)
+
+
+_persona_command = Alconna(
+    f"{_REMINDER}人格",
+    Args["action", str],
+    Args["rest", MultiVar(str, "*")],
+)
+
+
+@Command(_persona_command).handle()
+async def _persona_command_handler(
+    action: str,
+    rest: tuple[str, ...] = (),
+    event: Any = None,
+    actions: Any = None,
+) -> bool:
+    if str(action or "").strip() != "迁移":
+        return False
+    force = any(str(item).strip() == "强制" for item in rest)
+    return await _invoke("migrate_personas", event, actions, force)
 
 
 @Command(f"{_REMINDER}删除预设 <name>").handle()

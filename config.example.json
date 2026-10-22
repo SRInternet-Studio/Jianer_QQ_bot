@@ -134,6 +134,7 @@
             "谢谢夸奖！",
             "我会继续努力的！"
         ],
+        "persona_generation_model": "",
         "agent_enabled_default": true,
         "agent_max_parallel_calls": 4,
         "agent_total_timeout_seconds": 300,

@@ -62,6 +62,11 @@ from plugins.JianerAI.presets import (
     PresetStore,
     UnknownPresetError,
 )
+from plugins.JianerAI.persona import (
+    PersonaError,
+    PersonaGenerator,
+    PersonaProfile,
+)
 from plugins.JianerAI.providers import (
     GeminiThoughtSignatureError,
     MediaAttachment,
@@ -285,6 +290,7 @@ class RuntimeOptions:
     bot_name_en: str
     default_model: str
     memory_model: str
+    persona_generation_model: str
     database_path: Path
     memory_enabled_default: bool
     memory_interval_seconds: int
@@ -475,6 +481,9 @@ class RuntimeOptions:
             default_model=default_model,
             memory_model=str(
                 others.get("memory_mode") or default_model
+            ).strip(),
+            persona_generation_model=str(
+                others.get("persona_generation_model") or ""
             ).strip(),
             memory_episode_segmentation_model=str(
                 others.get("memory_episode_segmentation_model", "auto")
@@ -952,6 +961,7 @@ class JianerAIService:
         moderator: ContentModerator | None = None,
         memory: JianerMemoryStore | None = None,
         presets: PresetStore | None = None,
+        persona_generator: PersonaGenerator | None = None,
         speech: SpeechSynthesizer | None = None,
         suffixes: SuffixStore | None = None,
         tools: ToolRegistry | None = None,
@@ -1061,6 +1071,10 @@ class JianerAIService:
         self.presets = presets or PresetStore(
             options.project_root / "prerequisites" / "current.json",
             options.project_root / "prerequisites",
+        )
+        self.persona_generator = persona_generator or PersonaGenerator(
+            self.providers,
+            logger=self._logger,
         )
         ensure_partition = getattr(
             self.memory, "ensure_persona_partition", None
@@ -1191,6 +1205,7 @@ class JianerAIService:
             logger=self._logger,
         )
         self._active_presets: dict[ConversationBase, str] = {}
+        self._preset_locks: dict[ConversationBase, asyncio.Lock] = {}
         self._models: dict[ConversationKey, str] = {}
         self._tts_enabled: dict[ConversationKey, bool] = {}
         self._agent_enabled: dict[ConversationKey, bool | None] = {}
@@ -1588,6 +1603,7 @@ class JianerAIService:
         return True
 
     async def show_persona_menu(self, event: Any, actions: Any) -> bool:
+        await asyncio.to_thread(self.presets.reload)
         key = await self._conversation_key(event, actions)
         lines = [
             f"{self.options.bot_name} {self.options.bot_name_en} - 角色扮演后台",
@@ -1595,13 +1611,16 @@ class JianerAIService:
         ]
         for preset in self.presets.list_presets():
             marker = "（当前）" if preset.key == key.preset else ""
+            status = self._persona_status_label(preset)
             lines.append(
-                f"{self.options.reminder}{preset.name}{marker} - {preset.info}"
+                f"{self.options.reminder}{preset.name}{marker} [{status}] - {preset.info}"
             )
         lines.extend(
             [
                 "————————————————————",
                 f"{self.options.reminder}切换角色 [名称] —> 切换当前会话角色",
+                f"{self.options.reminder}重建人格 [名称] —> 用原始人设重新生成结构化人格",
+                f"{self.options.reminder}人格 迁移 —> 批量生成缺失的结构化人格",
             ]
         )
         await self._send_text(event, actions, "\n".join(lines), reply=False)
@@ -1611,11 +1630,23 @@ class JianerAIService:
         self, event: Any, actions: Any, name: str
     ) -> bool:
         try:
+            # Presets may be edited outside the running process. Reload on an
+            # explicit switch so the selected template is the current file,
+            # not the startup snapshot.
+            await asyncio.to_thread(self.presets.reload)
             preset = self.presets.get(str(name or "").strip())
-        except UnknownPresetError:
+        except (PresetError, UnknownPresetError):
             await self._send_text(event, actions, "找不到该角色预设。", reply=False)
             return True
         base = self._conversation_base(event, actions)
+        if preset.persona_status == "stale":
+            await self._send_text(
+                event,
+                actions,
+                "该角色的原始人设已变化，当前暂用原文；可发送 "
+                f"{self.options.reminder}重建人格 {preset.name} 更新结构化人格。",
+                reply=False,
+            )
         return await self._activate_preset(event, actions, base, preset)
 
     async def add_persona(
@@ -1653,7 +1684,7 @@ class JianerAIService:
             )
             if callable(ensure_partition):
                 await asyncio.to_thread(ensure_partition, key)
-            await asyncio.to_thread(
+            preset = await asyncio.to_thread(
                 self.presets.upsert,
                 key=key,
                 name=name.strip(),
@@ -1667,9 +1698,152 @@ class JianerAIService:
         await self._send_text(
             event,
             actions,
-            f"已{'更新' if existing else '添加'}预设: {name.strip()}",
+            f"原始人设已保存，正在为「{name.strip()}」生成结构化人格……",
             reply=False,
         )
+        profile = await self._generate_persona_profile(
+            event,
+            actions,
+            preset,
+        )
+        if profile is None:
+            await self._send_text(
+                event,
+                actions,
+                (
+                    f"已{'更新' if existing else '添加'}预设: {name.strip()}；"
+                    "原始人设已保留，但结构化人格生成失败。当前会回退原文，"
+                    f"可发送 {self.options.reminder}重建人格 {name.strip()} 重试。"
+                ),
+                reply=False,
+            )
+            return True
+        try:
+            await asyncio.to_thread(self.presets.write_persona, key, profile)
+        except Exception:
+            self._log_exception("JianerAI structured persona write failed")
+            await self._send_text(
+                event,
+                actions,
+                (
+                    f"已{'更新' if existing else '添加'}预设: {name.strip()}；"
+                    "原始人设已保留，但结构化人格写入失败。"
+                ),
+                reply=False,
+            )
+            return True
+        await self._send_text(
+            event,
+            actions,
+            (
+                f"已{'更新' if existing else '添加'}预设: {name.strip()}；"
+                f"结构化人格已生成（{len(profile.to_json())} 字符）。"
+            ),
+            reply=False,
+        )
+        return True
+
+    async def rebuild_persona(
+        self,
+        event: Any,
+        actions: Any,
+        name: str,
+    ) -> bool:
+        if not self._is_admin(event):
+            await self._send_confused(event, actions)
+            return True
+        try:
+            await asyncio.to_thread(self.presets.reload)
+            preset = self.presets.get(str(name or "").strip())
+        except (PresetError, UnknownPresetError):
+            await self._send_text(event, actions, "找不到该角色预设。", reply=False)
+            return True
+        await self._send_text(
+            event,
+            actions,
+            f"正在为「{preset.name}」重新生成结构化人格……",
+            reply=False,
+        )
+        profile = await self._generate_persona_profile(event, actions, preset)
+        if profile is None:
+            await self._send_text(
+                event,
+                actions,
+                "结构化人格生成失败，原始人设未改变。",
+                reply=False,
+            )
+            return True
+        try:
+            await asyncio.to_thread(self.presets.write_persona, preset.key, profile)
+        except Exception:
+            self._log_exception("JianerAI structured persona rebuild failed")
+            await self._send_text(
+                event,
+                actions,
+                "结构化人格写入失败，原始人设未改变。",
+                reply=False,
+            )
+            return True
+        await self._send_text(
+            event,
+            actions,
+            f"「{preset.name}」结构化人格已更新（{len(profile.to_json())} 字符）。",
+            reply=False,
+        )
+        return True
+
+    async def migrate_personas(
+        self,
+        event: Any,
+        actions: Any,
+        force: bool = False,
+    ) -> bool:
+        if not self._is_admin(event):
+            await self._send_confused(event, actions)
+            return True
+        await asyncio.to_thread(self.presets.reload)
+        presets = self.presets.list_presets()
+        await self._send_text(
+            event,
+            actions,
+            f"开始处理 {len(presets)} 个预设的结构化人格……",
+            reply=False,
+        )
+        created = 0
+        skipped = 0
+        failed: list[str] = []
+        for index, preset in enumerate(presets, start=1):
+            if not force and preset.persona_status == "structured":
+                skipped += 1
+                continue
+            await self._send_text(
+                event,
+                actions,
+                f"正在生成结构化人格 [{index}/{len(presets)}]：{preset.name}",
+                reply=False,
+            )
+            profile = await self._generate_persona_profile(event, actions, preset)
+            if profile is None:
+                failed.append(preset.name)
+                continue
+            try:
+                await asyncio.to_thread(
+                    self.presets.write_persona,
+                    preset.key,
+                    profile,
+                )
+                created += 1
+            except Exception:
+                self._log_exception(
+                    f"JianerAI structured persona migration failed for {preset.key}"
+                )
+                failed.append(preset.name)
+        summary = [
+            f"结构化人格迁移完成：生成 {created}，跳过 {skipped}，失败 {len(failed)}。"
+        ]
+        if failed:
+            summary.append("失败预设：" + "、".join(failed[:10]))
+        await self._send_text(event, actions, "\n".join(summary), reply=False)
         return True
 
     async def delete_persona(
@@ -2187,6 +2361,7 @@ class JianerAIService:
         self.session_manager.clear()
         with self._state_lock:
             self._dialogue_sessions.clear()
+            self._preset_locks.clear()
         await self.tools.shutdown()
         await self.speech.shutdown()
         close = getattr(self.memory, "close", None)
@@ -2385,6 +2560,9 @@ class JianerAIService:
             "history_messages": len(history),
             "attachments": len(attachments),
             "prompt_chars": len(final_prompt),
+            "persona_chars": len(persona),
+            "memory_context_chars": len(memory_context),
+            "system_prompt_chars": len(system_prompt),
         }
         self._log_info(
             "JianerAI AI对话开始 | " + format_log_data(dialogue_context)
@@ -3380,11 +3558,16 @@ class JianerAIService:
         base: ConversationBase,
         preset: Preset,
     ) -> bool:
-        with self._state_lock:
-            self._active_presets[base] = preset.key
-        await self._persist_active_preset(base, preset.key)
+        async with self._preset_lock(base):
+            await self._persist_active_preset(base, preset.key)
+            with self._state_lock:
+                self._active_presets[base] = preset.key
         await self._send_text(event, actions, preset.info, reply=False)
         return True
+
+    def _preset_lock(self, base: ConversationBase) -> asyncio.Lock:
+        with self._state_lock:
+            return self._preset_locks.setdefault(base, asyncio.Lock())
 
     async def _conversation_key(
         self, event: Any, actions: Any
@@ -3405,24 +3588,25 @@ class JianerAIService:
         actions: Any,
         base: ConversationBase,
     ) -> str:
-        with self._state_lock:
-            cached = self._active_presets.get(base)
-        if cached:
-            return cached
-        canonical = await asyncio.to_thread(
-            self._canonical_identity, event, actions
-        )
-        stored = await asyncio.to_thread(self._load_active_preset, base)
-        if stored:
-            try:
-                preset = self.presets.get(stored)
-            except UnknownPresetError:
+        async with self._preset_lock(base):
+            with self._state_lock:
+                cached = self._active_presets.get(base)
+            if cached:
+                return cached
+            canonical = await asyncio.to_thread(
+                self._canonical_identity, event, actions
+            )
+            stored = await asyncio.to_thread(self._load_active_preset, base)
+            if stored:
+                try:
+                    preset = self.presets.get(stored)
+                except UnknownPresetError:
+                    preset = self.presets.find_legacy_assignment(canonical)
+            else:
                 preset = self.presets.find_legacy_assignment(canonical)
-        else:
-            preset = self.presets.find_legacy_assignment(canonical)
-        with self._state_lock:
-            self._active_presets[base] = preset.key
-        return preset.key
+            with self._state_lock:
+                self._active_presets[base] = preset.key
+            return preset.key
 
     def _model_for(self, key: ConversationKey) -> str:
         with self._state_lock:
@@ -3533,7 +3717,9 @@ class JianerAIService:
     def _format_agent_tool_info(specs: Sequence[ToolSpec]) -> str:
         if not specs:
             return "无"
-        lines: list[str] = []
+        lines: list[str] = [
+            "完整参数说明由本轮原生工具声明提供；这里只列调用目录，避免重复占用上下文。"
+        ]
         for spec in specs:
             properties = spec.input_schema.get("properties", {})
             if not isinstance(properties, Mapping):
@@ -3544,41 +3730,8 @@ class JianerAIService:
                 for name in properties
             ]
             usage = f"{spec.name}({', '.join(usage_args)})"
-            lines.append(f"- {spec.name}: {spec.description}\n  用法：{usage}")
-            if properties:
-                parameters = [
-                    JianerAIService._format_agent_tool_parameter(
-                        name,
-                        schema,
-                        required=name in required,
-                    )
-                    for name, schema in properties.items()
-                ]
-                lines.append(f"  参数：{'；'.join(parameters)}")
+            lines.append(f"- {usage}")
         return "\n".join(lines)
-
-    @staticmethod
-    def _format_agent_tool_parameter(
-        name: str,
-        schema: Any,
-        *,
-        required: bool,
-    ) -> str:
-        schema_map = schema if isinstance(schema, Mapping) else {}
-        details = [str(schema_map.get("type") or "任意类型")]
-        details.append("必填" if required else "可选")
-        enum_values = schema_map.get("enum")
-        if isinstance(enum_values, Sequence) and not isinstance(
-            enum_values, (str, bytes, bytearray)
-        ):
-            details.append(
-                "可选值=" + "/".join(str(value) for value in enum_values)
-            )
-        if "default" in schema_map:
-            details.append(f"默认={schema_map['default']}")
-        output = f"{name}（{'，'.join(details)}）"
-        description = str(schema_map.get("description") or "").strip()
-        return f"{output}：{description}" if description else output
 
     def _tool_context(
         self,
@@ -3714,6 +3867,71 @@ class JianerAIService:
             or "unknown"
         ).strip().casefold()
 
+    @staticmethod
+    def _persona_status_label(preset: Preset) -> str:
+        return {
+            "structured": "结构化",
+            "stale": "待重建",
+            "legacy": "原文回退",
+        }.get(preset.persona_status, "原文回退")
+
+    async def _persona_generation_model_for(
+        self,
+        event: Any,
+        actions: Any,
+    ) -> str:
+        configured = str(self.options.persona_generation_model or "").strip()
+        if configured:
+            try:
+                self.providers.get(configured)
+                return configured
+            except Exception:
+                self._log_info(
+                    f"JianerAI persona generation model unavailable: {configured}"
+                )
+        try:
+            key = await self._conversation_key(event, actions)
+            current = self._model_for(key)
+            self.providers.get(current)
+            return current
+        except Exception:
+            pass
+        available = self.providers.list_models()
+        if self.options.default_model in available:
+            return self.options.default_model
+        if available:
+            return next(iter(available))
+        return ""
+
+    async def _generate_persona_profile(
+        self,
+        event: Any,
+        actions: Any,
+        preset: Preset,
+    ) -> PersonaProfile | None:
+        model = await self._persona_generation_model_for(event, actions)
+        if not model:
+            self._log_info("JianerAI persona generation has no available model")
+            return None
+        try:
+            return await self.persona_generator.generate(
+                model_key=model,
+                source_text=preset.template,
+                source_name=preset.name,
+                info=preset.info,
+            )
+        except (PersonaError, ProviderError) as exc:
+            self._log_info(
+                f"JianerAI persona generation failed for {preset.key}: "
+                f"{type(exc).__name__}"
+            )
+            return None
+        except Exception:
+            self._log_exception(
+                f"JianerAI unexpected persona generation failure for {preset.key}"
+            )
+            return None
+
     def _render_persona(
         self,
         preset_key: str,
@@ -3729,6 +3947,9 @@ class JianerAIService:
             canonical=canonical,
             agent_tools=agent_tools,
             agent_tools_info=agent_tools_info,
+            mode="group"
+            if getattr(event, "group_id", None) is not None
+            else "private",
         )
 
     def _render_persona_template(
@@ -3739,9 +3960,11 @@ class JianerAIService:
         canonical: str,
         agent_tools: str = "无",
         agent_tools_info: str = "无",
+        mode: str = "neutral",
     ) -> str:
         return self.presets.render(
             preset_key,
+            mode=mode,
             bot_name=self.options.bot_name,
             bot_name_en=self.options.bot_name_en,
             event_user=str(event_user),

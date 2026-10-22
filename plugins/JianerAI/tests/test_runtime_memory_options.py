@@ -24,6 +24,17 @@ def test_episode_segmentation_model_defaults_to_auto() -> None:
     assert options.memory_episode_segmentation_model == "auto"
 
 
+def test_persona_generation_model_is_configurable() -> None:
+    options = RuntimeOptions.from_runtime(
+        {
+            "config": SimpleNamespace(
+                others={"persona_generation_model": "grok"}
+            )
+        }
+    )
+    assert options.persona_generation_model == "grok"
+
+
 def test_provider_error_detail_includes_status_and_type() -> None:
     class _StatusError(Exception):
         status_code = 503
