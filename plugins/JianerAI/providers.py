@@ -1050,59 +1050,90 @@ def load_model_config(path: str | Path) -> ModelConfig:
     key = config_path.name
     if key.casefold().endswith(".ai.json"):
         key = key[: -len(".ai.json")]
-    provider = (
-        raw.get("ResponseType")
-        or raw.get("Provider")
-        or raw.get("provider")
-        or "openai"
-    )
-    api_key = raw.get("ApiKey")
-    if api_key is None:
-        api_key = raw.get("APIKey")
-    base_url = raw.get("BaseUrl")
-    if base_url is None:
-        base_url = raw.get("BaseURL")
-    extra_parameters = raw.get("other") or {}
-    extra_body = raw.get("Extra_Body") or {}
+    provider = _config_value(raw, "ResponseType", "Provider", "provider") or "openai"
+    api_key = _config_value(raw, "ApiKey", "APIKey")
+    base_url = _config_value(raw, "BaseUrl", "BaseURL")
+    extra_parameters = _config_value(raw, "other") or {}
+    extra_body = _config_value(raw, "Extra_Body", "extra_body") or {}
     if not isinstance(extra_parameters, dict) or not isinstance(extra_body, dict):
         raise ModelConfigError(f"model config {key!r} has invalid extra parameters")
     try:
         return ModelConfig(
             key=key,
-            friendly_name=raw.get("FriendlyName") or key,
+            friendly_name=_config_value(raw, "FriendlyName") or key,
             provider=provider,
-            model=raw.get("Model") or "",
+            model=_config_value(raw, "Model") or "",
             api_key=api_key or "",
             base_url=base_url or "",
-            temperature=float(raw.get("Temperature", 0.5)),
-            max_tokens=int(raw.get("MaxTokens", 1000)),
-            top_p=float(raw.get("TopP", 1)),
-            personality=raw.get("Personality") or "",
-            empty_response_text=raw.get(
-                "if_return_none", "模型没有返回任何内容"
+            temperature=float(_config_value(raw, "Temperature", default=0.5)),
+            max_tokens=int(_config_value(raw, "MaxTokens", default=1000)),
+            top_p=float(_config_value(raw, "TopP", default=1)),
+            personality=_config_value(raw, "Personality") or "",
+            empty_response_text=_config_value(
+                raw,
+                "if_return_none",
+                default="模型没有返回任何内容",
             ),
-            max_history_messages=int(raw.get("max_history_messages", 20)),
+            max_history_messages=int(
+                _config_value(raw, "max_history_messages", default=20)
+            ),
             max_history_chars=int(
-                raw.get("max_history_chars", raw.get("MaxHistoryChars", 24000))
+                _config_value(
+                    raw,
+                    "max_history_chars",
+                    "MaxHistoryChars",
+                    default=24000,
+                )
             ),
-            system_prompt_mode=raw.get(
+            system_prompt_mode=_config_value(
+                raw,
                 "SystemPromptMode",
-                raw.get("system_prompt_mode", "auto"),
+                "system_prompt_mode",
+                default="auto",
             ),
             request_timeout_seconds=float(
-                raw.get("RequestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT)
+                _config_value(
+                    raw,
+                    "RequestTimeoutSeconds",
+                    default=DEFAULT_REQUEST_TIMEOUT,
+                )
             ),
-            endpoint_style=raw.get("EndpointStyle") or "",
-            tools_enabled=raw.get("ToolsEnabled", "auto"),
-            transcription_model=raw.get(
-                "TranscriptionModel", "gpt-4o-mini-transcribe"
+            endpoint_style=_config_value(raw, "EndpointStyle") or "",
+            tools_enabled=_config_value(
+                raw,
+                "ToolsEnabled",
+                default="auto",
             ),
-            thinking_level=raw.get("ThinkingLevel", ""),
+            transcription_model=_config_value(
+                raw,
+                "TranscriptionModel",
+                default="gpt-4o-mini-transcribe",
+            ),
+            thinking_level=_config_value(raw, "ThinkingLevel", default=""),
             extra_parameters=extra_parameters,
             extra_body=extra_body,
         )
     except (TypeError, ValueError) as exc:
         raise ModelConfigError(f"model config {key!r} has invalid numeric values") from exc
+
+
+def _config_value(
+    raw: Mapping[str, Any],
+    *names: str,
+    default: Any = None,
+) -> Any:
+    for name in names:
+        if name in raw:
+            return raw[name]
+    folded = {
+        str(name).casefold(): value
+        for name, value in raw.items()
+    }
+    for name in names:
+        key = name.casefold()
+        if key in folded:
+            return folded[key]
+    return default
 
 
 def _normalize_provider(value: Any) -> str:

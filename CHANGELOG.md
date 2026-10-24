@@ -26,6 +26,13 @@
 ### 变更
 - JianerAI 命令改用无歧义主名称：`模型菜单/切换模型`、`人设/切换人设`、
   `添加人设/删除人设/重载人设`、`清空上下文`；旧命令继续作为兼容别名。
+- JianerAI 人设系统完整对齐 HypeR：`profiles.json` 每次使用时重新读取，
+  纯文本人设固定在 System Prompt 末尾；切换人设时用中立事实摘要归档旧上下文，
+  保留最近 6 轮原文，未加载上下文在下次使用前惰性归档。归档会等待当前
+  tool call 批次全部完成，保留轮的 `tool_calls`/`tool` 消息原样保留，旧轮次
+  摘要包含工具名、参数与结果；长记录按 `agent_profile_summary_chunk_chars`
+  分段后再合并。显示名仅作为 Jianer 旧预设的 UI 兼容层，不影响 memorix
+  人设分区键。
 - JianerMate 模型来源改为可多目录：新增 `jianer_mate_ai_config_dirs`（插件配置里的 `ai_config_dirs`），
   除默认 `aiconfig` 外还能并列加载其它 `*.ai.json` 目录，同名模型以先加载的为准并给出重复提示；
   `planner/replyer` 留空时按宿主 `default_mode` 自动选择，启动日志分别列出原生模型、桥接模型与已加载但不支持的条目。
@@ -56,6 +63,8 @@
 - 飞书绑定以 JSON 为权威源，通过持久 outbox 幂等合并 AI 身份；回调失败不回滚非 AI 绑定。
 
 ### 修复
+- 修复运行中修改 `profiles.json` 后仍沿用启动时缓存人设的问题；当前人设现在
+  按 HypeR 行为在每次构建 System Prompt 和切换前重新读取磁盘。
 - QWeather 工具注册兼容只实现 `info/error/log` 的旧 logger，避免可选天气配置失败时
   连带清空 JianerMate 的整张工具表。
 - JianerMate 的后台任务（表情包收集、主动发言、记忆审查、第三方工具加载）现在会记录异常，不再是静默消失的 `Task exception was never retrieved`。

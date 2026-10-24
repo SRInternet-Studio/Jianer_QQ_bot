@@ -369,6 +369,10 @@ class RuntimeOptions:
     agent_collector_max_summary_chars: int = 8000
     agent_core_idle_hours: float = 12.0
     agent_max_history_chars: int = 60000
+    agent_profile_switch_summary: bool = True
+    agent_profile_switch_keep_turns: int = 6
+    agent_profile_summary_chunk_chars: int = 24000
+    agent_profile_summary_max_tokens: int = 3000
     agent_sys_request_timeout: float = 300.0
     agent_stop_perm: str = "any_admin"
     agent_stop_open_after: float = 10.0
@@ -765,6 +769,22 @@ class RuntimeOptions:
             agent_max_history_chars=max(
                 1000,
                 int(others.get("agent_max_history_chars", 60000)),
+            ),
+            agent_profile_switch_summary=_runtime_bool(
+                others.get("agent_profile_switch_summary", True),
+                default=True,
+            ),
+            agent_profile_switch_keep_turns=max(
+                0,
+                int(others.get("agent_profile_switch_keep_turns", 6)),
+            ),
+            agent_profile_summary_chunk_chars=max(
+                2000,
+                int(others.get("agent_profile_summary_chunk_chars", 24000)),
+            ),
+            agent_profile_summary_max_tokens=max(
+                500,
+                int(others.get("agent_profile_summary_max_tokens", 3000)),
             ),
             agent_sys_request_timeout=max(
                 5.0,
@@ -1409,6 +1429,16 @@ class JianerAIService:
             max_history_chars=options.agent_max_history_chars,
             idle_seconds=options.agent_core_idle_hours * 3600.0,
             system_request_timeout=options.agent_sys_request_timeout,
+            profile_switch_summary=options.agent_profile_switch_summary,
+            profile_switch_keep_turns=(
+                options.agent_profile_switch_keep_turns
+            ),
+            profile_summary_chunk_chars=(
+                options.agent_profile_summary_chunk_chars
+            ),
+            profile_summary_max_tokens=(
+                options.agent_profile_summary_max_tokens
+            ),
             logger=self._logger,
         )
         for spec in context_tools(self.agent_sessions, self.agent_profiles):
@@ -1451,6 +1481,9 @@ class JianerAIService:
             max_concurrency=options.agent_max_concurrency,
             take_notices=self.agent_subagents.take_reports,
             logger=self._logger,
+        )
+        self.agent_sessions.profile_switch_callback = (
+            self.agent_facade._persist_active_profile
         )
         self.agent_facade.migrate_legacy_whitelist(
             protocol=str(getattr(runtime_config, "protocol", "") or ""),
@@ -1901,13 +1934,30 @@ class JianerAIService:
             )
             if type(error).__name__ not in {"AgentStopped"}:
                 try:
+                    detail = str(error)
+                    if isinstance(error, ProviderError) and "HTTP 401" in detail:
+                        failure_text = (
+                            "模型服务认证失败（HTTP 401）。请检查当前 "
+                            "aiconfig/*.ai.json 的 ApiKey 和 BaseUrl。"
+                        )
+                    elif isinstance(error, ProviderError) and "HTTP 404" in detail:
+                        failure_text = (
+                            "模型接口或模型名不存在（HTTP 404）。请检查 "
+                            "BaseUrl、ResponseType 和 Model。"
+                        )
+                    elif isinstance(error, ProviderError):
+                        failure_text = (
+                            "模型请求失败。请检查当前 aiconfig 模型配置和网络连接。"
+                        )
+                    else:
+                        failure_text = (
+                            f"{self.options.bot_name}的 Agent 处理未能在"
+                            "安全限制内完成，请稍后再试。"
+                        )
                     await self._send_text(
                         event,
                         actions,
-                        (
-                            f"{self.options.bot_name}的 Agent 处理未能在"
-                            "安全限制内完成，请稍后再试。"
-                        ),
+                        failure_text,
                         reply=True,
                     )
                 except Exception:
@@ -2178,10 +2228,11 @@ class JianerAIService:
         return True
 
     async def show_persona_menu(self, event: Any, actions: Any) -> bool:
+        labels = self.agent_profiles.labels()
         lines = [
             f"{self.options.bot_name} 全局人设",
-            f"当前：{self.agent_profiles.active_name}",
-            "可用：" + ", ".join(self.agent_profiles.list()),
+            f"当前：{self.agent_profiles.active_label()}",
+            "可用：" + ", ".join(labels.values()),
             f"切换：{self.options.reminder}切换人设 [名称]",
             f"添加：{self.options.reminder}添加人设 [名称] [简介] : [角色内容]",
             f"重载：{self.options.reminder}重载人设 [名称]",
@@ -2218,10 +2269,6 @@ class JianerAIService:
         try:
             result = await self.agent_sessions.switch_profile(
                 str(name or "").strip()
-            )
-            self.agent_facade._persist_agent_setting(
-                "agent_profile",
-                str(name or "").strip(),
             )
         except Exception:
             result = "找不到该全局人设。"
@@ -2276,6 +2323,7 @@ class JianerAIService:
                 self.agent_profiles.upsert,
                 str(name).strip(),
                 str(template).strip(),
+                display_name=str(name).strip(),
             )
             text = f"已保存全局人设：{str(name).strip()}"
         except Exception:
@@ -2370,6 +2418,7 @@ class JianerAIService:
                 self.agent_profiles.upsert,
                 preset.key,
                 preset.template,
+                display_name=preset.name,
             )
             text = f"已从原始人设重新加载「{preset.name}」。"
         except Exception:
@@ -2488,12 +2537,17 @@ class JianerAIService:
             await self._send_confused(event, actions)
             return True
         try:
-            deleted = await asyncio.to_thread(
-                self.agent_profiles.remove,
+            key = await asyncio.to_thread(
+                self.agent_profiles.resolve_key,
                 str(name or "").strip(),
             )
+            label = self.agent_profiles.label(key)
+            deleted = await asyncio.to_thread(
+                self.agent_profiles.remove,
+                key,
+            )
             text = (
-                f"已删除全局人设：{str(name).strip()}"
+                f"已删除全局人设：{label}"
                 if deleted
                 else "无法删除该全局人设。"
             )

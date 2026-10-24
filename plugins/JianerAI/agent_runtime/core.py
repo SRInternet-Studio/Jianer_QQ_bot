@@ -5,10 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from plugins.JianerAI.agent_runtime.models import AgentRole, SessionKey
+from plugins.JianerAI.agent_runtime.prompts import (
+    PROFILE_SUMMARY_MARKER,
+    PROFILE_SUMMARY_MERGE_SYSTEM,
+    PROFILE_SUMMARY_SYSTEM,
+)
 from plugins.JianerAI.agent_runtime.store import ContextStore
 from plugins.JianerAI.providers import (
     AssistantTurn,
@@ -16,6 +22,7 @@ from plugins.JianerAI.providers import (
     FunctionTool,
     ProviderRegistry,
     ProviderResponse,
+    ProviderRequestError,
     ToolResultTurn,
 )
 from plugins.JianerAI.tools.contracts import ToolCall, ToolContext, ToolSpec
@@ -121,6 +128,8 @@ class AgentCore:
                         except AgentStopped:
                             raise
                         except Exception as exc:
+                            if not _retryable_provider_error(exc):
+                                raise
                             is_bad_request = (
                                 type(exc).__name__ == "BadRequestError"
                             )
@@ -375,6 +384,99 @@ class AgentCore:
             await self.save()
         return "已更新上下文总结"
 
+    async def archive_for_profile_switch(
+        self,
+        summarize: Callable[[str, str, int], Awaitable[str]],
+        *,
+        keep_turns: int = 6,
+        summary_chunk_chars: int = 24000,
+        summary_max_tokens: int = 3000,
+    ) -> bool:
+        """Archive old-profile turns at a completed tool-call boundary.
+
+        The run lock is only available after the active assistant turn and all
+        of its tool results have been persisted. Recent turns stay byte-for-byte
+        intact, including assistant tool calls and matching tool messages.
+        """
+
+        await self.ensure_loaded()
+        async with self._run_lock:
+            messages, existing_summary = _history_without_profile_summary(
+                self.history
+            )
+            turns = _history_turns(messages)
+            if not turns:
+                return False
+            keep = max(0, int(keep_turns))
+            if keep > 0 and len(turns) > keep:
+                prefix_turns = turns[:-keep]
+                tail_turns = turns[-keep:]
+            elif keep > 0:
+                prefix_turns = []
+                tail_turns = turns
+            else:
+                prefix_turns = turns
+                tail_turns = []
+            if not prefix_turns:
+                return False
+            prefix_messages = [
+                message
+                for turn in prefix_turns
+                for message in turn
+            ]
+            chunks = _profile_summary_chunks(
+                prefix_messages,
+                summary_chunk_chars,
+            )
+            max_tokens = max(500, int(summary_max_tokens))
+            try:
+                partials: list[str] = []
+                for index, chunk in enumerate(chunks, start=1):
+                    partial = await summarize(
+                        PROFILE_SUMMARY_SYSTEM,
+                        f"这是第 {index}/{len(chunks)} 段记录:\n\n{chunk}",
+                        min(1500, max_tokens),
+                    )
+                    if str(partial or "").strip():
+                        partials.append(str(partial).strip())
+                if len(partials) == 1 and not existing_summary:
+                    summary = partials[0]
+                else:
+                    merge_parts: list[str] = []
+                    if existing_summary:
+                        merge_parts.append(
+                            "## 已有状态\n" + existing_summary
+                        )
+                    merge_parts.extend(
+                        f"## 新增分段摘要 {index}\n{partial}"
+                        for index, partial in enumerate(partials, start=1)
+                    )
+                    summary = (
+                        await summarize(
+                            PROFILE_SUMMARY_MERGE_SYSTEM,
+                            "\n\n".join(merge_parts),
+                            max_tokens,
+                        )
+                        if merge_parts
+                        else existing_summary
+                    )
+            except Exception:
+                summary = _profile_switch_fallback("\n\n".join(chunks))
+            summary = str(summary or "").strip()
+            if not summary:
+                return False
+            self.history = [
+                {"role": "user", "content": PROFILE_SUMMARY_MARKER},
+                {"role": "assistant", "content": summary},
+                *[
+                    dict(message)
+                    for turn in tail_turns
+                    for message in turn
+                ],
+            ]
+            await self.save()
+            return True
+
     async def inject_notice(
         self,
         content: str,
@@ -480,6 +582,129 @@ class AgentCore:
             del self.history[last_user:]
 
 
+def _history_without_profile_summary(
+    history: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    markers = {
+        PROFILE_SUMMARY_MARKER,
+        "SYSTEM -- 先前消息的全部总结 --",
+        "SYSTEM -- 先前消息的所有总结 --",
+    }
+    messages = [
+        dict(message)
+        for message in history
+        if isinstance(message, Mapping) and message.get("role") != "system"
+    ]
+    if (
+        len(messages) >= 2
+        and messages[0].get("role") == "user"
+        and str(messages[0].get("content") or "").strip() in markers
+        and messages[1].get("role") == "assistant"
+    ):
+        existing = str(messages[1].get("content") or "").strip()
+        return messages[2:], existing
+    return messages, ""
+
+
+def _history_turns(
+    messages: Sequence[Mapping[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    turns: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for raw in messages:
+        message = dict(raw)
+        if message.get("role") == "user":
+            if current:
+                turns.append(current)
+            current = [message]
+        elif current:
+            current.append(message)
+    if current:
+        turns.append(current)
+    return turns
+
+
+def _profile_summary_message_text(message: Mapping[str, Any]) -> str:
+    role = str(message.get("role") or "unknown")
+    content = str(message.get("content") or "").strip()
+    if role == "assistant":
+        calls = [
+            call
+            for call in (message.get("tool_calls") or ())
+            if isinstance(call, Mapping)
+        ]
+        if calls:
+            rendered_calls = ", ".join(
+                _profile_tool_call_text(call)
+                for call in calls
+            )
+            content = (
+                f"{content}\n工具调用: {rendered_calls}"
+                if content
+                else f"工具调用: {rendered_calls}"
+            )
+    elif role == "tool":
+        name = str(message.get("name") or "?")
+        call_id = str(message.get("tool_call_id") or "")
+        content = (
+            f"工具 {name} 返回"
+            + (f" (call_id={call_id})" if call_id else "")
+            + f": {content}"
+        )
+    return f"{role}: {content[:4000]}" if content else ""
+
+
+def _profile_summary_chunks(
+    messages: Sequence[Mapping[str, Any]],
+    max_chars: int,
+) -> list[str]:
+    limit = max(2000, int(max_chars))
+    chunks: list[str] = []
+    current: list[str] = []
+    current_chars = 0
+    for message in messages:
+        block = _profile_summary_message_text(message)
+        if not block:
+            continue
+        block = block[:limit]
+        if current and current_chars + len(block) + 1 > limit:
+            chunks.append("\n".join(current))
+            current = []
+            current_chars = 0
+        current.append(block)
+        current_chars += len(block) + 1
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def _profile_switch_fallback(text: str) -> str:
+    lines = str(text or "").splitlines()[-120:]
+    return (
+        "上下文自动总结不可用，降级为原文摘录：\n"
+        + "\n".join(line[:500] for line in lines)
+    )
+
+
+def _profile_tool_call_text(call: Mapping[str, Any]) -> str:
+    function = call.get("function")
+    details = function if isinstance(function, Mapping) else {}
+    name = str(call.get("name") or details.get("name") or "?")
+    arguments = call.get("arguments")
+    if arguments is None:
+        arguments = details.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            pass
+    return (
+        f"{name}("
+        f"{json.dumps(arguments if arguments is not None else {}, ensure_ascii=False)}"
+        ")"
+    )
+
+
 def _mapping_copy(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
@@ -489,3 +714,20 @@ def _mapping_copy(value: Any) -> dict[str, Any] | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def _retryable_provider_error(exc: Exception) -> bool:
+    """Avoid retrying deterministic endpoint, auth, and model errors."""
+
+    if not isinstance(exc, ProviderRequestError):
+        return True
+    message = str(exc)
+    return not any(
+        marker in message
+        for marker in (
+            "HTTP 401",
+            "HTTP 403",
+            "HTTP 404",
+            "HTTP 422",
+        )
+    )

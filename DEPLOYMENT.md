@@ -346,7 +346,9 @@ JianerAI 从 `aiconfig/*.ai.json` 读取模型，不以 `config.json` 里旧的 
 
 `agent_api_profile` 指定当前全局 Agent 模型；`agent_profile` 指定
 `data/jianer_ai/profiles.json` 中的全局人设。原始人设模板直接作为 prompt，
-不再生成结构化人格 JSON。
+不再生成结构化人格 JSON。人设文件会在每次构建 System Prompt 前重新读取，
+完整人设固定放在 System Prompt 末尾。切换人设时保留最近轮次原文，其余上下文
+由中立摘要归档；tool call 与对应工具结果会在当前批次完成后才允许切换。
 
 Linux 上收紧模型文件权限：
 
@@ -366,6 +368,10 @@ chmod 600 aiconfig/*.ai.json
   "agent_collector_keep_after_compress": 60,
   "agent_core_idle_hours": 12,
   "agent_max_history_chars": 60000,
+  "agent_profile_switch_summary": true,
+  "agent_profile_switch_keep_turns": 6,
+  "agent_profile_summary_chunk_chars": 24000,
+  "agent_profile_summary_max_tokens": 3000,
   "agent_browser_enabled": true,
   "agent_allowed_tools": [
     "get_current_time",

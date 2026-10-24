@@ -16,7 +16,7 @@ from plugins.JianerAI.agent_runtime.prompts import (
     build_main_prompt,
 )
 from plugins.JianerAI.agent_runtime.store import ContextStore
-from plugins.JianerAI.providers import ProviderRegistry
+from plugins.JianerAI.providers import ChatRequest, ProviderRegistry
 from plugins.JianerAI.tools.contracts import ToolSpec
 from plugins.JianerAI.tools.registry import ToolRegistry
 
@@ -40,6 +40,11 @@ class AgentSessionManager:
         max_history_chars: int = 60000,
         idle_seconds: float = 12 * 3600,
         system_request_timeout: float = 300.0,
+        profile_switch_summary: bool = True,
+        profile_switch_keep_turns: int = 6,
+        profile_summary_chunk_chars: int = 24000,
+        profile_summary_max_tokens: int = 3000,
+        profile_switch_callback: Callable[[str], None] | None = None,
         logger: Any | None = None,
     ) -> None:
         self.store = store
@@ -57,9 +62,25 @@ class AgentSessionManager:
         self.system_request_timeout = max(
             5.0, float(system_request_timeout)
         )
+        self.profile_switch_summary = bool(profile_switch_summary)
+        self.profile_switch_keep_turns = max(
+            0,
+            int(profile_switch_keep_turns),
+        )
+        self.profile_switch_callback = profile_switch_callback
+        self.profile_summary_chunk_chars = max(
+            2000,
+            int(profile_summary_chunk_chars),
+        )
+        self.profile_summary_max_tokens = max(
+            500,
+            int(profile_summary_max_tokens),
+        )
         self.logger = logger
         self._contexts: dict[SessionKey, AgentCore] = {}
         self._lock = asyncio.Lock()
+        self._profile_switch_lock = asyncio.Lock()
+        self._profile_summary_pending: set[SessionKey] = set()
         self._cleanup_task: asyncio.Task[Any] | None = None
         self._pending_requests: dict[str, SessionKey] = {}
         self._request_tasks: set[asyncio.Task[Any]] = set()
@@ -229,24 +250,89 @@ class AgentSessionManager:
         await core.replace_with_summary(summary)
         return "已更新当前上下文总结"
 
-    async def switch_profile(self, name: str) -> str:
-        self.profiles.switch(name)
-        summaries: list[str] = []
-        for core in self.loaded():
-            if core is self.system:
-                continue
-            await self.summarize(
-                core.key,
-                source=f"切换到人设 {name} 前",
+    async def prepare_main(self, core: AgentCore) -> None:
+        """Lazily archive a Main context that predates the latest switch."""
+
+        if (
+            not self.profile_switch_summary
+            or core.key not in self._profile_summary_pending
+            or core.working
+        ):
+            return
+        try:
+            archived = await self._archive_profile_context(core)
+            if archived:
+                self._log_info(
+                    f"Agent context archive completed: {core.key.value}"
+                )
+        except Exception:
+            self._log_exception(
+                f"Agent context archive failed: {core.key.value}"
             )
-            summaries.append(core.key.value)
-        return (
-            f"已切换全局人设「{name}」"
-            + (
-                f"，并重写 {len(summaries)} 个 Main Context"
-                if summaries
+        finally:
+            self._profile_summary_pending.discard(core.key)
+            await core.save()
+
+    async def switch_profile(self, name: str) -> str:
+        async with self._profile_switch_lock:
+            self.profiles.reload()
+            profile_key = self.profiles.resolve_key(name)
+            label = self.profiles.label(profile_key)
+            self.profiles.switch(profile_key)
+            if self.profile_switch_callback is not None:
+                self.profile_switch_callback(profile_key)
+            if self.profile_switch_summary:
+                self.store.mark_profile_switch(profile_key)
+
+            archived = 0
+            for core in tuple(self._contexts.values()):
+                if self.profile_switch_summary:
+                    try:
+                        if await self._archive_profile_context(core):
+                            archived += 1
+                    except Exception:
+                        self._log_exception(
+                            f"Agent profile switch archive failed: {core.key.value}"
+                        )
+                self._profile_summary_pending.discard(core.key)
+                await core.save()
+
+            suffix = (
+                f"，已归档 {archived} 个已加载上下文；"
+                "未加载上下文将在下次使用时归档"
+                if self.profile_switch_summary
                 else ""
             )
+            return f"已切换全局人设「{label}」{suffix}"
+
+    async def _archive_profile_context(self, core: AgentCore) -> bool:
+        model = self.model_resolver(core.key)
+
+        async def summarize(
+            system_prompt: str,
+            text: str,
+            max_tokens: int,
+        ) -> str:
+            try:
+                return await self.providers.chat_request(
+                    model,
+                    ChatRequest(
+                        message=text,
+                        system_prompt=system_prompt,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+            except Exception:
+                self._log_exception(
+                    f"Agent neutral profile summary failed: {core.key.value}"
+                )
+                raise
+
+        return await core.archive_for_profile_switch(
+            summarize,
+            keep_turns=self.profile_switch_keep_turns,
+            summary_chunk_chars=self.profile_summary_chunk_chars,
+            summary_max_tokens=self.profile_summary_max_tokens,
         )
 
     async def heartbeat_tick(self) -> None:
@@ -300,6 +386,11 @@ class AgentSessionManager:
         )
         if role is AgentRole.MAIN:
             self._contexts[key] = core
+            if (
+                self.profile_switch_summary
+                and self.store.history_needs_profile_summary(key)
+            ):
+                self._profile_summary_pending.add(key)
         return core
 
     def _main_prompt(self, specs: tuple[ToolSpec, ...]) -> str:
@@ -325,6 +416,22 @@ class AgentSessionManager:
         return SYSTEM_CONTEXT_PROMPT.replace(
             "{output}", OUTPUT_RULE
         ).replace("{tools}", _tool_catalog(specs))
+
+    def _log_info(self, message: str) -> None:
+        if self.logger is None:
+            return
+        try:
+            self.logger.info(message)
+        except Exception:
+            pass
+
+    def _log_exception(self, message: str) -> None:
+        if self.logger is None:
+            return
+        try:
+            self.logger.exception(message)
+        except Exception:
+            pass
 
     def _ensure_cleanup(self) -> None:
         if not self._contexts:

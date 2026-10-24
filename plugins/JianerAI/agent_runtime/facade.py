@@ -246,6 +246,10 @@ class AgentFacade:
                 else contextlib.nullcontext()
             )
             async with manager:
+                core = await self.sessions.get_main(key)
+                prepare_main = getattr(self.sessions, "prepare_main", None)
+                if callable(prepare_main):
+                    await prepare_main(core)
                 context = await self.build_context(
                     key,
                     event,
@@ -253,7 +257,6 @@ class AgentFacade:
                     tuple(batch),
                     actual_principal,
                 )
-                core = await self.sessions.get_main(key)
                 context = dataclasses.replace(context, agent=core)
                 payload: dict[str, Any] = {
                     "event": {
@@ -503,8 +506,6 @@ class AgentFacade:
                 return True
             try:
                 result = await self.sessions.switch_profile(parts[2])
-                self.profiles.active_name = parts[2]
-                self._persist_active_profile(parts[2])
             except Exception as exc:
                 result = str(exc)
             await self.reply(event, actions, result)
@@ -526,8 +527,16 @@ class AgentFacade:
                     return True
                 name = parts[2]
                 prompt = " ".join(parts[3:])
-                self.profiles.upsert(name, prompt)
-                await self.reply(event, actions, f"已保存全局人设「{name}」。")
+                profile = self.profiles.upsert(
+                    name,
+                    prompt,
+                    display_name=name,
+                )
+                await self.reply(
+                    event,
+                    actions,
+                    f"已保存全局人设「{profile.display_name or name}」。",
+                )
                 return True
             if len(parts) < 3:
                 await self.reply(event, actions, "缺少人设名称。")
@@ -545,24 +554,32 @@ class AgentFacade:
             if len(parts) > 3:
                 value = parts[3].casefold()
                 enabled = value in {"on", "1", "true", "开启"}
-            profile = self.profiles.list().get(name)
-            if profile is None:
+            try:
+                key = self.profiles.resolve_key(name)
+                profile = self.profiles.get(key)
+            except Exception:
                 await self.reply(event, actions, "人设不存在。")
                 return True
+            label = self.profiles.label(key)
             if enabled is None:
                 await self.reply(
                     event,
                     actions,
-                    f"「{name}」inject_master="
+                    f"「{label}」inject_master="
                     f"{'on' if profile.inject_master else 'off'}",
                 )
                 return True
             self.profiles.upsert(
-                name,
+                key,
                 profile.prompt,
                 inject_master=enabled,
+                display_name=profile.display_name,
             )
-            await self.reply(event, actions, f"已更新「{name}」的 inject_master。")
+            await self.reply(
+                event,
+                actions,
+                f"已更新「{label}」的 inject_master。",
+            )
             return True
         if sub in {"context.clear", "context.summary"}:
             action = sub.split(".", 1)[1]
@@ -610,15 +627,18 @@ class AgentFacade:
         return (
             f"Agent 状态：{'已启用' if active else '未启用'}\n"
             f"白名单用户：{', '.join(sorted(self.group_whitelist(key))) or '无'}\n"
-            f"当前人设：{self.profiles.active_name}\n"
+            f"当前人设：{self._active_profile_label()}\n"
             f"当前模型：{model}\n"
             f"命令：{self.reminder}agent.on/off/status/stop/profile/context\n"
             f"清空当前上下文：{self.reminder}清空上下文"
         )
 
     def profile_status(self) -> str:
-        names = ", ".join(self.profiles.list())
-        return f"可用人设：{names}\n当前人设：{self.profiles.active_name}"
+        names = ", ".join(self._profile_labels())
+        return (
+            f"可用人设：{names}\n"
+            f"当前人设：{self._active_profile_label()}"
+        )
 
     # ------------------------------------------------------------------ #
     # whitelist and lifecycle
@@ -734,6 +754,21 @@ class AgentFacade:
     # ------------------------------------------------------------------ #
     # helpers
     # ------------------------------------------------------------------ #
+    def _active_profile_label(self) -> str:
+        method = getattr(self.profiles, "active_label", None)
+        if callable(method):
+            return str(method())
+        return str(getattr(self.profiles, "active_name", "") or "")
+
+    def _profile_labels(self) -> tuple[str, ...]:
+        method = getattr(self.profiles, "labels", None)
+        if callable(method):
+            return tuple(str(value) for value in method().values())
+        method = getattr(self.profiles, "list", None)
+        if callable(method):
+            return tuple(str(value) for value in method())
+        return ()
+
     def _collector(self, key: SessionKey) -> Collector:
         collector = self._collectors.get(key)
         if collector is None:

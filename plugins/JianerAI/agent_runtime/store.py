@@ -32,6 +32,9 @@ class ContextStore:
     def metadata_path(self, key: SessionKey) -> Path:
         return self.context_dir(key) / "metadata.json"
 
+    def profile_switch_path(self) -> Path:
+        return self.root / "profile_switch.json"
+
     def list_sessions(self) -> tuple[SessionKey, ...]:
         root = self.root / "contexts"
         if not root.is_dir():
@@ -55,6 +58,36 @@ class ContextStore:
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 continue
         return tuple(output)
+
+    def load_profile_switch(self) -> dict[str, Any] | None:
+        path = self.profile_switch_path()
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                value = json.load(stream)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def mark_profile_switch(self, name: str) -> dict[str, Any]:
+        state = {
+            "profile": str(name or ""),
+            "switched_at": time.time(),
+        }
+        self._write_json(self.profile_switch_path(), state)
+        return state
+
+    def history_needs_profile_summary(self, key: SessionKey) -> bool:
+        state = self.load_profile_switch()
+        if state is None:
+            return False
+        history = self.history_path(key)
+        if not history.is_file():
+            return False
+        try:
+            switched_at = float(state.get("switched_at") or 0)
+            return history.stat().st_mtime < switched_at
+        except (OSError, TypeError, ValueError):
+            return False
 
     async def load_history(self, key: SessionKey) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._load_list, self.history_path(key))

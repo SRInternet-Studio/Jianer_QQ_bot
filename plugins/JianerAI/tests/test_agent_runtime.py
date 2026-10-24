@@ -11,9 +11,16 @@ from jianer.adapters import ConversationKey, ConversationKind
 from plugins.JianerAI.agent_runtime.bootstrap import import_legacy_contexts
 from plugins.JianerAI.agent_runtime.collector import Collector
 from plugins.JianerAI.agent_runtime.content_store import ContentStore
-from plugins.JianerAI.agent_runtime.core import AgentCore
+from plugins.JianerAI.agent_runtime.core import AgentCore, _retryable_provider_error
 from plugins.JianerAI.agent_runtime.models import AgentEvent, AgentRole, SessionKey
-from plugins.JianerAI.agent_runtime.profiles import ProfileStore
+from plugins.JianerAI.agent_runtime.profiles import ProfileError, ProfileStore
+from plugins.JianerAI.agent_runtime.prompts import (
+    PROFILE_SUMMARY_MARKER,
+    PROFILE_SUMMARY_MERGE_SYSTEM,
+    PROFILE_SUMMARY_SYSTEM,
+    build_main_prompt,
+)
+from plugins.JianerAI.agent_runtime.sessions import AgentSessionManager
 from plugins.JianerAI.agent_runtime.store import ContextStore
 from plugins.JianerAI.agent_runtime.subagents import SubAgentManager
 from plugins.JianerAI.providers import (
@@ -22,8 +29,10 @@ from plugins.JianerAI.providers import (
     ModelConfig,
     ModelConfigError,
     ProviderResponse,
+    ProviderRequestError,
     ProviderToolCall,
     _build_openai_payload,
+    load_model_config,
 )
 from plugins.JianerAI.tools.contracts import (
     ToolCall,
@@ -57,6 +66,10 @@ def _context() -> ToolContext:
         self_id="bot-1",
         role="main",
     )
+
+
+async def _async_value(value: str) -> str:
+    return value
 
 
 def test_context_store_round_trip(tmp_path: Path) -> None:
@@ -109,7 +122,514 @@ def test_profile_store_bootstraps_raw_legacy_templates(tmp_path: Path) -> None:
 
     assert store.current().prompt == "原始人设全文"
     assert store.current().inject_master is True
+    assert store.current().display_name == "角色"
+    assert store.active_name == "Role"
+    assert store.active_label() == "角色 (Role)"
     assert not (tmp_path / "profiles.json").exists()
+
+
+def test_profile_store_resolves_and_persists_display_names(
+    tmp_path: Path,
+) -> None:
+    metadata = tmp_path / "current.json"
+    metadata.write_text(
+        json.dumps(
+            {
+                "XingYu": {"name": "机娘", "path": "XingYu.txt"},
+                "Normal": {"name": "做我女朋友", "path": "Normal.txt"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    for key in ("XingYu", "Normal"):
+        (tmp_path / f"{key}.txt").write_text(f"{key} prompt", encoding="utf-8")
+    profiles_path = tmp_path / "profiles.json"
+    profiles_path.write_text(
+        json.dumps(
+            {
+                "XingYu": "机娘 prompt",
+                "Normal": "Normal prompt",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    store = ProfileStore(
+        profiles_path,
+        legacy_metadata=metadata,
+        active_name="机娘",
+    )
+
+    assert store.active_name == "XingYu"
+    assert store.current().prompt == "机娘 prompt"
+    assert store.get("机娘").prompt == "机娘 prompt"
+
+    profiles_path.write_text(
+        json.dumps(
+            {
+                "XingYu": "磁盘上更新后的机娘 prompt",
+                "Normal": {
+                    "prompt": "Normal prompt",
+                    "name": "做我女朋友",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    assert store.current().prompt == "磁盘上更新后的机娘 prompt"
+    store.upsert(
+        "做我女朋友",
+        "更新后的 prompt",
+        display_name="做我女朋友",
+    )
+    assert store.get("Normal").prompt == "更新后的 prompt"
+    with pytest.raises(ProfileError):
+        store.remove("机娘")
+
+    store.switch("Normal")
+    assert store.remove("机娘") is True
+    saved = json.loads(profiles_path.read_text(encoding="utf-8"))
+    assert saved["Normal"]["prompt"] == "更新后的 prompt"
+    assert saved["Normal"]["inject_master"] is True
+    assert "XingYu" not in saved
+
+
+def test_persona_prompt_is_the_last_system_prompt_section() -> None:
+    persona = "你是机娘星语。说话自然、有主见，绝不切换成通用 AI 助手腔。"
+    prompt = build_main_prompt(
+        profile_prompt=persona,
+        inject_master=True,
+        owner_ids=("10001",),
+        tools="- send_group_msg(text)",
+    )
+
+    expected_persona = "# 角色\n\n" + persona
+    assert prompt.endswith(expected_persona)
+    assert prompt.count(expected_persona) == 1
+    assert "10001" in prompt
+
+    without_master = build_main_prompt(
+        profile_prompt=persona,
+        inject_master=False,
+        owner_ids=("10001",),
+        tools="- send_group_msg(text)",
+    )
+    assert "10001" not in without_master
+
+
+def test_profile_switch_archive_preserves_tool_turns(tmp_path: Path) -> None:
+    key = SessionKey(
+        scene_type="group",
+        scene_id="group-1",
+        protocol="milky",
+        self_id="bot-1",
+    )
+    history = [
+        {"role": "user", "content": "查天气"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "web_search",
+                    "arguments": {"query": "天气"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "web_search",
+            "content": '{"temperature": 20}',
+        },
+        {"role": "assistant", "content": "今天 20 度。"},
+        {"role": "user", "content": "继续"},
+        {"role": "assistant", "content": "好。"},
+        {"role": "user", "content": "再看看"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-2",
+                    "name": "get_weather",
+                    "arguments": {"city": "黄山"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-2",
+            "name": "get_weather",
+            "content": '{"weather": "晴"}',
+        },
+        {"role": "assistant", "content": "现在是晴天。"},
+    ]
+    store = ContextStore(tmp_path)
+    captured: list[str] = []
+
+    async def scenario():
+        await store.save_history(key, history)
+        core = AgentCore(
+            key,
+            role=AgentRole.MAIN,
+            providers=SimpleNamespace(),
+            tools=ToolRegistry(),
+            store=store,
+            model_resolver=lambda _key: "demo",
+            prompt_builder=lambda _specs: "system",
+        )
+
+        async def summarize(
+            system_prompt: str,
+            text: str,
+            max_tokens: int,
+        ) -> str:
+            del system_prompt, max_tokens
+            captured.append(text)
+            return "事实摘要"
+
+        changed = await core.archive_for_profile_switch(
+            summarize,
+            keep_turns=2,
+        )
+        return changed, core.history
+
+    changed, archived = asyncio.run(scenario())
+    assert changed is True
+    assert archived[:2] == [
+        {"role": "user", "content": PROFILE_SUMMARY_MARKER},
+        {"role": "assistant", "content": "事实摘要"},
+    ]
+    assert archived[2:] == history[4:]
+    assert "web_search" in captured[0]
+    assert '"query": "天气"' in captured[0]
+    assert '{"temperature": 20}' in captured[0]
+    assert "get_weather" not in captured[0]
+
+
+def test_profile_switch_archive_waits_for_tool_turn_boundary(
+    tmp_path: Path,
+) -> None:
+    key = SessionKey(
+        scene_type="group",
+        scene_id="group-boundary",
+        protocol="milky",
+        self_id="bot-1",
+    )
+    history = [
+        message
+        for index in range(8)
+        for message in (
+            {"role": "user", "content": f"user {index}"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call-{index}",
+                        "name": "lookup",
+                        "arguments": {"index": index},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": f"call-{index}",
+                "name": "lookup",
+                "content": f"result {index}",
+            },
+            {"role": "assistant", "content": f"done {index}"},
+        )
+    ]
+    store = ContextStore(tmp_path)
+
+    async def scenario():
+        await store.save_history(key, history)
+        core = AgentCore(
+            key,
+            role=AgentRole.MAIN,
+            providers=SimpleNamespace(),
+            tools=ToolRegistry(),
+            store=store,
+            model_resolver=lambda _key: "demo",
+            prompt_builder=lambda _specs: "system",
+        )
+        await core.ensure_loaded()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_active_tool_turn() -> None:
+            async with core._run_lock:
+                entered.set()
+                await release.wait()
+
+        holder = asyncio.create_task(hold_active_tool_turn())
+        await entered.wait()
+        archive = asyncio.create_task(
+            core.archive_for_profile_switch(
+                lambda _system, _text, _tokens: _async_value("事实摘要"),
+                keep_turns=6,
+            )
+        )
+        await asyncio.sleep(0.01)
+        waited = not archive.done()
+        release.set()
+        await asyncio.gather(holder, archive)
+        return waited, archive.result()
+
+    waited, changed = asyncio.run(scenario())
+    assert waited is True
+    assert changed is True
+
+
+def test_profile_switch_summary_chunks_are_merged(tmp_path: Path) -> None:
+    key = SessionKey(
+        scene_type="private",
+        scene_id="user-chunk",
+        protocol="milky",
+        self_id="bot-1",
+    )
+    history = [
+        message
+        for index in range(8)
+        for message in (
+            {"role": "user", "content": f"u{index}:" + "x" * 1200},
+            {"role": "assistant", "content": f"a{index}:" + "y" * 1200},
+        )
+    ]
+    store = ContextStore(tmp_path)
+    system_prompts: list[str] = []
+    summary_inputs: list[str] = []
+
+    async def scenario():
+        await store.save_history(key, history)
+        core = AgentCore(
+            key,
+            role=AgentRole.MAIN,
+            providers=SimpleNamespace(),
+            tools=ToolRegistry(),
+            store=store,
+            model_resolver=lambda _key: "demo",
+            prompt_builder=lambda _specs: "system",
+        )
+
+        async def summarize(system_prompt, text, max_tokens):
+            del max_tokens
+            system_prompts.append(system_prompt)
+            summary_inputs.append(text)
+            if system_prompt == PROFILE_SUMMARY_MERGE_SYSTEM:
+                return "合并后的状态"
+            return "分段摘要"
+
+        await core.archive_for_profile_switch(
+            summarize,
+            keep_turns=6,
+            summary_chunk_chars=2000,
+        )
+        return list(core.history)
+
+    archived = asyncio.run(scenario())
+    assert system_prompts.count(PROFILE_SUMMARY_SYSTEM) >= 2
+    assert system_prompts[-1] == PROFILE_SUMMARY_MERGE_SYSTEM
+    assert "新增分段摘要 1" in summary_inputs[-1]
+    assert archived[1]["content"] == "合并后的状态"
+
+
+def test_session_profile_switch_refreshes_loaded_contexts(
+    tmp_path: Path,
+) -> None:
+    profiles_path = tmp_path / "profiles.json"
+    profiles_path.write_text(
+        json.dumps(
+            {
+                "Alpha": {"prompt": "旧人设", "inject_master": True},
+                "Beta": {"prompt": "新人设", "inject_master": False},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    profiles = ProfileStore(profiles_path, active_name="Alpha")
+    store = ContextStore(tmp_path / "agent")
+    key = SessionKey(
+        scene_type="private",
+        scene_id="user-1",
+        protocol="milky",
+        self_id="bot-1",
+    )
+    history = [
+        message
+        for index in range(8)
+        for message in (
+            {"role": "user", "content": f"user {index}"},
+            {"role": "assistant", "content": f"assistant {index}"},
+        )
+    ]
+
+    class Providers:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def chat_request(self, model, request):
+            del model
+            self.calls.append(request.message)
+            return "新人设可继续使用的事实状态"
+
+    providers = Providers()
+    persisted: list[str] = []
+
+    async def scenario():
+        manager = AgentSessionManager(
+            store=store,
+            providers=providers,
+            tools=ToolRegistry(),
+            profiles=profiles,
+            model_resolver=lambda _key: "demo",
+            owner_ids=(),
+            profile_switch_summary=True,
+            profile_switch_keep_turns=6,
+            profile_switch_callback=persisted.append,
+        )
+        core = await manager.get_main(key)
+        core.history = history
+        await core.save()
+        result = await manager.switch_profile("Beta")
+        switch_state = store.load_profile_switch()
+        await manager.close()
+        return core, result, switch_state
+
+    core, result, switch_state = asyncio.run(scenario())
+    assert "Beta" in result
+    assert profiles.active_name == "Beta"
+    assert switch_state is not None
+    assert switch_state["profile"] == "Beta"
+    assert persisted == ["Beta"]
+    assert core.history[0]["content"] == PROFILE_SUMMARY_MARKER
+    assert core.history[1]["content"] == "新人设可继续使用的事实状态"
+    assert core.history[2:] == history[4:]
+    assert "user 1" in providers.calls[0]
+    assert "user 2" not in providers.calls[0]
+
+
+def test_profile_switch_lazily_archives_unloaded_context(
+    tmp_path: Path,
+) -> None:
+    profiles_path = tmp_path / "profiles.json"
+    profiles_path.write_text(
+        json.dumps(
+            {
+                "Alpha": {"prompt": "旧人设", "inject_master": True},
+                "Beta": {"prompt": "新人设", "inject_master": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    profiles = ProfileStore(profiles_path, active_name="Beta")
+    store = ContextStore(tmp_path / "agent")
+    key = SessionKey(
+        scene_type="group",
+        scene_id="group-2",
+        protocol="milky",
+        self_id="bot-1",
+    )
+    history = [
+        message
+        for index in range(8)
+        for message in (
+            {"role": "user", "content": f"old user {index}"},
+            {"role": "assistant", "content": f"old assistant {index}"},
+        )
+    ]
+
+    class Providers:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat_request(self, model, request):
+            del model, request
+            self.calls += 1
+            return "惰性归档摘要"
+
+    providers = Providers()
+
+    async def scenario():
+        await store.save_history(key, history)
+        await asyncio.sleep(0.02)
+        store.mark_profile_switch("Beta")
+        manager = AgentSessionManager(
+            store=store,
+            providers=providers,
+            tools=ToolRegistry(),
+            profiles=profiles,
+            model_resolver=lambda _key: "demo",
+            owner_ids=(),
+            profile_switch_summary=True,
+            profile_switch_keep_turns=6,
+        )
+        core = await manager.get_main(key)
+        pending_before = key in manager._profile_summary_pending
+        calls_before = providers.calls
+        await manager.prepare_main(core)
+        archived = list(core.history)
+        await manager.close()
+        return pending_before, calls_before, archived
+
+    pending, calls_before, archived = asyncio.run(scenario())
+    assert pending is True
+    assert calls_before == 0
+    assert providers.calls == 1
+    assert archived[0]["content"] == PROFILE_SUMMARY_MARKER
+    assert archived[1]["content"] == "惰性归档摘要"
+    assert archived[2:] == history[4:]
+
+
+def test_model_config_accepts_case_insensitive_keys(tmp_path: Path) -> None:
+    path = tmp_path / "lowercase.ai.json"
+    path.write_text(
+        json.dumps(
+            {
+                "friendlyname": "Lowercase model",
+                "model": "deepseek-flash",
+                "apikey": "test-key",
+                "responsetype": "OpenAI Responses",
+                "baseurl": "https://lower.example/v1",
+                "temperature": 0.3,
+                "toolsenabled": "false",
+                "systempromptmode": "user",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_model_config(path)
+    assert config.friendly_name == "Lowercase model"
+    assert config.provider == "openai_responses"
+    assert config.model == "deepseek-flash"
+    assert config.base_url == "https://lower.example/v1"
+    assert config.temperature == 0.3
+    assert config.tools_enabled == "disabled"
+    assert config.system_prompt_mode == "user"
+
+    path.write_text(
+        json.dumps(
+            {
+                "FriendlyName": "Exact key model",
+                "Model": "deepseek-flash",
+                "ApiKey": "test-key",
+                "ResponseType": "OpenAI Responses",
+                "BaseUrl": "https://exact.example/v1",
+                "baseurl": "https://lower.example/v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_model_config(path).base_url == "https://exact.example/v1"
 
 
 def test_collector_compresses_and_preserves_recent_events() -> None:
@@ -435,3 +955,21 @@ def test_legacy_context_import_is_one_time(tmp_path: Path) -> None:
         self_id="bot-1",
     )
     assert len(asyncio.run(store.load_history(key))) == 2
+
+
+def test_deterministic_provider_errors_are_not_retried() -> None:
+    assert not _retryable_provider_error(
+        ProviderRequestError(
+            "responses request failed for model 'demo' (HTTP 401, AuthenticationError)"
+        )
+    )
+    assert not _retryable_provider_error(
+        ProviderRequestError(
+            "chat request failed for model 'demo' (HTTP 404, NotFoundError)"
+        )
+    )
+    assert _retryable_provider_error(
+        ProviderRequestError(
+            "chat request failed for model 'demo' (APIConnectionError)"
+        )
+    )
