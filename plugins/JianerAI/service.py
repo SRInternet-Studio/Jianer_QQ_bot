@@ -14,7 +14,7 @@ import socket
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -40,6 +40,25 @@ from plugins.JianerAI.agent import (
     AgentOptions,
     AgentKernel,
 )
+from plugins.JianerAI.agent_runtime.facade import AgentFacade
+from plugins.JianerAI.agent_runtime.api_profiles import ApiModelManager
+from plugins.JianerAI.agent_runtime.context_tools import (
+    CONTEXT_TOOL_NAMES,
+    context_tools,
+)
+from plugins.JianerAI.agent_runtime.bootstrap import import_legacy_contexts
+from plugins.JianerAI.agent_runtime.content_store import (
+    ContentStore,
+    content_tools,
+)
+from plugins.JianerAI.agent_runtime.models import SessionKey
+from plugins.JianerAI.agent_runtime.profiles import ProfileStore
+from plugins.JianerAI.agent_runtime.sessions import AgentSessionManager
+from plugins.JianerAI.agent_runtime.store import ContextStore
+from plugins.JianerAI.agent_runtime.subagents import (
+    SubAgentManager,
+    subagent_tools,
+)
 from plugins.JianerAI.memory import JianerMemoryStore
 from plugins.JianerAI.memory_context import (
     MemoryContextProvider,
@@ -61,11 +80,6 @@ from plugins.JianerAI.presets import (
     PresetError,
     PresetStore,
     UnknownPresetError,
-)
-from plugins.JianerAI.persona import (
-    PersonaError,
-    PersonaGenerator,
-    PersonaProfile,
 )
 from plugins.JianerAI.providers import (
     GeminiThoughtSignatureError,
@@ -95,11 +109,6 @@ from plugins.JianerAI.tools import (
     ToolRisk,
     register_builtin_tools,
     register_platform_api_tools,
-)
-from plugins.JianerAI.tools.subagent import (
-    SubAgentRegistry,
-    list_subagents_tool,
-    subagent_tool,
 )
 from plugins.JianerAI.tools.web_browser import BrowserOptions
 from plugins.JianerAI.tools.agent_skills import AgentSkillManager
@@ -354,6 +363,16 @@ class RuntimeOptions:
     agent_bash_enabled: bool = True
     agent_bash_approval_timeout_seconds: float = 120.0
     agent_bash_command_timeout_seconds: float = 60.0
+    agent_heartbeat: bool = False
+    agent_collector_max_buffer: int = 80
+    agent_collector_keep_after_compress: int = 60
+    agent_collector_max_summary_chars: int = 8000
+    agent_core_idle_hours: float = 12.0
+    agent_max_history_chars: int = 60000
+    agent_sys_request_timeout: float = 300.0
+    agent_stop_perm: str = "any_admin"
+    agent_stop_open_after: float = 10.0
+    agent_max_concurrency: int = 0
 
     def __post_init__(self) -> None:
         moderation_model = str(
@@ -723,6 +742,45 @@ class RuntimeOptions:
                 1.0,
                 min(300.0, float(others.get("agent_bash_command_timeout_seconds", 60))),
             ),
+            agent_heartbeat=_runtime_bool(
+                others.get("agent_heartbeat", False),
+                default=False,
+            ),
+            agent_collector_max_buffer=max(
+                2,
+                int(others.get("agent_collector_max_buffer", 80)),
+            ),
+            agent_collector_keep_after_compress=max(
+                1,
+                int(others.get("agent_collector_keep_after_compress", 60)),
+            ),
+            agent_collector_max_summary_chars=max(
+                512,
+                int(others.get("agent_collector_max_summary_chars", 8000)),
+            ),
+            agent_core_idle_hours=max(
+                1.0,
+                float(others.get("agent_core_idle_hours", 12.0)),
+            ),
+            agent_max_history_chars=max(
+                1000,
+                int(others.get("agent_max_history_chars", 60000)),
+            ),
+            agent_sys_request_timeout=max(
+                5.0,
+                float(others.get("agent_sys_request_timeout", 300.0)),
+            ),
+            agent_stop_perm=str(
+                others.get("agent_stop_perm") or "any_admin"
+            ).strip(),
+            agent_stop_open_after=max(
+                0.1,
+                float(others.get("agent_stop_open_after", 10.0)),
+            ),
+            agent_max_concurrency=max(
+                0,
+                int(others.get("agent_max_concurrency", 0)),
+            ),
         )
 
 
@@ -812,7 +870,7 @@ class ConversationScope:
         )
 
 
-class AgentSessionManager:
+class LegacyAgentSessionManager:
     """Own conversation workers for one plugin reload generation."""
 
     def __init__(self) -> None:
@@ -890,6 +948,114 @@ class MessageSink:
         return await self.send(**kwargs)
 
 
+class HypeRMessageSink:
+    """Outbound pipeline for HypeR tools.
+
+    It keeps the existing suffix, moderation and TTS features while exposing
+    the small ``send`` contract expected by ToolSpec handlers.
+    """
+
+    def __init__(
+        self,
+        service: "JianerAIService",
+        event: Any,
+        actions: Any,
+        key: ConversationKey,
+        canonical: str,
+    ) -> None:
+        self.service = service
+        self.event = event
+        self.actions = actions
+        self.key = key
+        self.canonical = canonical
+        self.visible_texts: list[str] = []
+        self.finalized = False
+
+    async def send(
+        self,
+        text: str,
+        *,
+        at_user_ids: Sequence[str] = (),
+        reply_to_message_id: str | None = None,
+        source: str = "agent",
+        **kwargs: Any,
+    ) -> list[str]:
+        image_urls = tuple(
+            str(item)
+            for item in (kwargs.get("image_urls") or ())
+            if str(item).strip()
+        )
+        target = kwargs.get("target")
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        processed = await asyncio.to_thread(
+            self.service.suffixes.apply_ai_reply,
+            raw,
+            self.canonical,
+        )
+        processed = self.service._plain_text_reply(processed)
+        if not processed:
+            return []
+        if self.service.options.content_moderation_ai_reply_enabled:
+            blocked = await self.service._moderate_ai_reply_and_maybe_refuse(
+                self.event,
+                self.actions,
+                self.key,
+                reply=processed,
+                user_request=raw,
+                persona=self.service._render_persona(
+                    self.key.preset,
+                    self.event,
+                    self.canonical,
+                ),
+                history=tuple(
+                    self.service._histories.get(self.key, ())
+                ),
+            )
+            if blocked:
+                return []
+        if image_urls or target:
+            await MessageSink(
+                self.service,
+                self.event,
+                self.actions,
+            ).send(
+                processed,
+                at_user_ids=at_user_ids,
+                reply_to_message_id=reply_to_message_id,
+                image_urls=image_urls,
+                target=target,
+            )
+        else:
+            await self.service._send_ai_text(
+                self.event,
+                self.actions,
+                processed,
+                reply=source != "collected_send",
+                at_user_ids=at_user_ids,
+            )
+        self.visible_texts.append(processed)
+        return []
+
+    async def send_message(self, **kwargs: Any) -> Any:
+        return await self.send(**kwargs)
+
+    async def finalize(self) -> None:
+        if self.finalized:
+            return
+        self.finalized = True
+        if (
+            self.visible_texts
+            and self.service._tts_for(self.key)
+        ):
+            await self.service._send_speech(
+                self.event,
+                self.actions,
+                "\n".join(self.visible_texts),
+            )
+
+
 class _ProgressObserver(AgentObserver):
     """Streams intermediate assistant text as standalone chat messages."""
 
@@ -961,7 +1127,7 @@ class JianerAIService:
         moderator: ContentModerator | None = None,
         memory: JianerMemoryStore | None = None,
         presets: PresetStore | None = None,
-        persona_generator: PersonaGenerator | None = None,
+        persona_generator: Any | None = None,
         speech: SpeechSynthesizer | None = None,
         suffixes: SuffixStore | None = None,
         tools: ToolRegistry | None = None,
@@ -1072,17 +1238,7 @@ class JianerAIService:
             options.project_root / "prerequisites" / "current.json",
             options.project_root / "prerequisites",
         )
-        self.persona_generator = persona_generator or PersonaGenerator(
-            self.providers,
-            logger=self._logger,
-        )
-        ensure_partition = getattr(
-            self.memory, "ensure_persona_partition", None
-        )
-        list_presets = getattr(self.presets, "list_presets", None)
-        if callable(ensure_partition) and callable(list_presets):
-            for preset in list_presets():
-                ensure_partition(str(preset.key))
+        self.persona_generator = persona_generator
         self.speech = speech or SpeechSynthesizer(
             temp_parent=options.project_root / "temps"
         )
@@ -1099,7 +1255,6 @@ class JianerAIService:
             approval_timeout_seconds=options.agent_bash_approval_timeout_seconds,
             command_timeout_seconds=options.agent_bash_command_timeout_seconds,
         )
-        self.subagent_registry = SubAgentRegistry()
         allowed_risks = {
             ToolRisk.READ_ONLY,
             ToolRisk.PRESENTATION,
@@ -1108,7 +1263,18 @@ class JianerAIService:
         if options.agent_browser_enabled:
             allowed_risks.add(ToolRisk.PRIVILEGED)
         explicitly_allowed = options.agent_allowed_tools or frozenset()
-        mutating_tool_names = BUILTIN_MUTATING_TOOL_NAMES | explicitly_allowed
+        mutating_tool_names = (
+            BUILTIN_MUTATING_TOOL_NAMES
+            | explicitly_allowed
+            | CONTEXT_TOOL_NAMES
+            | frozenset(
+                {
+                    "sub_create",
+                    "sub_destroy",
+                    "sub_feed",
+                }
+            )
+        )
         if options.agent_bash_enabled:
             mutating_tool_names |= frozenset({"bash"})
         self.tools = tools or ToolRegistry(
@@ -1157,30 +1323,6 @@ class JianerAIService:
             self.tools.register_plugin(
                 StaticToolPlugin("jianerbot-tool-platform-api", platform_source.specs)
             )
-        if options.agent_subagent_enabled:
-            subagent_spec = subagent_tool(
-                providers=self.providers,
-                tools=self.tools,
-                logger=self._logger,
-                model_resolver=lambda context: str(
-                    getattr(context, "model", "") or ""
-                ),
-                parent_allowed_names=(
-                    options.agent_subagent_allowed_tools
-                    or options.agent_allowed_tools
-                ),
-                max_concurrency=options.agent_subagent_max_concurrency,
-                default_timeout_seconds=options.agent_subagent_timeout_seconds,
-                can_send_message=options.agent_subagent_can_send_message,
-                can_mutate=options.agent_subagent_can_mutate,
-                registry=self.subagent_registry,
-            )
-            self.tools.register_plugin(
-                StaticToolPlugin(
-                    "jianerbot-tool-subagent",
-                    (subagent_spec, list_subagents_tool(self.subagent_registry)),
-                )
-            )
         if options.agent_skills_enabled:
             self.tools.register_plugin(
                 self.agent_skills,
@@ -1204,6 +1346,118 @@ class JianerAIService:
             allowed_tool_names=options.agent_allowed_tools,
             logger=self._logger,
         )
+        agent_data_root = options.project_root / "data" / "jianer_ai"
+        configured_profile = ""
+        runtime_config = self.runtime.get("config")
+        runtime_others = getattr(runtime_config, "others", None)
+        if isinstance(runtime_others, Mapping):
+            configured_profile = str(
+                runtime_others.get("agent_profile") or ""
+            ).strip()
+        if not configured_profile:
+            try:
+                configured_profile = self.presets.get_default().key
+            except Exception:
+                configured_profile = "default"
+        configured_api = ""
+        if isinstance(runtime_others, Mapping):
+            configured_api = str(
+                runtime_others.get("agent_api_profile") or ""
+            ).strip()
+        self.agent_api = ApiModelManager(
+            self.providers,
+            default_model=options.default_model,
+            active_model=configured_api,
+        )
+        self.agent_profiles = ProfileStore(
+            agent_data_root / "profiles.json",
+            legacy_metadata=options.project_root / "prerequisites" / "current.json",
+            active_name=configured_profile,
+        )
+        ensure_partition = getattr(
+            self.memory, "ensure_persona_partition", None
+        )
+        if callable(ensure_partition):
+            for profile_name in self.agent_profiles.list():
+                try:
+                    ensure_partition(str(profile_name))
+                except Exception:
+                    self._log_exception(
+                        f"JianerAI memory partition init failed: {profile_name}"
+                    )
+        self.agent_context_store = ContextStore(agent_data_root / "agent")
+        self.agent_content_store = ContentStore(
+            agent_data_root / "agent" / "content"
+        )
+        self.tools.set_content_store(self.agent_content_store)
+        for spec in content_tools(self.agent_content_store):
+            self.tools.register(spec)
+        self.agent_sessions = AgentSessionManager(
+            store=self.agent_context_store,
+            providers=self.providers,
+            tools=self.tools,
+            profiles=self.agent_profiles,
+            model_resolver=self._agent_model_for_key,
+            owner_ids=tuple(
+                str(item)
+                for item in (getattr(runtime_config, "owner", None) or ())
+            ),
+            bot_name=options.bot_name,
+            bot_name_en=options.bot_name_en,
+            allowed_tool_names=options.agent_allowed_tools,
+            total_timeout_seconds=600.0,
+            max_history_chars=options.agent_max_history_chars,
+            idle_seconds=options.agent_core_idle_hours * 3600.0,
+            system_request_timeout=options.agent_sys_request_timeout,
+            logger=self._logger,
+        )
+        for spec in context_tools(self.agent_sessions, self.agent_profiles):
+            self.tools.register(spec)
+        self.agent_subagents = SubAgentManager(
+            root=agent_data_root / "agent" / "subagents",
+            providers=self.providers,
+            tools=self.tools,
+            model_resolver=self._agent_model_for_key,
+            logger=self._logger,
+        )
+        if options.agent_subagent_enabled:
+            for spec in subagent_tools(self.agent_subagents):
+                self.tools.register(spec)
+        config_path = options.project_root / "config.json"
+        self.tools.set_disabled_state_path(config_path)
+        self.agent_facade = AgentFacade(
+            sessions=self.agent_sessions,
+            profiles=self.agent_profiles,
+            reminder=options.reminder,
+            owner_ids=tuple(
+                str(item)
+                for item in (getattr(runtime_config, "owner", None) or ())
+            ),
+            config_path=config_path,
+            build_context=self._build_hyper_context,
+            after_run=self._after_hyper_run,
+            reply=self._reply_agent_command,
+            model_manager=self.agent_api,
+            tools=self.tools,
+            collector_max_buffer=options.agent_collector_max_buffer,
+            collector_keep_after_compress=(
+                options.agent_collector_keep_after_compress
+            ),
+            collector_max_summary_chars=(
+                options.agent_collector_max_summary_chars
+            ),
+            stop_permission=options.agent_stop_perm,
+            stop_open_after=options.agent_stop_open_after,
+            max_concurrency=options.agent_max_concurrency,
+            take_notices=self.agent_subagents.take_reports,
+            logger=self._logger,
+        )
+        self.agent_facade.migrate_legacy_whitelist(
+            protocol=str(getattr(runtime_config, "protocol", "") or ""),
+            self_id=str(getattr(runtime_config, "uin", "") or ""),
+        )
+        self._hyper_sinks: dict[SessionKey, HypeRMessageSink] = {}
+        self._agent_bootstrap_complete = False
         self._active_presets: dict[ConversationBase, str] = {}
         self._preset_locks: dict[ConversationBase, asyncio.Lock] = {}
         self._models: dict[ConversationKey, str] = {}
@@ -1213,7 +1467,7 @@ class JianerAIService:
         self._history_revisions: dict[ConversationKey, int] = {}
         self._session_locks: dict[ConversationKey, asyncio.Lock] = {}
         self._dialogue_sessions: dict[ConversationKey, ConversationSession] = {}
-        self.session_manager = AgentSessionManager()
+        self.session_manager = LegacyAgentSessionManager()
         self.memory_context_provider = MemoryContextProvider(
             self.memory,
             topk=options.memory_topk,
@@ -1292,6 +1546,24 @@ class JianerAIService:
         if self._is_blocked_group(event):
             return
         await self._ensure_started()
+        text = self._event_text(event)
+        if not str(text or "").strip().startswith(self.options.reminder):
+            try:
+                if await self._moderate_hyper_input(event, actions, text):
+                    self.agent_facade.mark_seen(event)
+                    return
+            except Exception:
+                self._log_exception("JianerAI HypeR input moderation failed")
+                self.agent_facade.mark_seen(event)
+                return
+        try:
+            await self.agent_facade.observe(
+                event,
+                actions,
+                text=text,
+            )
+        except Exception:
+            self._log_exception("JianerAI HypeR Agent observe failed")
         try:
             base = self._conversation_base(event, actions)
             preset_key = await self._preset_for(event, actions, base)
@@ -1328,6 +1600,15 @@ class JianerAIService:
         if self._closed or not self._is_message_event(event):
             return False
         await self._ensure_started()
+        try:
+            return await self.agent_facade.fallback(
+                event,
+                actions,
+                text=self._event_text(event),
+            )
+        except Exception:
+            self._log_exception("JianerAI HypeR Agent fallback failed")
+            return False
         base = self._conversation_base(event, actions)
         raw_text = self._event_text(event)
         is_group = base.kind is ConversationKind.GROUP
@@ -1403,6 +1684,303 @@ class JianerAIService:
         else:
             await dialogue
         return True
+
+    def _agent_model_for_key(self, key: SessionKey) -> str:
+        if self.agent_api.active:
+            return self.agent_api.active
+        conversation = ConversationKey(
+            protocol=key.protocol,
+            self_id=key.self_id,
+            kind=(
+                ConversationKind.GROUP
+                if key.scene_type == "group"
+                else ConversationKind.PRIVATE
+            ),
+            conversation_id=key.scene_id,
+            preset=self.agent_profiles.active_name or "default",
+        )
+        return self._model_for(conversation)
+
+    async def _moderate_hyper_input(
+        self,
+        event: Any,
+        actions: Any,
+        text: str,
+    ) -> bool:
+        if not self.options.content_moderation_enabled:
+            return False
+        session_key = AgentFacade.session_key(event)
+        if session_key.scene_type == "group":
+            whitelist = self.agent_facade.group_whitelist(session_key)
+            if not whitelist and not bool(
+                getattr(event, "is_mentioned", False)
+            ):
+                return False
+        key = ConversationKey(
+            protocol=session_key.protocol,
+            self_id=session_key.self_id,
+            kind=(
+                ConversationKind.GROUP
+                if session_key.scene_type == "group"
+                else ConversationKind.PRIVATE
+            ),
+            conversation_id=session_key.scene_id,
+            preset=self.agent_profiles.active_name or "default",
+        )
+        with self._state_lock:
+            history = tuple(self._histories.get(key, ()))
+        attachments: tuple[MediaAttachment, ...] = ()
+        try:
+            _, attachments = await self._resolve_inputs(event, actions, key)
+        except Exception:
+            attachments = ()
+        return await self._moderate_and_maybe_refuse(
+            event,
+            actions,
+            key,
+            message=str(text or ""),
+            persona=self.agent_profiles.current().prompt,
+            history=history,
+            attachments=attachments,
+        )
+
+    async def _build_hyper_context(
+        self,
+        key: SessionKey,
+        event: Any,
+        actions: Any,
+        batch: Sequence[Mapping[str, Any]],
+        principal: str,
+    ) -> ToolContext:
+        conversation = ConversationKey(
+            protocol=key.protocol,
+            self_id=key.self_id,
+            kind=(
+                ConversationKind.GROUP
+                if key.scene_type == "group"
+                else ConversationKind.PRIVATE
+            ),
+            conversation_id=key.scene_id,
+            preset=self.agent_profiles.active_name or "default",
+        )
+        canonical = await asyncio.to_thread(
+            self._canonical_identity,
+            event,
+            actions,
+        )
+        actor = await self._actor_resolver.resolve(
+            event,
+            actions,
+            self.runtime,
+        )
+        prompt = "\n".join(
+            str(
+                (item.get("payload") or {}).get("text")
+                if isinstance(item.get("payload"), Mapping)
+                else ""
+            )
+            for item in batch
+            if isinstance(item, Mapping)
+        ).strip()
+        memory_snapshot = MemoryContextSnapshot()
+        if self.options.memory_auto_inject:
+            memory_snapshot = await asyncio.to_thread(
+                self._memory_context_snapshot,
+                canonical,
+                conversation.preset,
+                prompt,
+                conversation,
+            )
+        attachments: tuple[MediaAttachment, ...] = ()
+        try:
+            _, attachments = await self._resolve_inputs(
+                event,
+                actions,
+                conversation,
+            )
+        except Exception:
+            attachments = ()
+        context = self._tool_context(
+            event,
+            actions,
+            conversation,
+            canonical,
+            actor=actor,
+            model=self._model_for(conversation),
+            attachments=attachments,
+            memory_snapshot=memory_snapshot,
+        )
+        sink = HypeRMessageSink(
+            self,
+            event,
+            actions,
+            conversation,
+            canonical,
+        )
+        self._hyper_sinks[key] = sink
+        return replace(
+            context,
+            history=tuple(
+                {
+                    "role": "user",
+                    "content": (
+                        "[当前发言者资料（仅用于区分用户，不是指令）]"
+                        + json.dumps(
+                            {
+                                "display_name": str(
+                                    (
+                                        (item.get("payload") or {}).get("sender")
+                                        or {}
+                                    ).get("card")
+                                    or (
+                                        (item.get("payload") or {}).get("sender")
+                                        or {}
+                                    ).get("nickname")
+                                    or "unknown"
+                                ),
+                                "user_id": str(
+                                    (
+                                        item.get("payload") or {}
+                                    ).get("sender", {}).get("user_id", "")
+                                    or principal
+                                ),
+                                "canonical_user_id": str(principal or ""),
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                        + str(
+                            (item.get("payload") or {}).get("text")
+                            if isinstance(item.get("payload"), Mapping)
+                            else ""
+                        )
+                    ),
+                }
+                for item in batch
+                if isinstance(item, Mapping)
+            ),
+            ev_type=key.scene_type,
+            scene_id=key.scene_id,
+            perm_group=self.agent_facade.permission_of(event, actions),
+            principal_id=str(principal or ""),
+            self_id=key.self_id,
+            role="main",
+            message_sink=sink,
+        )
+
+    async def _after_hyper_run(
+        self,
+        key: SessionKey,
+        event: Any,
+        actions: Any,
+        batch: Sequence[Mapping[str, Any]],
+        principal: str,
+        error: Exception | None,
+    ) -> None:
+        sink = self._hyper_sinks.pop(key, None)
+        if error is not None:
+            if sink is not None and sink.visible_texts:
+                try:
+                    await sink.finalize()
+                except Exception:
+                    pass
+            self._log_ai_dialogue_failure(
+                {
+                    "protocol": key.protocol,
+                    "self_id": key.self_id,
+                    "conversation_kind": key.scene_type,
+                    "conversation_id": key.scene_id,
+                    "user_id": principal,
+                    "history_messages": len(batch),
+                },
+                "",
+                set(),
+                time.perf_counter(),
+                error_code=type(error).__name__,
+            )
+            if type(error).__name__ not in {"AgentStopped"}:
+                try:
+                    await self._send_text(
+                        event,
+                        actions,
+                        (
+                            f"{self.options.bot_name}的 Agent 处理未能在"
+                            "安全限制内完成，请稍后再试。"
+                        ),
+                        reply=True,
+                    )
+                except Exception:
+                    pass
+            return
+        if sink is None or not sink.visible_texts:
+            return
+        try:
+            await sink.finalize()
+            conversation = sink.key
+            user_text = "\n".join(
+                str(
+                    (item.get("payload") or {}).get("text")
+                    if isinstance(item.get("payload"), Mapping)
+                    else ""
+                )
+                for item in batch
+                if isinstance(item, Mapping)
+            ).strip()
+            assistant_text = "\n".join(sink.visible_texts).strip()
+            if not user_text or not assistant_text:
+                return
+            sent_at = max(int(time.time()), self._event_timestamp(event))
+            base = ConversationBase(
+                protocol=conversation.protocol,
+                self_id=conversation.self_id,
+                kind=conversation.kind,
+                conversation_id=conversation.conversation_id,
+            )
+            exchange_key = self._stable_message_id(
+                event,
+                base,
+                user_text,
+            )
+            await asyncio.to_thread(
+                self._record_outgoing_transcript,
+                conversation,
+                exchange_key,
+                assistant_text,
+                sent_at,
+            )
+            review_enabled = self._memory_review_context_authorized()
+            episode = await asyncio.to_thread(
+                self._record_conversation_episode,
+                event,
+                conversation,
+                sink.canonical,
+                user_text,
+                assistant_text,
+                exchange_id=exchange_key,
+                occurred_at=sent_at,
+                queue_review=review_enabled,
+            )
+            if episode is not None and review_enabled:
+                self._schedule_memory_review(
+                    conversation.preset,
+                    exchange_key,
+                )
+        except Exception:
+            self._log_exception("JianerAI HypeR Agent post-processing failed")
+
+    async def _reply_agent_command(
+        self,
+        event: Any,
+        actions: Any,
+        text: str,
+    ) -> None:
+        await self._send_text(
+            event,
+            actions,
+            text,
+            reply=True,
+        )
 
     def _session_for(self, key: ConversationKey) -> ConversationSession:
         session = self.session_manager.get_or_create(key)
@@ -1550,13 +2128,12 @@ class JianerAIService:
         )
 
     async def show_model_menu(self, event: Any, actions: Any) -> bool:
-        key = await self._conversation_key(event, actions)
-        current = self._model_for(key)
+        current = self.agent_api.active
         models = self.providers.list_models()
         lines = [
             f"{self.options.bot_name} {self.options.bot_name_en} - AI管理菜单",
             "————————————————————",
-            f"当前会话模型: {models.get(current, current)} ({current})",
+            f"当前全局 Agent 模型: {models.get(current, current)} ({current})",
             "",
             "可用AI:",
         ]
@@ -1567,7 +2144,7 @@ class JianerAIService:
         lines.extend(
             [
                 "",
-                f"{self.options.reminder}切换AI [代码] —> 切换当前会话并清空短期上下文",
+                f"{self.options.reminder}切换AI [代码] —> 切换全局 Agent 模型",
             ]
         )
         await self._send_text(event, actions, "\n".join(lines), reply=False)
@@ -1576,11 +2153,15 @@ class JianerAIService:
     async def switch_model(
         self, event: Any, actions: Any, model: str
     ) -> bool:
-        key = await self._conversation_key(event, actions)
         normalized = str(model or "").strip()
         try:
+            normalized = self.agent_api.activate(normalized)
             config = self.providers.get(normalized)
-        except UnknownModelError:
+            self.agent_facade._persist_agent_setting(
+                "agent_api_profile",
+                normalized,
+            )
+        except Exception:
             await self._send_text(
                 event,
                 actions,
@@ -1588,21 +2169,25 @@ class JianerAIService:
                 reply=False,
             )
             return True
-        lock = self._session_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            with self._state_lock:
-                self._models[key] = normalized
-                self._clear_history_locked(key)
-            await self._persist_session(key)
         await self._send_text(
             event,
             actions,
-            f"已将当前会话切换到AI: {config.friendly_name} ({normalized})；短期上下文已清空。",
+            f"已将全局 Agent 切换到: {config.friendly_name} ({normalized})。",
             reply=False,
         )
         return True
 
     async def show_persona_menu(self, event: Any, actions: Any) -> bool:
+        lines = [
+            f"{self.options.bot_name} 全局人设",
+            f"当前：{self.agent_profiles.active_name}",
+            "可用：" + ", ".join(self.agent_profiles.list()),
+            f"切换：{self.options.reminder}切换角色 [名称]",
+            f"添加：{self.options.reminder}添加预设 [名称] [简介] : [角色内容]",
+        ]
+        await self._send_text(event, actions, "\n".join(lines), reply=False)
+        return True
+
         await asyncio.to_thread(self.presets.reload)
         key = await self._conversation_key(event, actions)
         lines = [
@@ -1629,6 +2214,19 @@ class JianerAIService:
     async def switch_persona(
         self, event: Any, actions: Any, name: str
     ) -> bool:
+        try:
+            result = await self.agent_sessions.switch_profile(
+                str(name or "").strip()
+            )
+            self.agent_facade._persist_agent_setting(
+                "agent_profile",
+                str(name or "").strip(),
+            )
+        except Exception:
+            result = "找不到该全局人设。"
+        await self._send_text(event, actions, result, reply=False)
+        return True
+
         try:
             # Presets may be edited outside the running process. Reload on an
             # explicit switch so the selected template is the current file,
@@ -1672,6 +2270,18 @@ class JianerAIService:
             )
             return True
         name, info, template = match.groups()
+        try:
+            await asyncio.to_thread(
+                self.agent_profiles.upsert,
+                str(name).strip(),
+                str(template).strip(),
+            )
+            text = f"已保存全局人设：{str(name).strip()}"
+        except Exception:
+            text = "人设保存失败。"
+        await self._send_text(event, actions, text, reply=False)
+        return True
+
         existing = self._find_preset(name)
         key = (
             existing.key
@@ -1755,6 +2365,20 @@ class JianerAIService:
         try:
             await asyncio.to_thread(self.presets.reload)
             preset = self.presets.get(str(name or "").strip())
+            await asyncio.to_thread(
+                self.agent_profiles.upsert,
+                preset.key,
+                preset.template,
+            )
+            text = f"已从原始人设重新加载「{preset.name}」。"
+        except Exception:
+            text = "找不到该角色预设。"
+        await self._send_text(event, actions, text, reply=False)
+        return True
+
+        try:
+            await asyncio.to_thread(self.presets.reload)
+            preset = self.presets.get(str(name or "").strip())
         except (PresetError, UnknownPresetError):
             await self._send_text(event, actions, "找不到该角色预设。", reply=False)
             return True
@@ -1801,6 +2425,16 @@ class JianerAIService:
         if not self._is_admin(event):
             await self._send_confused(event, actions)
             return True
+        imported = await asyncio.to_thread(self.agent_profiles.bootstrap_legacy)
+        await asyncio.to_thread(self.agent_profiles.save)
+        await self._send_text(
+            event,
+            actions,
+            f"已从原始模板导入 {len(imported)} 个全局人设。",
+            reply=False,
+        )
+        return True
+
         await asyncio.to_thread(self.presets.reload)
         presets = self.presets.list_presets()
         await self._send_text(
@@ -1852,6 +2486,21 @@ class JianerAIService:
         if not self._is_admin(event):
             await self._send_confused(event, actions)
             return True
+        try:
+            deleted = await asyncio.to_thread(
+                self.agent_profiles.remove,
+                str(name or "").strip(),
+            )
+            text = (
+                f"已删除预设: {str(name).strip()}"
+                if deleted
+                else "无法删除该预设。"
+            )
+        except Exception:
+            text = "无法删除当前正在使用的人设。"
+        await self._send_text(event, actions, text, reply=False)
+        return True
+
         try:
             preset = self.presets.get(str(name or "").strip())
             deleted = await asyncio.to_thread(
@@ -2008,8 +2657,65 @@ class JianerAIService:
         actions: Any,
         state: str,
     ) -> bool:
-        key = await self._conversation_key(event, actions)
+        session_key = AgentFacade.session_key(event)
         normalized = str(state or "status").strip().casefold()
+        if normalized in _TRUE_WORDS | _FALSE_WORDS:
+            if session_key.scene_type != "group":
+                text = "私聊自动处理始终开启，无需白名单。"
+            else:
+                user_id = str(getattr(event, "user_id", "") or "")
+                self.agent_facade.set_whitelisted(
+                    session_key,
+                    user_id,
+                    normalized in _TRUE_WORDS,
+                )
+                text = (
+                    "已将你加入当前群的 Agent 白名单。"
+                    if normalized in _TRUE_WORDS
+                    else "已将你移出当前群的 Agent 白名单。"
+                )
+            await self._send_text(event, actions, text, reply=False)
+            return True
+        if normalized in _STATUS_WORDS | {"auto", "自动", "默认", ""}:
+            await self._send_text(
+                event,
+                actions,
+                self.agent_facade.command_help(session_key),
+                reply=False,
+            )
+            return True
+        if normalized in {"子代理", "subagent", "subagents", "sub-agent"}:
+            await self._send_text(
+                event,
+                actions,
+                self.agent_subagents.list(),
+                reply=False,
+            )
+            return True
+        if normalized in {"tools", "工具"}:
+            names = [spec.name for spec in self.tools.available(
+                replace(
+                    self._tool_context(
+                        event,
+                        actions,
+                        await self._conversation_key(event, actions),
+                        await asyncio.to_thread(
+                            self._canonical_identity, event, actions
+                        ),
+                        model=self.agent_api.active,
+                    ),
+                    role="main",
+                    ev_type=session_key.scene_type,
+                )
+            )]
+            await self._send_text(
+                event,
+                actions,
+                "当前 Agent 工具：\n" + "\n".join(f"- {name}" for name in names),
+                reply=False,
+            )
+            return True
+        key = await self._conversation_key(event, actions)
         if normalized in {
             "tools",
             "工具",
@@ -2157,6 +2863,9 @@ class JianerAIService:
         return True
 
     async def clear_context(self, event: Any, actions: Any) -> bool:
+        session_key = AgentFacade.session_key(event)
+        core = await self.agent_sessions.get_main(session_key)
+        await core.clear()
         key = await self._conversation_key(event, actions)
         lock = self._session_locks.setdefault(key, asyncio.Lock())
         async with lock:
@@ -2327,6 +3036,9 @@ class JianerAIService:
         async with self._start_lock:
             if self._closed:
                 return
+            await self.agent_facade.close()
+            await self.agent_subagents.close()
+            self._hyper_sinks.clear()
             console_thread, self._memory_console_thread = self._memory_console_thread, None
             if console_thread is not None:
                 stop_console = getattr(console_thread, "stop", None)
@@ -2338,7 +3050,6 @@ class JianerAIService:
                         raise
             self._closed = True
         self.shell_approvals.close()
-        self.subagent_registry.clear()
         task, self._maintenance_task = self._maintenance_task, None
         if task is not None:
             task.cancel()
@@ -3908,7 +4619,7 @@ class JianerAIService:
         event: Any,
         actions: Any,
         preset: Preset,
-    ) -> PersonaProfile | None:
+    ) -> Any | None:
         model = await self._persona_generation_model_for(event, actions)
         if not model:
             self._log_info("JianerAI persona generation has no available model")
@@ -3920,7 +4631,7 @@ class JianerAIService:
                 source_name=preset.name,
                 info=preset.info,
             )
-        except (PersonaError, ProviderError) as exc:
+        except ProviderError as exc:
             self._log_info(
                 f"JianerAI persona generation failed for {preset.key}: "
                 f"{type(exc).__name__}"
@@ -5159,6 +5870,26 @@ class JianerAIService:
         if not self._closed and state_of(manager) == "active":
             await self._load_external_agent_tools(manager)
             await self._ensure_started()
+            if not self._agent_bootstrap_complete:
+                self._agent_bootstrap_complete = True
+                try:
+                    await import_legacy_contexts(
+                        self.memory,
+                        self.agent_context_store,
+                        marker=(
+                            self.options.project_root
+                            / "data"
+                            / "jianer_ai"
+                            / "agent"
+                            / ".legacy-contexts-imported"
+                        ),
+                    )
+                    await asyncio.to_thread(self.agent_profiles.save)
+                except Exception:
+                    self._log_exception(
+                        "JianerAI HypeR legacy bootstrap failed"
+                    )
+            self.agent_facade.start(self.options.agent_heartbeat)
 
     async def _load_external_agent_tools(self, manager: Any) -> None:
         if self._external_agent_tools_loaded or self._closed:

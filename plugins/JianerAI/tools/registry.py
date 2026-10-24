@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import math
+import os
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -39,6 +40,9 @@ class ToolRegistry:
         self._plugins: dict[str, ToolPluginRegistration] = {}
         self._plugin_providers: dict[str, Any] = {}
         self._active_tasks: set[asyncio.Task[Any]] = set()
+        self._disabled: dict[str, float] = {}
+        self._content_store: Any | None = None
+        self._disabled_state_path: Any | None = None
         self._closed = False
 
     def register(self, spec: ToolSpec) -> ToolRegistration:
@@ -52,6 +56,29 @@ class ToolRegistry:
         token = uuid.uuid4().hex
         self._tools[spec.name] = (token, spec)
         return ToolRegistration(token=token, name=spec.name)
+
+    def set_content_store(self, store: Any) -> None:
+        self._content_store = store
+
+    def set_disabled_state_path(self, path: Any) -> None:
+        self._disabled_state_path = path
+        self._load_disabled_state()
+
+    def register_decorated(
+        self,
+        instance: Any,
+    ) -> tuple[ToolRegistration, ...]:
+        from plugins.JianerAI.tools.decorators import (
+            AgentToolBase,
+            bind_decorated_tools,
+        )
+
+        if not isinstance(instance, AgentToolBase):
+            raise TypeError("decorated tool instance must inherit AgentToolBase")
+        return tuple(
+            self.register(spec)
+            for spec in bind_decorated_tools(instance)
+        )
 
     def unregister(self, registration: ToolRegistration | str) -> bool:
         token_value = getattr(registration, "token", registration)
@@ -108,9 +135,33 @@ class ToolRegistry:
         if actor is None:
             actor = getattr(context, "actor", None)
         protocol = str(context.conversation.protocol).casefold()
+        conversation = context.conversation
+        conversation_kind = str(
+            getattr(
+                getattr(conversation, "kind", ""),
+                "value",
+                getattr(conversation, "kind", ""),
+            )
+        ).casefold()
         capabilities = frozenset(getattr(context.actions, "capabilities", ()))
+        permission_rank = {
+            "member": 0,
+            "whitelist": 1,
+            "any_admin": 2,
+            "bot_owner": 3,
+        }
+        current_permission = str(
+            getattr(context, "perm_group", "member") or "member"
+        )
         output: list[ToolSpec] = []
         for _, spec in sorted(self._tools.values(), key=lambda item: item[1].name):
+            if self.is_disabled(spec.name):
+                continue
+            if not _visible_for_role(
+                spec,
+                str(getattr(context, "role", "main") or "main"),
+            ):
+                continue
             permissions = getattr(context, "tool_permissions", None)
             if permissions is not None and spec.name not in permissions:
                 continue
@@ -124,6 +175,11 @@ class ToolRegistry:
                 )
             ):
                 continue
+            if permission_rank.get(spec.perm, -1) > permission_rank.get(
+                current_permission,
+                -1,
+            ):
+                continue
             if (
                 spec.risk is ToolRisk.MUTATING
                 and self._allowed_mutating_tools is not None
@@ -132,10 +188,75 @@ class ToolRegistry:
                 continue
             if spec.supported_protocols and protocol not in spec.supported_protocols:
                 continue
+            if (
+                conversation_kind
+                and spec.scenes
+                and conversation_kind not in spec.scenes
+            ):
+                continue
             if not spec.required_capabilities.issubset(capabilities):
                 continue
             output.append(spec)
         return tuple(output)
+
+    def schema(self, role: str = "main") -> list[dict[str, Any]]:
+        """Return HypeR/OpenAI tool declarations for one Agent role."""
+
+        normalized_role = str(role or "main").strip().casefold()
+        output: list[dict[str, Any]] = []
+        for _, spec in sorted(self._tools.values(), key=lambda item: item[1].name):
+            if self.is_disabled(spec.name) or not _visible_for_role(spec, normalized_role):
+                continue
+            output.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": spec.name,
+                        "description": spec.description,
+                        "parameters": dict(spec.input_schema),
+                    },
+                }
+            )
+        return output
+
+    async def dispatch(
+        self,
+        name: str,
+        params: Mapping[str, Any],
+        context: ToolContext,
+    ) -> Any:
+        """HypeR-style dispatch that returns a model-facing result."""
+
+        stored = self._tools.get(str(name))
+        if stored is None:
+            return "工具不存在或当前不可用。"
+        spec = stored[1]
+        perm_level = {
+            "member": 0,
+            "whitelist": 1,
+            "any_admin": 2,
+            "bot_owner": 3,
+        }
+        if spec.perm not in perm_level:
+            return "工具权限声明非法。"
+        if perm_level[spec.perm] > perm_level.get(
+            str(getattr(context, "perm_group", "member") or "member"),
+            -1,
+        ):
+            return f"调用不合法：工具 {spec.name} 需要 {spec.perm} 权限。"
+        if (
+            spec.scenes
+            and str(getattr(context, "ev_type", "") or "").casefold()
+            not in spec.scenes
+        ):
+            return f"调用不合法：工具 {spec.name} 不适用于当前场景。"
+        call = ToolCall(
+            id=f"local-{uuid.uuid4().hex}",
+            name=str(name),
+            arguments=dict(params),
+        )
+        result = await self.execute(call, context)
+        return result.content
 
     async def execute(self, call: ToolCall, context: ToolContext) -> ToolResult:
         if self._closed:
@@ -173,15 +294,39 @@ class ToolRegistry:
         payload = {"ok": True, "data": _json_safe(value)}
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         if len(content) > spec.max_output_chars:
-            content = json.dumps(
-                {
-                    "ok": True,
-                    "data": content[: spec.max_output_chars - 100],
-                    "truncated": True,
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            if spec.preserve and self._content_store is not None:
+                metadata = self._content_store.put(
+                    content,
+                    source=spec.name,
+                    title=spec.name,
+                    kind=spec.group,
+                )
+                preview = self._content_store.preview(
+                    content,
+                    max(256, spec.max_output_chars - 500),
+                )
+                content = json.dumps(
+                    {
+                        "ok": True,
+                        "content_id": metadata["content_id"],
+                        "chars": metadata["chars"],
+                        "preview": preview,
+                        "truncated": True,
+                        "hint": "使用 content_search / content_read 读取全文",
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            else:
+                content = json.dumps(
+                    {
+                        "ok": True,
+                        "data": content[: spec.max_output_chars - 100],
+                        "truncated": True,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
         return ToolResult(
             call_id=str(call.id),
             name=spec.name,
@@ -189,10 +334,101 @@ class ToolRegistry:
             content=content,
         )
 
+    def disable(
+        self,
+        name: str,
+        *,
+        seconds: float | None = None,
+    ) -> bool:
+        if str(name) not in self._tools:
+            return False
+        until = (
+            -1.0
+            if seconds is None
+            else max(0.0, float(seconds)) + __import__("time").time()
+        )
+        self._disabled[str(name)] = until
+        self._save_disabled_state()
+        return True
+
+    def enable(self, name: str) -> bool:
+        changed = self._disabled.pop(str(name), None) is not None
+        if changed:
+            self._save_disabled_state()
+        return changed
+
+    def is_disabled(self, name: str) -> bool:
+        until = self._disabled.get(str(name))
+        if until is None:
+            return False
+        if until < 0:
+            return True
+        if until <= __import__("time").time():
+            self._disabled.pop(str(name), None)
+            self._save_disabled_state()
+            return False
+        return True
+
+    def _load_disabled_state(self) -> None:
+        path = self._disabled_state_path
+        if path is None:
+            return
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                raw = json.load(stream)
+        except (OSError, json.JSONDecodeError):
+            return
+        others = raw.get("others") if isinstance(raw, Mapping) else None
+        disabled = (
+            others.get("agent_func_disabled")
+            if isinstance(others, Mapping)
+            else None
+        )
+        if not isinstance(disabled, Mapping):
+            return
+        self._disabled = {
+            str(name): float(value)
+            for name, value in disabled.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+
+    def _save_disabled_state(self) -> None:
+        path = self._disabled_state_path
+        if path is None:
+            return
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                raw = json.load(stream)
+        except (OSError, json.JSONDecodeError):
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        others = raw.setdefault("others", {})
+        if not isinstance(others, dict):
+            others = {}
+            raw["others"] = others
+        others["agent_func_disabled"] = {
+            str(name): float(until)
+            for name, until in self._disabled.items()
+        }
+        temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(raw, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def close(self) -> None:
         self._closed = True
         self._plugins.clear()
         self._tools.clear()
+        self._disabled.clear()
         for task in tuple(self._active_tasks):
             task.cancel()
 
@@ -238,6 +474,14 @@ class ToolRegistry:
         """Loaded plugin IDs, useful for diagnostics and reload UIs."""
 
         return tuple(sorted(item.plugin_id for item in self._plugins.values()))
+
+
+def _visible_for_role(spec: ToolSpec, role: str) -> bool:
+    if role == "system":
+        return bool(spec.system_visible)
+    if role == "sub":
+        return bool(spec.sub_visible) and spec.group not in {"memory", "context"}
+    return bool(spec.main_visible)
 
 
 def _normalize_arguments(arguments: Any) -> Mapping[str, Any]:

@@ -34,6 +34,9 @@ from plugins.JianerAI.tools.lark_api_catalog import (
 )
 
 SEND_MESSAGE_TOOL_NAME = "send_message"
+SEND_GROUP_MESSAGE_TOOL_NAME = "send_group_msg"
+SEND_PRIVATE_MESSAGE_TOOL_NAME = "send_private_msg"
+COLLECTED_SEND_TOOL_NAME = "collected_send"
 PLATFORM_COMMAND_TOOL_NAME = "platform_command"
 _MILKY_CATALOG_PATH = Path(__file__).with_name("milky_api_catalog.json")
 with _MILKY_CATALOG_PATH.open("r", encoding="utf-8") as _catalog_file:
@@ -44,6 +47,9 @@ MILKY_API_TOOL_NAMES = frozenset(f"milky_{name}" for name in MILKY_API_ENDPOINTS
 PLATFORM_API_TOOL_NAMES = frozenset(
     {
         SEND_MESSAGE_TOOL_NAME,
+        SEND_GROUP_MESSAGE_TOOL_NAME,
+        SEND_PRIVATE_MESSAGE_TOOL_NAME,
+        COLLECTED_SEND_TOOL_NAME,
         PLATFORM_COMMAND_TOOL_NAME,
         *MILKY_API_TOOL_NAMES,
         *ONEBOT_API_TOOL_NAMES,
@@ -600,6 +606,134 @@ def send_message_tool() -> ToolSpec:
     )
 
 
+def send_group_message_tool() -> ToolSpec:
+    return ToolSpec(
+        name=SEND_GROUP_MESSAGE_TOOL_NAME,
+        description="向当前群聊发送一条消息，可以引用消息或 At 用户。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "消息正文。",
+                    "minLength": 1,
+                    "maxLength": _MAX_TEXT_CHARS,
+                },
+                "at_user_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 20,
+                },
+                "reply_to_message_id": {"type": "string"},
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        handler=_send_group_message,
+        risk=ToolRisk.MUTATING,
+        scenes=frozenset({"group"}),
+        group="qq",
+        sub_visible=False,
+        timeout_seconds=20.0,
+        max_output_chars=4000,
+    )
+
+
+def send_private_message_tool() -> ToolSpec:
+    return ToolSpec(
+        name=SEND_PRIVATE_MESSAGE_TOOL_NAME,
+        description="向当前私聊发送一条消息。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "消息正文。",
+                    "minLength": 1,
+                    "maxLength": _MAX_TEXT_CHARS,
+                },
+                "reply_to_message_id": {"type": "string"},
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        handler=_send_private_message,
+        risk=ToolRisk.MUTATING,
+        scenes=frozenset({"private"}),
+        group="qq",
+        sub_visible=False,
+        timeout_seconds=20.0,
+        max_output_chars=4000,
+    )
+
+
+def collected_send_tool() -> ToolSpec:
+    return ToolSpec(
+        name=COLLECTED_SEND_TOOL_NAME,
+        description=(
+            "发送较长文本或多个自然段。宿主支持时使用合并转发，"
+            "否则由发送层分段。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "要发送的完整文本。",
+                    "minLength": 1,
+                    "maxLength": 20000,
+                },
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        handler=_collected_send,
+        risk=ToolRisk.MUTATING,
+        scenes=frozenset({"group", "private"}),
+        group="qq",
+        sub_visible=False,
+        preserve=True,
+        timeout_seconds=30.0,
+        max_output_chars=4000,
+    )
+
+
+async def _send_group_message(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    if getattr(context.event, "group_id", None) is None:
+        raise ToolExecutionError("wrong_scene", "send_group_msg 只能在群聊中使用。")
+    return await _send_message(context, arguments)
+
+
+async def _send_private_message(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    if getattr(context.event, "group_id", None) is not None:
+        raise ToolExecutionError("wrong_scene", "send_private_msg 只能在私聊中使用。")
+    return await _send_message(context, arguments)
+
+
+async def _collected_send(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    text = str(arguments.get("text") or "").strip()
+    if not text:
+        raise ToolExecutionError("invalid_arguments", "text 不能为空。")
+    sink = getattr(context, "message_sink", None)
+    if sink is None or not callable(getattr(sink, "send", None)):
+        raise ToolExecutionError("unsupported_protocol", "当前连接不支持发送消息。")
+    result = await sink.send(text, source="collected_send")
+    message_ids = result if isinstance(result, (list, tuple)) else []
+    return {
+        "sent": True,
+        "message_ids": [str(item) for item in message_ids if str(item)],
+    }
+
+
 def platform_command_tool() -> ToolSpec:
     return ToolSpec(
         name=PLATFORM_COMMAND_TOOL_NAME,
@@ -634,6 +768,9 @@ def platform_command_tool() -> ToolSpec:
 def register_platform_api_tools(registry: Any) -> tuple[ToolSpec, ...]:
     specs = [
         send_message_tool(),
+        send_group_message_tool(),
+        send_private_message_tool(),
+        collected_send_tool(),
         platform_command_tool(),
     ]
     for api in MILKY_API_CATALOG:
@@ -812,11 +949,17 @@ __all__ = [
     "ONEBOT_API_TOOL_NAMES",
     "PLATFORM_API_TOOL_NAMES",
     "PLATFORM_COMMAND_TOOL_NAME",
+    "COLLECTED_SEND_TOOL_NAME",
+    "SEND_GROUP_MESSAGE_TOOL_NAME",
+    "SEND_PRIVATE_MESSAGE_TOOL_NAME",
     "SEND_MESSAGE_TOOL_NAME",
     "ParsedCommand",
     "PlatformTransport",
     "parse_platform_command",
     "platform_command_tool",
     "register_platform_api_tools",
+    "collected_send_tool",
+    "send_group_message_tool",
+    "send_private_message_tool",
     "send_message_tool",
 ]

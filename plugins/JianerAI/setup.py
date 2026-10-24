@@ -1,7 +1,7 @@
 from typing import Any
 
 from arclet.alconna import Alconna, Args, MultiVar
-from jianer import submit_awaitable
+from jianer import events, submit_awaitable
 from jianer.plugins import PluginMetadata
 from jianer.plugins.builtin.alconna import Command
 
@@ -76,6 +76,20 @@ def setup(client: Any, manager: Any) -> None:
     if _service is not None:
         raise RuntimeError("JianerAI service is already set up")
     previous_manager = getattr(client, "plugin_manager", None)
+    for event_type in (
+        events.GroupFileUploadEvent,
+        events.GroupAdminEvent,
+        events.GroupMemberDecreaseEvent,
+        events.GroupMemberIncreaseEvent,
+        events.GroupMuteEvent,
+        events.FriendAddEvent,
+        events.GroupRecallEvent,
+        events.FriendRecallEvent,
+        events.NotifyEvent,
+        events.GroupEssenceEvent,
+        events.MessageReactionEvent,
+    ):
+        client.subscribe(_agent_notice, event_type)
     _service = JianerAIService.from_runtime(plugin_state.get_runtime())
     try:
         startup = submit_awaitable(
@@ -110,6 +124,15 @@ async def on_message_fallback(event: Any, actions: Any) -> bool:
         actions,
         background_dialogue=True,
     )
+
+
+async def _agent_notice(event: Any, actions: Any) -> None:
+    service = _service
+    if service is not None:
+        try:
+            await service.agent_facade.on_notice(event, actions)
+        except Exception:
+            service._log_exception("JianerAI Agent notice handling failed")
 
 
 def authorize(

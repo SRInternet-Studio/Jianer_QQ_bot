@@ -6,7 +6,6 @@ ddgs>=9.14.4,<10
 emoji
 jianer-bot>=0.92.7
 openai>=2.30,<3
-anthropic>=0.117,<1
 google-genai>=2.16,<3
 requests
 aiohttp

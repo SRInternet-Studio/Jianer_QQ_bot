@@ -6,7 +6,7 @@ import hashlib
 import inspect
 import json
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -255,6 +255,7 @@ class ProviderTransport(Protocol):
 class ChatRequest:
     message: str
     history: tuple[Mapping[str, Any], ...] = ()
+    history_items: tuple[Mapping[str, Any], ...] = ()
     system_prompt: str = ""
     attachments: tuple[MediaAttachment, ...] = ()
     tools: tuple["FunctionTool", ...] = ()
@@ -267,6 +268,11 @@ class ChatRequest:
         object.__setattr__(self, "message", str(self.message or ""))
         object.__setattr__(self, "system_prompt", str(self.system_prompt or ""))
         object.__setattr__(self, "history", tuple(self.history or ()))
+        object.__setattr__(
+            self,
+            "history_items",
+            tuple(self.history_items or ()),
+        )
         attachments = tuple(self.attachments or ())
         if any(not isinstance(item, MediaAttachment) for item in attachments):
             raise TypeError(
@@ -1118,10 +1124,11 @@ def _normalize_provider(value: Any) -> str:
         "google-gemini": "google_generate_content",
         "google-generatecontent": "google_generate_content",
         "google-generate-content": "google_generate_content",
-        "anthropic": "anthropic_messages",
-        "claude": "anthropic_messages",
-        "anthropic-messages": "anthropic_messages",
     }
+    if normalized in {"anthropic", "claude", "anthropic-messages"}:
+        raise ModelConfigError(
+            "Anthropic Messages is no longer supported; use OpenAI or Gemini"
+        )
     try:
         return aliases[normalized]
     except KeyError as exc:
@@ -1171,6 +1178,187 @@ def _history_messages(
         break
     selected.reverse()
     return selected
+
+
+def _openai_history_items(request: ChatRequest) -> list[dict[str, Any]]:
+    if not request.history_items:
+        return []
+    output: list[dict[str, Any]] = []
+    for item in request.history_items:
+        if not isinstance(item, Mapping):
+            continue
+        role = str(item.get("role") or "").casefold()
+        if role in {"user", "assistant"}:
+            message: dict[str, Any] = {
+                "role": role,
+                "content": str(item.get("content") or ""),
+            }
+            calls = item.get("tool_calls")
+            if role == "assistant" and isinstance(calls, Sequence) and not isinstance(
+                calls, (str, bytes, bytearray)
+            ):
+                converted = []
+                for call in calls:
+                    if not isinstance(call, Mapping):
+                        continue
+                    converted.append(
+                        {
+                            "id": str(call.get("id") or ""),
+                            "type": "function",
+                            "function": {
+                                "name": str(call.get("name") or ""),
+                                "arguments": _arguments_json(
+                                    call.get("arguments")
+                                ),
+                            },
+                        }
+                    )
+                if converted:
+                    message["tool_calls"] = converted
+            output.append(message)
+        elif role == "tool":
+            output.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(item.get("tool_call_id") or ""),
+                    "content": str(item.get("content") or ""),
+                }
+            )
+    return output
+
+
+def _responses_history_items(request: ChatRequest) -> list[dict[str, Any]]:
+    if not request.history_items:
+        return []
+    output: list[dict[str, Any]] = []
+    for item in request.history_items:
+        if not isinstance(item, Mapping):
+            continue
+        role = str(item.get("role") or "").casefold()
+        if role in {"user", "assistant"}:
+            provider_content = item.get("provider_content")
+            if isinstance(provider_content, Mapping):
+                exact = provider_content.get("responses_output")
+                if isinstance(exact, Sequence) and not isinstance(
+                    exact, (str, bytes, bytearray)
+                ):
+                    output.extend(
+                        dict(value)
+                        for value in exact
+                        if isinstance(value, Mapping)
+                    )
+                    continue
+            output.append(
+                {
+                    "role": role,
+                    "content": str(item.get("content") or ""),
+                }
+            )
+            calls = item.get("tool_calls")
+            if isinstance(calls, Sequence) and not isinstance(
+                calls, (str, bytes, bytearray)
+            ):
+                for call in calls:
+                    if not isinstance(call, Mapping):
+                        continue
+                    output.append(
+                        {
+                            "type": "function_call",
+                            "call_id": str(call.get("id") or ""),
+                            "name": str(call.get("name") or ""),
+                            "arguments": _arguments_json(call.get("arguments")),
+                        }
+                    )
+        elif role == "tool":
+            output.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(item.get("tool_call_id") or ""),
+                    "output": str(item.get("content") or ""),
+                }
+            )
+    return output
+
+
+def _gemini_history_contents(request: ChatRequest) -> list[dict[str, Any]]:
+    if not request.history_items:
+        return []
+    output: list[dict[str, Any]] = []
+    pending_results: list[ToolResultTurn] = []
+    for item in request.history_items:
+        if not isinstance(item, Mapping):
+            continue
+        role = str(item.get("role") or "").casefold()
+        if role == "tool":
+            pending_results.append(
+                ToolResultTurn(
+                    str(item.get("tool_call_id") or ""),
+                    str(item.get("name") or ""),
+                    str(item.get("content") or ""),
+                )
+            )
+            continue
+        if pending_results:
+            output.append(
+                {
+                    "role": "user",
+                    "parts": [
+                        _gemini_function_response(result)
+                        for result in pending_results
+                    ],
+                }
+            )
+            pending_results.clear()
+        if role == "user":
+            output.append(
+                {
+                    "role": "user",
+                    "parts": [{"text": str(item.get("content") or "")}],
+                }
+            )
+            continue
+        if role != "assistant":
+            continue
+        provider_content = item.get("provider_content")
+        if isinstance(provider_content, Mapping):
+            cleaned = _sanitize_gemini_content(provider_content)
+            if cleaned is not None:
+                output.append(cleaned)
+                continue
+        calls = item.get("tool_calls")
+        parts: list[dict[str, Any]] = []
+        content = str(item.get("content") or "")
+        if content and content != "{}":
+            parts.append({"text": content})
+        if isinstance(calls, Sequence) and not isinstance(
+            calls, (str, bytes, bytearray)
+        ):
+            for call in calls:
+                if not isinstance(call, Mapping):
+                    continue
+                parts.append(
+                    {
+                        "functionCall": {
+                            "name": str(call.get("name") or ""),
+                            "args": _arguments_mapping(
+                                call.get("arguments")
+                            ),
+                        }
+                    }
+                )
+        if parts:
+            output.append({"role": "model", "parts": parts})
+    if pending_results:
+        output.append(
+            {
+                "role": "user",
+                "parts": [
+                    _gemini_function_response(result)
+                    for result in pending_results
+                ],
+            }
+        )
+    return output
 
 
 def _final_system_prompt(config: ModelConfig, request: ChatRequest) -> str:
@@ -1229,7 +1417,12 @@ def _build_openai_payload(
     user_system_prompt = bool(system_prompt) and _uses_user_system_prompt(config)
     if system_prompt and not user_system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.extend(_history_messages(config, request.history))
+    raw_history = _openai_history_items(request)
+    messages.extend(
+        raw_history
+        if raw_history
+        else _history_messages(config, request.history)
+    )
     if user_system_prompt:
         # Some OpenAI-compatible relays silently discard the ``system`` role.
         # Keep the persona as a user-visible instruction immediately before
@@ -1345,10 +1538,13 @@ def _build_gemini_payload(
     config: ModelConfig,
     request: ChatRequest,
 ) -> dict[str, Any]:
-    contents: list[dict[str, Any]] = []
-    for item in _history_messages(config, request.history):
-        role = "model" if item["role"] == "assistant" else "user"
-        contents.append({"role": role, "parts": [{"text": item["content"]}]})
+    contents = _gemini_history_contents(request)
+    if not contents:
+        for item in _history_messages(config, request.history):
+            role = "model" if item["role"] == "assistant" else "user"
+            contents.append(
+                {"role": role, "parts": [{"text": item["content"]}]}
+            )
     parts: list[dict[str, Any]] = [{"text": request.message}]
     for attachment in request.attachments:
         parts.append(
@@ -1658,10 +1854,15 @@ def _responses_full_input(
     config: ModelConfig,
     request: ChatRequest,
 ) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = [
-        {"role": item["role"], "content": item["content"]}
-        for item in _history_messages(config, request.history)
-    ]
+    raw_history = _responses_history_items(request)
+    items: list[dict[str, Any]] = (
+        raw_history
+        if raw_history
+        else [
+            {"role": item["role"], "content": item["content"]}
+            for item in _history_messages(config, request.history)
+        ]
+    )
     items.append(
         {"role": "user", "content": _responses_user_content(request)}
     )

@@ -3,11 +3,14 @@
 ## 未发布
 
 ### 新增
-- JianerAI 新增独立结构化人格系统：原始人设模板保持为事实来源，LLM 将
-  `identity`、`personality`、`behavior_style`、`reply_style`、群聊/私聊提示、
-  硬性约束、表达示例和可选 `extra_settings` 写入
-  `prerequisites/personas/<preset_key>.json`；支持 `~重建人格`、`~人格 迁移`、
-  还原审计和源文件哈希过期回退。
+- JianerAI Agent 重构为 HypeR 风格运行时：白名单触发、Collector、持久
+  Main/System Context、跨 Context 工具、工具发送、持久 Sub-Agent、全局
+  `profiles.json`、Chat/Responses/Gemini API 适配和运行期工具启停。
+- memorix 继续作为唯一长期记忆后端，新增 HypeR 风格
+  `mem_add/mem_query/mem_list/mem_del` 兼容工具；人物/群作用域、画像、Episode、
+  证据和回复后审查全部保留。
+- 工具注册表新增 `@tool`/`AgentToolBase`、角色可见性、场景权限、内容库和
+  持久禁用状态；旧 `ToolSpec`、`ToolPlugin`、`available/execute` 接口保持兼容。
 - 新增 `reverse_image_search` 工具（以图搜文）：读取当前消息图片或公开 `image_url`，依次尝试 Bing Visual Search、Yandex、Google Lens、SauceNAO，返回识别标签与相关网页；Bing 读取 `BING_VISUAL_SEARCH_KEY`，SauceNAO 读取可选 `SAUCENAO_API_KEY`。
 - `web_search` 新增 AnySearch 提供方（`WEB_SEARCH_PROVIDER=anysearch`）：调用 `POST https://api.anysearch.com/v1/search`，API Key 可选（匿名走每日免费额度），支持 `ANYSEARCH_ZONE`、`ANYSEARCH_LANGUAGE`、`ANYSEARCH_TAG`、`ANYSEARCH_PARAMS` 配置，也可加入 `WEB_SEARCH_FALLBACK_BACKENDS` 作为 DDGS 失败后的回退后端。
 - JianerMate 新增 `~模型` / `~模型 <代码>` / `~模型 重置`：列出可用模型并把本会话回复模型切换成任意原生或桥接模型，覆盖值存在 `mate.db` 的 `state` 表里，只影响当前群/私聊且重启后仍然生效。

@@ -68,6 +68,16 @@ class ToolContext:
     )
     subagent_registry: Any = field(default=None, repr=False, compare=False)
     subagent_tracking_id: str = field(default="", repr=False, compare=False)
+    # HypeR-compatible runtime fields.  Existing ToolSpec handlers ignore
+    # these; they are populated by the new AgentCore and kept here so both
+    # tool contracts share one context object.
+    ev_type: str = field(default="", compare=False)
+    scene_id: str = field(default="", compare=False)
+    perm_group: str = field(default="member", compare=False)
+    principal_id: str = field(default="", compare=False)
+    self_id: str = field(default="", compare=False)
+    role: str = field(default="main", compare=False)
+    release_requested: bool = field(default=False, compare=False)
 
 
 ToolHandler = Callable[
@@ -94,6 +104,15 @@ class ToolSpec:
         repr=False,
         compare=False,
     )
+    # Optional HypeR metadata. Existing constructors remain valid.
+    perm: str = "member"
+    scenes: frozenset[str] = frozenset({"group", "private", "system"})
+    group: str = "general"
+    main_visible: bool = True
+    sub_visible: bool = True
+    system_visible: bool = False
+    release: bool = False
+    preserve: bool = False
 
     def __post_init__(self) -> None:
         name = str(self.name or "").strip()
@@ -130,6 +149,17 @@ class ToolSpec:
             "required_capabilities",
             frozenset(self.required_capabilities),
         )
+        object.__setattr__(
+            self,
+            "scenes",
+            frozenset(
+                str(item).strip().casefold()
+                for item in self.scenes
+                if str(item).strip()
+            ),
+        )
+        object.__setattr__(self, "perm", str(self.perm or "member").strip())
+        object.__setattr__(self, "group", str(self.group or "general").strip())
 
 
 @dataclass(frozen=True, slots=True)

@@ -712,6 +712,7 @@ def _resolve_backend(
     if (
         backend == "auto"
         or backend == "bing"
+        or backend == "google"
         or backend in _CHINA_BACKENDS
         or backend in _ddgs_text_engines()
     ):

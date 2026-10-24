@@ -1,38 +1,41 @@
 # JianerAI
 
-`jianerbot-plugin-jianer-ai` 是简儿的 JianerCore 目录插件，统一承载 AI
-对话、模型与角色切换、短期上下文、简儿记忆、回复后缀、TTS、图片与引用
-解析，以及受限的 Agent 工具调用。入口固定为 `setup.py`，依赖内置
+`jianerbot-plugin-jianer-ai` 是简儿的 JianerCore 目录插件，统一承载 HypeR
+风格的 Agent 事件管线、持久 Main/System Context、Collector、工具发送、长期
+记忆、回复后缀、TTS、图片与引用解析。入口固定为 `setup.py`，依赖内置
 `jianerbot-plugin-alconna`。
 
 ## 触发规则
 
-- 群聊：必须明确 At 机器人；`At + 文本` 和裸 At 都进入 AI 对话。
-- 普通 `reminder` 前缀（通常为 `~`）只用于命令，不再触发群聊 AI。
-- 私聊：普通文本直接进入 AI；带前缀的插件命令仍由 Alconna 处理。
+- 群聊自动处理严格按白名单工作；没有任何白名单的群不会缓存普通消息。
+- 白名单成员发言会进入 Collector；被 @ 时跳过等待窗口，立即处理“缓存 + 当前消息”。
+- 非白名单成员的消息只作为不可执行背景进入已有白名单群的缓存，不会单独触发 Agent。
+- 私聊自动处理；Bot 主人私聊立即处理，其他用户进入 Collector。
+- 群通知默认进入缓存，戳 Bot 或 Bot 消息被撤回时立即处理。
+- 普通 `reminder` 前缀（通常为 `~`）只用于命令，不进入 Agent 对话。
 - 飞书：支持私聊和群内 mention；不声明或模拟原生合并转发能力。
 - `config.black_list` 只限制 JianerAI，不影响其它宿主或业务插件。
 
-模型、角色和 TTS 按完整会话键
-`(protocol, self_id, conversation_kind, conversation_id, preset)` 保存。群会话由
-群成员共享；角色 preset 同时隔离短期上下文和长期记忆。每个人设使用独立的物理
-SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期记忆，以及该人设在每个
-会话中“用户说了什么、自己如何回答”的对话片段。个人记忆可随同一 canonical 用户跨
-私聊和群聊使用；群记忆与对话片段不会跨群或跨人设读取。
+每个 `(protocol, self_id, conversation_kind, conversation_id)` 拥有独立持久 Main
+Context，完整保存模型 tool call、tool result、reasoning 和 provider 返回内容；空闲
+上下文会从内存回收并按需从磁盘恢复。System Context 负责总结、压缩和全局人设切换。
+全局人设来自 `data/jianer_ai/profiles.json`，原始人设模板直接作为 prompt，不再生成
+结构化人格。长期记忆继续由 memorix 提供，并保留 person/group 作用域、画像、Episode、
+证据和回复后审查。
 
 ## 常用命令
 
 - `~ai管理菜单`、`~切换AI [代码]`
-- `~角色扮演`、`~切换角色 [名称]`
-- `~添加预设 [名称] [简介] : [内容]`（先保存原文，再用 LLM 生成结构化人格）、
-  `~删除预设 [名称]`
-- `~重建人格 [名称]`、`~人格 迁移 [强制]`
+- `~角色扮演`、`~切换角色 [名称]`：管理全局 profiles
+- `~添加预设 [名称] [简介] : [原文]`、`~删除预设 [名称]`
+- `~重建人格 [名称]`：从原始模板重新加载；`~人格 迁移` 导入原始模板
 - `~简儿记忆 [帮助|状态|开启|关闭|间隔|立即生成|列表|删除|清空|恢复]`
 - `~设置全局后缀`、`~删除全局后缀`
 - `~设置特定后缀`、`~删除特定后缀`
 - `~TTS [开启|关闭|状态]`
-- `~Agent [开启|关闭|自动|状态|工具]`
-- `~注销`（只清空当前会话的短期上下文）
+- `~Agent [开启|关闭|状态|工具|子代理]`：管理当前群白名单、工具和 Sub-Agent 状态
+- `~注销`：清空当前 Main Context
+- `~agent.on/off/status/stop/profile/context/func/model`：HypeR 风格别名
 
 后缀只在 `SuffixStore.apply_ai_reply()` 中应用；ping、群发、休眠等宿主消息不会
 经过后缀处理。私聊 TTS 默认关闭，群聊默认开启。
@@ -53,8 +56,6 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `content_moderation_timeout_seconds`：单次审核超时，范围 1–120 秒，默认 30 秒；
   超时、提供商失败或非法审核结果都会按 fail closed 拒绝本轮，不会绕过审核
 - `memory_mode`：记忆提炼模型
-- `persona_generation_model`：添加预设或重建人格时使用的模型；未配置时优先使用
-  当前会话模型，再回退到 `default_mode`
 - `memory_episode_segmentation_model`：长期记忆 episode 分段使用的模型，默认
   `auto` 会在 `aiconfig/*.ai.json` 中挑选可用模型；某个模型不可用时可显式填写
   可用的模型配置名（如 `grok`），避免分段一直回退到规则聚类
@@ -72,30 +73,25 @@ SQLite 分表，分别保存它对每个 canonical 用户、每个群的长期�
 - `max_message_length`：单次回复最多分段数
 - `ai_reply_chunk_chars`：单段目标字符数
 - `TTS`：音色、语速、音量与音高
-- `agent_enabled_default`：没有会话覆盖时是否启用 Agent，默认开启
-- `agent_max_parallel_calls`：只读工具并发上限，默认 4
-- `agent_total_timeout_seconds`：完整 Agent 轮次总超时，默认 300 秒
+- `agent_profile`：当前全局人设名，来自 `data/jianer_ai/profiles.json`
+- `agent_api_profile`：当前全局 Agent 模型代码；留空时使用 `default_mode`
+- `agent_white`：群白名单，键为 `protocol:self_id:group_id`，值为用户 ID 列表
+- `agent_heartbeat`：启用 System Context 周期维护，默认关闭
+- `agent_max_concurrency`：全局 Agent 模型调用并发上限，`0` 表示不限
+- `agent_collector_max_buffer` / `agent_collector_keep_after_compress` /
+  `agent_collector_max_summary_chars`：Collector 默认 80 / 60 / 8000
+- `agent_core_idle_hours`：Main Context 空闲回收时间，默认 12 小时
+- `agent_max_history_chars`：自动总结阈值，默认 60000
+- `agent_stop_perm` / `agent_stop_open_after`：Stop 权限和向所有人开放的超时
+- `agent_func_disabled`：工具运行期禁用状态，由 Agent 命令持久化
 - `agent_allowed_tools`：允许暴露给模型的工具名称数组或逗号分隔字符串；未配置时
   允许全部内置工具，显式空数组则不暴露工具；配置白名单时，记忆写入还需显式加入
   `create_my_memory` 和/或 `update_my_memory`
-- `agent_stream_progress`：工具调用期间把模型每轮的说明文字实时发给用户，默认 `true`
-- `agent_progress_max_messages`：兼容旧配置；`0` 表示关闭进度消息，正数启用模型生成的进度消息，不再限制条数
-- `agent_mention_reply`：群聊首条回复是否 At 触发者，`auto`（默认）或 `off`
-- `agent_interrupt_enabled`：允许同一会话中的新消息打断在途生成并重新生成，默认 `true`
-- `agent_interrupt_debounce_ms`：合并连续插话的防抖窗口，默认 300 毫秒
-- `agent_interrupt_max_merges`：单轮最多因插话重新生成多少次，默认 10
 - `agent_platform_api_enabled`：向模型注册平台 API 工具，默认 `true`
 - `agent_platform_api_cross_conversation_admin_only`：仅机器人管理员可向其他会话
   发消息，默认 `true`
-- `agent_subagent_enabled`：注册 `spawn_subagents`，默认 `true`
-- `agent_subagent_max_concurrency`：Sub-Agent 并发上限，默认 3，最大 8
-- `agent_subagent_timeout_seconds`：单个 Sub-Agent 超时，默认 300 秒
-- `agent_subagent_allowed_tools`：Sub-Agent 可额外使用的工具白名单；默认继承父 Agent 白名单并
-  移除发送消息、原始平台 API、记忆读写和递归派生能力
-- `agent_subagent_can_send_message` / `agent_subagent_can_mutate`：是否允许 Sub-Agent 主动发消息或
-  执行变更操作，默认关闭
-- `~Agent 子代理`：查看当前会话正在排队或运行的 Sub-Agent；命令前缀以运行时 `reminder`
-  配置为准
+- `agent_subagent_enabled`：注册持久 Sub-Agent 工具，默认 `true`
+- `~Agent 子代理`：查看持久 Sub-Agent 列表
 - `agent_skills_enabled`：加载 Agent Skills，默认 `true`
 - `agent_skills_dirs`：`SKILL.md` 技能目录列表，相对路径以项目根目录为基准，默认 `.agents/skills`
 - `agent_skills_max_file_bytes`：单个 `SKILL.md` 最大字节数，默认 65536
@@ -205,23 +201,21 @@ python -m playwright install chromium
 Worker，并允许下载。页面只以正文和最新快照元素编号提供给模型，不开放 CSS、
 XPath、任意 JavaScript、坐标或截图。
 
-模型配置继续从 `aiconfig/*.ai.json` 读取；角色元数据继续使用
-`prerequisites/current.json` 与相邻原始模板，结构化人格使用
-`prerequisites/personas/*.json`；后缀继续使用 `suffix_config.json`。模型配置可用
+模型配置继续从 `aiconfig/*.ai.json` 读取；全局人设使用
+`data/jianer_ai/profiles.json`，原始模板全文直接写入 `prompt`；后缀继续使用
+`suffix_config.json`。模型配置可用
 `ToolsEnabled: true/false/"auto"` 控制
 Function Calling；兼容端点明确拒绝 tools 参数时，本 generation 会自动退回普通
 对话。部分 DeepSeek 兼容网关把调用返回为 DSML 文本；插件会把完整合法的 DSML
 转换为结构化工具调用，并拒绝把损坏的调用标记发送给用户。不要提交包含密钥的本地配置。
 
-`ResponseType` 使用以下规范名称；旧值 `openai`、`openai-compatible`、`gemini`、
-`google`、`claude` 等仍可读取：
+`ResponseType` 支持以下协议；Anthropic 已不再支持：
 
 | ResponseType | 请求协议 | 附件能力 |
 | --- | --- | --- |
 | `OpenAI Chat Completions` | OpenAI `chat.completions` | 图片，发送前统一为静态 PNG/JPEG；模型支持时可读 MP3/WAV 语音，其他音频先转 WAV；不支持视频 |
 | `OpenAI Responses` | OpenAI `responses` | 图片，发送前统一为静态 PNG/JPEG；语音先走转写；视频抽取最多 8 帧并转写音轨 |
 | `Google GenerateContent` | Google GenAI SDK `generate_content` | 原生图片、语音和视频 |
-| `Anthropic Messages` | Anthropic SDK `messages` | 图片；当前 Anthropic 协议不接收语音或视频 |
 
 `OpenAI Chat Completions` 支持 `SystemPromptMode`：
 
@@ -246,9 +240,9 @@ transcription 接口，默认模型为
 `store: false`，不会发送或保存 `previous_response_id`，并在 `input` 中携带当前会话的
 完整短期历史、当前消息和本轮结构化工具调用结果；配置文件中的 `other` 或 `Extra_Body`
 也不能覆盖 `input`、`store` 或注入 `previous_response_id`。因此不会发起协议能力探测，
-也不依赖官方服务或第三方中转站保存 Response。短期历史按完整 JianerCore 会话键
-（协议、机器人账号、群聊/私聊、会话 ID、角色预设）隔离；切换模型、执行“注销”或
-删除对应角色时仍由 JianerAI 清空相关本地上下文。
+也不依赖官方服务或第三方中转站保存 Response。持久历史按
+`(protocol, self_id, conversation_kind, conversation_id)` 隔离；执行“注销”会清空
+当前 Main Context。
 
 音视频预处理要求系统存在 `ffmpeg` 和 `ffprobe`；Docker 镜像会自动安装。单个视频
 上限为 20 MiB、5 分钟，每次 OpenAI Responses 请求最多一个视频。JianerAI 只处理
@@ -264,11 +258,11 @@ base64 请求上超时，归一化后这类图片不会再让整轮对话失败�
 
 ```json
 {
-  "FriendlyName": "Claude",
-  "Model": "claude-sonnet-4-5",
-  "ResponseType": "Anthropic Messages",
+  "FriendlyName": "Gemini",
+  "Model": "gemini-3.8-flash",
+  "ResponseType": "Google GenerateContent",
   "ApiKey": "your-api-key",
-  "BaseUrl": "https://api.anthropic.com",
+  "BaseUrl": "https://generativelanguage.googleapis.com",
   "Temperature": 0.5,
   "MaxTokens": 2000,
   "ToolsEnabled": "auto"
@@ -285,59 +279,43 @@ base64 请求上超时，归一化后这类图片不会再让整轮对话失败�
 两项 Agent 变量会按 Agent 状态、当前模型的 tools 能力、当前协议/适配器能力以及
 `agent_allowed_tools` 白名单动态过滤，不会列出本轮无法调用的工具。
 
-## 结构化人格
+## 全局人设
 
-`current.json` 仍然只保存预设元数据。每个预设可以在
-`prerequisites/personas/<preset_key>.json` 保存一份由 LLM 生成并审计的结构化
-人格；原始 `.txt` 人设始终保留，作为事实来源和回退模板。
+HypeR 风格人设保存在 `data/jianer_ai/profiles.json`：
 
-结构化文件包含：
-
-- `identity`：身份、背景、关系和专有事实
-- `personality`：性格、价值观和情绪倾向
-- `behavior_style`：行动准则、插话时机和处理任务方式
-- `reply_style`：语气、长度、口癖、格式和表达禁忌
-- `group_chat_prompt` / `private_chat_prompt`：群聊和私聊补充要求
-- `hard_constraints`：原文明确要求始终遵守的规则
-- `speech_examples`：原文中的代表性表达
-- `extra_settings`：可选的外观、装备、世界观、特殊机制等内容
-
-运行时优先使用结构完整且 `source_sha256` 与原始模板一致的 JSON。JSON 缺失、
-损坏、版本不支持或原始模板已修改时，自动回退原文模板；普通聊天不会触发 LLM
-调用。管理员可通过 `~重建人格 [名称]` 更新单个预设，或用
-`~人格 迁移` 批量处理旧预设。原始人设修改后，旧结构化 JSON 会显示为“待重建”。
-
-人格生成使用原始全文，最多 24,000 字符，不做静默截断；生成后还会执行一次还原
-审计，尽量保留原文中的独特事实、关系、称呼、口癖、格式要求、禁忌和特殊设定。
-通用工具、安全、隐私和提示词注入规则由宿主统一提供，不写入结构化人格。
-
-批量迁移也可以从命令行执行；默认只预览，加 `--apply` 才会写入：
-
-```bash
-python -m plugins.JianerAI.migrate_personas --model gemini
-python -m plugins.JianerAI.migrate_personas --model gemini --apply
+```json
+{
+  "XingYu": {
+    "prompt": "原始人设模板全文",
+    "inject_master": true
+  }
+}
 ```
+
+当前人设由 `config.others.agent_profile` 指定。切换人设时 System Context 先总结
+所有已加载 Main Context，再更新 system prompt；不再读取或生成结构化人格 JSON。
 
 模型配置可用 `max_history_messages` 和 `max_history_chars` 同时限制短期历史；
 字符预算从最新消息向前保留，默认 24000 字符，设为 `0` 表示不限制。当前请求和
 完整人设不参与该裁剪，避免长历史挤占人设与工具声明的空间。
 
-## 会话与插话
+## Context 与 Collector
 
-同一 `ConversationKey`（协议 + 机器人 + 会话 + preset）内所有发言者共享一条短期
-历史和一条在途回复，不再按用户各自串行。生成期间到达的新消息会作为插话写入上下文，
-并取消当前 provider 调用，携带全部插话重新生成；`agent_interrupt_debounce_ms` 用于
-合并连续插话，`agent_interrupt_max_merges` 限制单轮重新生成次数。preset 隔离、群间
-隔离与 canonical 个人记忆跨私聊/群聊共享等原有不变量保持不变。
-
-群聊中默认首条回复会 At 触发者（`agent_mention_reply=auto`），进度消息不 At；
-私聊不 At。
+- 每个群和私聊拥有独立持久 Main Context，原始 tool call、tool result、reasoning 和
+  provider 内容都会写入 `data/jianer_ai/agent/contexts/`。
+- Collector 默认等待 5–16 秒并与上一条消息节奏相关，缓冲达到阈值时把旧事件压缩为摘要。
+- 处理期间的新事件保留到下一批，不再取消当前 provider 请求。
+- 达到历史预算后由 System Context 总结并替换历史前缀。
+- `~agent.context.summary` 手动总结当前 Context；`~agent.context.clear` 清空。
+- `~agent.stop` 中止当前处理；超过配置阈值后普通成员也可中止。
 
 ## 平台 API 工具
 
 当 `agent_platform_api_enabled` 为真时，模型获得当前协议对应的静态 API 工具：
 
-- `send_message`：向当前会话发送消息，支持正文、At 列表、引用消息与图片链接。
+- `send_group_msg` / `send_private_msg`：HypeR 主回复工具。
+- `collected_send`：长文本或合并转发发送。
+- `send_message`：兼容工具，支持正文、At 列表、引用消息与图片链接。
 - OneBot V11：按 [OneBot V11 公开 API](https://11.onebot.dev/api/public.html) 注册 38 个
   `onebot_*` 工具，包含消息收发、消息查询、群成员管理、好友请求和状态查询。隐藏 API
   与未声明 action 不会暴露。
@@ -356,18 +334,14 @@ python -m plugins.JianerAI.migrate_personas --model gemini --apply
 
 ## Sub-Agent
 
-`spawn_subagents` 允许父 Agent 一次派生多个 Sub-Agent 并发执行耗时较长的子任务，
-每个子任务运行独立的工具循环，父 Agent 等待并汇总结果。子 Agent 复用同一
-`ToolRegistry` 与权限模型，工具白名单为父白名单减去 `spawn_subagents` 与父无权限的
-工具；并发上限 `agent_subagent_max_concurrency`，单任务超时
-`agent_subagent_timeout_seconds`，深度上限 1（子 Agent 不能再派生）。子 Agent 接收当前轮次的
-只读自动记忆快照，结果只回传父 Agent，不会自动刷屏、写长期记忆或向其它会话发送消息。
-状态查询只返回当前协议、机器人账号、会话和角色预设范围内的任务；任务完成、取消、超时或
-插件重载后会从运行中列表移除。
+Sub-Agent 是最多 3 个的持久 Agent 实例。创建后拥有独立 prompt、history、tasks 和
+受限工具集；`sub_feed` 投喂任务，`sub_report` 把结果写回主 Context 的下一轮通知。
+子 Agent 不继承消息发送、平台写操作、memorix 写入和递归派生能力。元数据和历史保存在
+`data/jianer_ai/agent/subagents/`，插件重载后可重新发现。
 
 ## Tool 插件
 
-所有内置工具、平台 API 和 Sub-Agent 都通过 `ToolRegistry` 的 ToolPlugin provider 注册。第三方
+所有内置工具、平台 API、Context 工具和 Sub-Agent 都通过 `ToolRegistry` 注册。第三方
 插件可以实现 `plugin_id` 与 `provide_tools(context)`，再通过 `setup.py` 导出的
 `register_tool_plugin(plugin)` 动态加载；返回的 `ToolPluginRegistration` 可传给
 `unregister_tool_plugin(...)` 卸载。异步 provider 使用 service 的异步注册接口。每个工具仍经过

@@ -332,7 +332,6 @@ JianerAI 从 `aiconfig/*.ai.json` 读取模型，不以 `config.json` 里旧的 
 | `OpenAI Chat Completions` | OpenAI 兼容 Chat Completions |
 | `OpenAI Responses` | OpenAI Responses API |
 | `Google GenerateContent` | Google GenAI SDK |
-| `Anthropic Messages` | Anthropic Messages API |
 
 文件名去掉 `.ai.json` 后就是模型代码。上例的代码是 `primary`，因此在 `config.json -> others` 中设置：
 
@@ -340,13 +339,14 @@ JianerAI 从 `aiconfig/*.ai.json` 读取模型，不以 `config.json` 里旧的 
 {
   "default_mode": "primary",
   "memory_mode": "primary",
-  "persona_generation_model": "primary"
+  "agent_api_profile": "primary",
+  "agent_profile": "XingYu"
 }
 ```
 
-`persona_generation_model` 用于 `~添加预设`、`~重建人格` 和 `~人格 迁移` 的人格
-结构化；未配置时依次回退到当前会话模型和 `default_mode`。结构化结果单独保存在
-`prerequisites/personas/<preset_key>.json`，原始 `.txt` 人设不会被覆盖。
+`agent_api_profile` 指定当前全局 Agent 模型；`agent_profile` 指定
+`data/jianer_ai/profiles.json` 中的全局人设。原始人设模板直接作为 prompt，
+不再生成结构化人格 JSON。
 
 Linux 上收紧模型文件权限：
 
@@ -360,7 +360,12 @@ chmod 600 aiconfig/*.ai.json
 {
   "memory_enabled_default": true,
   "jianer_ai_db_path": "jianer_ai.db",
-  "agent_enabled_default": true,
+  "agent_heartbeat": false,
+  "agent_white": {},
+  "agent_collector_max_buffer": 80,
+  "agent_collector_keep_after_compress": 60,
+  "agent_core_idle_hours": 12,
+  "agent_max_history_chars": 60000,
   "agent_browser_enabled": true,
   "agent_allowed_tools": [
     "get_current_time",
@@ -436,9 +441,9 @@ AI：群里被 @ 或私聊时回复，群内可开启主动发言，回复拆成
    `~主动发言 决策` 回看最近的决策理由。确认效果后再发一次 `~主动发言 调试`
    关掉调试模式，并执行 `~主动发言 开启`。
 
-注意：JianerMate 只支持 `ResponseType` 为 `OpenAI` / `OpenAI-Compatible` /
-`Chat Completions` 的条目，Gemini 与 Anthropic 条目的模型会在
-`~主动发言 状态` 里显示为不支持。切换期间以下功能不可用：Agent 工具、长期记忆、
+注意：JianerMate 的原生客户端支持 `OpenAI` / `OpenAI-Compatible` /
+`Chat Completions`，Gemini 与 OpenAI Responses 通过 JianerAI Provider 桥接；
+Anthropic 已不再支持并在 `~主动发言 状态` 中显示为不可用。切换期间以下功能不可用：Agent 工具、长期记忆、
 TTS、回复后缀、MCP、飞书身份合并，以及依赖 JianerAI 的 MaimaiDX AI 工具。
 
 运行数据：
@@ -699,6 +704,7 @@ Stop-ScheduledTask -TaskName "JianerBot"
 | `aiconfig/*.ai.json` | 模型端点与 API Key | 必须，排除公开示例亦可 |
 | `secrets/` | QWeather 等私钥 | 必须 |
 | `jianer_ai.db*` | AI 会话、记忆和状态 | 必须；停机复制整组文件 |
+| `data/jianer_ai/` | 全局 profiles、Agent Context、Sub-Agent 和内容库 | Agent 历史与长期运行数据，必须备份 |
 | `data/maimaidx/private/` | 舞萌用户数据库和 OAuth Token | 使用 MaimaiDX 时必须 |
 | `data/jianer_browser/` | Agent 浏览器 profile 与审计日志 | 需要保留登录态或审计记录时备份 |
 | `Super_User.ini` / `Manage_User.ini` | 动态管理员名单 | 必须 |
@@ -706,7 +712,7 @@ Stop-ScheduledTask -TaskName "JianerBot"
 | `help_mode_settings.json` | 用户帮助显示偏好 | 建议 |
 | `like_data.json` | 点赞插件状态 | 建议 |
 | `suffix_config.json` | JianerAI 后缀 | 使用时必须 |
-| `prerequisites/` | 当前人设、自定义人设模板和 `personas/*.json` 结构化人格 | 修改人设时必须 |
+| `prerequisites/` | 原始人设模板和旧预设元数据（一次性导入来源） | 修改原始人设时必须 |
 | `data/maimaidx/static/` | 大型舞萌静态资源 | 可重新取得时可不备份，否则建议 |
 
 这些文件大多已被 Git 忽略；“`git status` 看不到”不等于“不需要备份”。

@@ -43,7 +43,12 @@ _BINARY_OPERATORS = {
 _UNARY_OPERATORS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
 _MAX_ABSOLUTE_NUMBER = 10**100
 BUILTIN_MUTATING_TOOL_NAMES = frozenset(
-    {"create_my_memory", "update_my_memory"}
+    {
+        "create_my_memory",
+        "update_my_memory",
+        "mem_add",
+        "mem_del",
+    }
 )
 
 
@@ -261,6 +266,150 @@ def register_builtin_tools(
             },
             handler=_update_my_memory,
             risk=ToolRisk.MUTATING,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="mem_add",
+            description=(
+                "向 memorix 长期记忆添加一条稳定事实。"
+                "默认写入当前发言人的 person 记忆；群共同约定可指定 group。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1000,
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["person", "group"],
+                        "default": "person",
+                    },
+                },
+                "required": ["content"],
+                "additionalProperties": False,
+            },
+            handler=_mem_add,
+            risk=ToolRisk.MUTATING,
+            group="memory",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="mem_query",
+            description="检索 memorix 中长期记忆，支持当前人物或当前群作用域。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "minLength": 1, "maxLength": 500},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["person", "group"],
+                        "default": "person",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            handler=_mem_query,
+            group="memory",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="mem_list",
+            description="列出 memorix 中长期记忆。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["person", "group"],
+                        "default": "person",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 10,
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+            handler=_mem_list,
+            group="memory",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="mem_del",
+            description="按 memory_id 删除当前人物的 memorix 长期记忆。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                    }
+                },
+                "required": ["memory_id"],
+                "additionalProperties": False,
+            },
+            handler=_mem_del,
+            risk=ToolRisk.MUTATING,
+            group="memory",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="task_add",
+            description="向当前 Agent Context 的任务列表添加一项任务。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "minLength": 1, "maxLength": 2000}
+                },
+                "required": ["content"],
+                "additionalProperties": False,
+            },
+            handler=_task_add,
+            group="task",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="task_remove",
+            description="从当前 Agent Context 删除指定编号任务。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "minimum": 1}
+                },
+                "required": ["index"],
+                "additionalProperties": False,
+            },
+            handler=_task_remove,
+            group="task",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="task_list",
+            description="列出当前 Agent Context 的任务。",
+            input_schema=_empty_schema(),
+            handler=_task_list,
+            group="task",
         )
     )
     registry.register(
@@ -743,6 +892,149 @@ async def _update_my_memory(
         operation="update",
     )
     return _memory_write_payload(context, result, scope=scope)
+
+
+async def _mem_add(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    content = str(arguments.get("content") or "")
+    return await _create_my_memory(
+        context,
+        {
+            "scope": str(arguments.get("scope") or "person"),
+            "memory_text": content,
+            "canonical_fact": content,
+        },
+    )
+
+
+async def _mem_query(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    query = str(arguments.get("query") or "").strip()
+    if not query:
+        raise ToolExecutionError("invalid_memory_query", "query 不能为空。")
+    scope, scope_kwargs = _memory_scope_kwargs(context, arguments)
+    limit = max(1, min(20, int(arguments.get("top_k", 5))))
+    if scope == "group":
+        method = getattr(context.memory, "query_group_memories", None)
+        if not callable(method):
+            raise ToolExecutionError(
+                "group_memory_unavailable",
+                "当前记忆后端不支持群记忆检索。",
+            )
+        records = await asyncio.to_thread(
+            method,
+            preset=context.conversation.preset,
+            **scope_kwargs,
+            query=query,
+            limit=limit,
+        )
+    else:
+        method = getattr(context.memory, "query_memories", None)
+        if not callable(method):
+            raise ToolExecutionError(
+                "memory_unavailable",
+                "当前记忆后端不支持记忆检索。",
+            )
+        records = await asyncio.to_thread(
+            method,
+            canonical_user_id=context.canonical_user_id,
+            preset=context.conversation.preset,
+            query=query,
+            limit=limit,
+        )
+    return {
+        "scope": scope,
+        "query": query,
+        "count": len(records),
+        "memories": [
+            {
+                "id": str(getattr(record, "fact_id", "")),
+                "content": str(getattr(record, "content", "")),
+                "weight": float(getattr(record, "weight", 0.0)),
+            }
+            for record in records
+        ],
+    }
+
+
+async def _mem_list(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    return await _list_my_memories(
+        context,
+        {
+            "scope": str(arguments.get("scope") or "person"),
+            "limit": max(1, min(20, int(arguments.get("limit", 10)))),
+        },
+    )
+
+
+async def _mem_del(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    method = getattr(context.memory, "delete_memory", None)
+    if not callable(method):
+        raise ToolExecutionError(
+            "memory_unavailable",
+            "当前记忆后端不支持删除记忆。",
+        )
+    memory_id = str(arguments.get("memory_id") or "").strip()
+    if not memory_id:
+        raise ToolExecutionError("invalid_memory_id", "memory_id 不能为空。")
+    deleted = await asyncio.to_thread(
+        method,
+        canonical_user_id=context.canonical_user_id,
+        preset=context.conversation.preset,
+        memory_id=memory_id,
+        reason="agent_requested",
+    )
+    return {"deleted": bool(deleted), "memory_id": memory_id}
+
+
+async def _task_add(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    method = getattr(context.agent, "task_add", None)
+    if not callable(method):
+        raise ToolExecutionError("task_unavailable", "当前 Agent 不支持任务列表。")
+    index = await method(str(arguments.get("content") or ""))
+    return {"added": True, "index": index}
+
+
+async def _task_remove(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    method = getattr(context.agent, "task_remove", None)
+    if not callable(method):
+        raise ToolExecutionError("task_unavailable", "当前 Agent 不支持任务列表。")
+    removed = await method(int(arguments.get("index", 0)))
+    return {"removed": bool(removed)}
+
+
+async def _task_list(
+    context: ToolContext,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    del arguments
+    method = getattr(context.agent, "task_list", None)
+    if not callable(method):
+        raise ToolExecutionError("task_unavailable", "当前 Agent 不支持任务列表。")
+    items = await method()
+    return {
+        "count": len(items),
+        "tasks": [
+            {"index": index, "content": str(item)}
+            for index, item in enumerate(items, start=1)
+        ],
+    }
 
 
 async def _attach_tool_memory_evidence(
