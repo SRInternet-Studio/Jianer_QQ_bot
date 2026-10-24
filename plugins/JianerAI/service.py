@@ -1963,7 +1963,7 @@ class JianerAIService:
             conversation,
             canonical,
             actor=actor,
-            model=self._model_for(conversation),
+            model=self._agent_model_for_key(key),
             attachments=attachments,
             memory_snapshot=memory_snapshot,
         )
@@ -1976,6 +1976,15 @@ class JianerAIService:
         )
         self._hyper_sinks[key] = sink
         self._hyper_run_started[key] = time.perf_counter()
+        model_details: dict[str, Any] = {}
+        try:
+            model_config = self.providers.get(context.model)
+            model_details = {
+                "model_name": model_config.model,
+                "provider": model_config.provider,
+            }
+        except Exception:
+            pass
         self._log_info(
             "JianerAI Agent turn started | "
             + format_log_data(
@@ -1985,6 +1994,7 @@ class JianerAIService:
                     "conversation_kind": key.scene_type,
                     "conversation_id": key.scene_id,
                     "model": context.model,
+                    **model_details,
                     "batch_messages": len(batch),
                     "prompt_chars": len(prompt),
                     "attachment_count": len(attachments),
@@ -3232,14 +3242,21 @@ class JianerAIService:
                     self._canonical_identity, event, actions
                 ),
                 actor=actor,
-                model=self._model_for(key),
+                model=self._agent_model_for_key(
+                    SessionKey(
+                        scene_type=key.kind.value,
+                        scene_id=key.conversation_id,
+                        protocol=key.protocol,
+                        self_id=key.self_id,
+                    )
+                ),
             )
             names = [
                 spec.name
                 for spec in self._available_agent_tools(
                     context,
                     enabled=True,
-                    model=self._model_for(key),
+                    model=context.model,
                 )
             ]
             text = "当前可用 Agent 工具：\n" + (

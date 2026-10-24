@@ -9,6 +9,7 @@ import pytest
 from jianer.adapters import ConversationKey, ConversationKind
 
 from plugins.JianerAI.agent_runtime.bootstrap import import_legacy_contexts
+from plugins.JianerAI.agent_runtime.api_profiles import ApiModelManager
 from plugins.JianerAI.agent_runtime.collector import Collector
 from plugins.JianerAI.agent_runtime.content_store import ContentStore
 from plugins.JianerAI.agent_runtime.core import (
@@ -34,6 +35,7 @@ from plugins.JianerAI.providers import (
     ModelConfigError,
     ProviderResponse,
     ProviderRequestError,
+    ProviderRegistry,
     ProviderToolCall,
     _build_openai_payload,
     load_model_config,
@@ -634,6 +636,35 @@ def test_model_config_accepts_case_insensitive_keys(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert load_model_config(path).base_url == "https://exact.example/v1"
+
+
+def test_agent_api_manager_prefers_configured_active_model(
+    tmp_path: Path,
+) -> None:
+    for key, provider, model in (
+        ("deepseek", "OpenAI Responses", "deepseek-flash"),
+        ("gemini", "Google GenerateContent", "gemini-3.8-flash"),
+    ):
+        (tmp_path / f"{key}.ai.json").write_text(
+            json.dumps(
+                {
+                    "FriendlyName": key,
+                    "Model": model,
+                    "ApiKey": "test-key",
+                    "ResponseType": provider,
+                    "BaseUrl": f"https://{key}.example/v1",
+                    "ToolsEnabled": "auto",
+                }
+            ),
+            encoding="utf-8",
+        )
+    registry = ProviderRegistry(tmp_path)
+    manager = ApiModelManager(
+        registry,
+        default_model="gemini",
+        active_model="deepseek",
+    )
+    assert manager.active == "deepseek"
 
 
 def test_collector_compresses_and_preserves_recent_events() -> None:
