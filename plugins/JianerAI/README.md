@@ -25,16 +25,16 @@ Context，完整保存模型 tool call、tool result、reasoning 和 provider �
 
 ## 常用命令
 
-- `~ai管理菜单`、`~切换AI [代码]`
-- `~角色扮演`、`~切换角色 [名称]`：管理全局 profiles
-- `~添加预设 [名称] [简介] : [原文]`、`~删除预设 [名称]`
-- `~重建人格 [名称]`：从原始模板重新加载；`~人格 迁移` 导入原始模板
+- `~模型菜单`、`~切换模型 [代码]`；兼容旧名 `~ai管理菜单`、`~切换AI`
+- `~人设`、`~切换人设 [名称]`：管理全局 profiles；兼容旧名 `~角色扮演`、`~切换角色`
+- `~添加人设 [名称] [简介] : [原文]`、`~删除人设 [名称]`
+- `~重载人设 [名称]`：从原始模板重新加载；`~人设 迁移` 导入原始模板
 - `~简儿记忆 [帮助|状态|开启|关闭|间隔|立即生成|列表|删除|清空|恢复]`
 - `~设置全局后缀`、`~删除全局后缀`
 - `~设置特定后缀`、`~删除特定后缀`
 - `~TTS [开启|关闭|状态]`
 - `~Agent [开启|关闭|状态|工具|子代理]`：管理当前群白名单、工具和 Sub-Agent 状态
-- `~注销`：清空当前 Main Context
+- `~清空上下文`：清空当前 Main Context；兼容旧名 `~注销`、`~重置上下文`
 - `~agent.on/off/status/stop/profile/context/func/model`：HypeR 风格别名
 
 后缀只在 `SuffixStore.apply_ai_reply()` 中应用；ping、群发、休眠等宿主消息不会
@@ -113,7 +113,7 @@ Context，完整保存模型 tool call、tool result、reasoning 和 provider �
 - `agent_browser_idle_seconds`：空闲页面回收时间，默认 900 秒
 
 当请求审核开启时，每次 AI 对话会先安全解析引用和附件，再把当前请求、最近最多 8 条且合计最多
-6000 字的短期上下文、当前完整人设模板以及解析后的图片、语音或视频字节
+6000 字的 Main Context 历史、当前完整人设模板以及解析后的图片、语音或视频字节
 交给 `content_moderation_model`。完整人设只供审核模型在 `refuse` 时模仿身份、自称、称呼方式、
 情感立场、句式节奏和口癖，不能参与安全分类，也不能覆盖审核规则。附件只有在审核模型所用
 协议支持对应格式时才能送审；不支持、解析失败或无法送达时会按 fail closed 拒绝本轮，
@@ -129,7 +129,7 @@ Context，完整保存模型 tool call、tool result、reasoning 和 provider �
 `content_moderation_enabled`，以上前置保障不会生效。若开启
 `content_moderation_ai_reply_enabled`，主模型回复（包括配置的回复后缀）会在发送前用同一
 审核模型检查；审核模型判断不能输出时，会像拒绝用户请求一样直接使用它生成的拒绝文本，
-不会把原回复保存到短期上下文、对话片段或回复后记忆审查。关闭
+不会把原回复保存到 Main Context、对话片段或回复后记忆审查。关闭
 `content_moderation_enabled` 只会关闭用户请求的前置审核；回复审核是否生效由
 `content_moderation_ai_reply_enabled` 单独决定。
 
@@ -241,7 +241,7 @@ transcription 接口，默认模型为
 完整短期历史、当前消息和本轮结构化工具调用结果；配置文件中的 `other` 或 `Extra_Body`
 也不能覆盖 `input`、`store` 或注入 `previous_response_id`。因此不会发起协议能力探测，
 也不依赖官方服务或第三方中转站保存 Response。持久历史按
-`(protocol, self_id, conversation_kind, conversation_id)` 隔离；执行“注销”会清空
+`(protocol, self_id, conversation_kind, conversation_id)` 隔离；执行“清空上下文”会清空
 当前 Main Context。
 
 音视频预处理要求系统存在 `ffmpeg` 和 `ffprobe`；Docker 镜像会自动安装。单个视频

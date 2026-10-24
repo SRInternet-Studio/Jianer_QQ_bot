@@ -509,7 +509,7 @@ def register_qweather_tools(
         try:
             config = QWeatherConfig.load(project_root, environ=environ)
         except QWeatherConfigError as exc:
-            log.warning(f"未注册 QWeather Tools：{exc}")
+            _log_warning(log, f"未注册 QWeather Tools：{exc}")
             return False
         if config is None:
             return False
@@ -517,6 +517,16 @@ def register_qweather_tools(
     for spec in qweather_tools(client):
         registry.register(spec)
     return True
+
+
+def _log_warning(logger: Any, message: str) -> None:
+    handler = getattr(logger, "warning", None)
+    if not callable(handler):
+        handler = getattr(logger, "info", None)
+    if not callable(handler):
+        handler = getattr(logger, "log", None)
+    if callable(handler):
+        handler(message)
 
 
 def _make_handler(

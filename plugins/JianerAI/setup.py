@@ -20,14 +20,14 @@ __plugin_meta__ = PluginMetadata(
     usage=(
         "@机器人 [问题] —> 群聊需要当前用户已在白名单；私聊自动处理\n"
         "{reminder}Agent 开启 / 关闭 —> 管理当前群白名单\n"
-        "{reminder}ai管理菜单 / {reminder}切换AI [代码] —> 管理全局 Agent 模型\n"
-        "{reminder}角色扮演 / {reminder}切换角色 [名称] —> 管理全局人设\n"
-        "{reminder}添加预设 / {reminder}删除预设 —> 管理全局原始人设\n"
-        "{reminder}重建人格 [名称] —> 从原始模板重新加载人设\n"
-        "{reminder}人格 迁移 [强制] —> 将原始模板导入 profiles.json\n"
+        "{reminder}模型菜单 / {reminder}切换模型 [代码] —> 管理全局 Agent 模型\n"
+        "{reminder}人设 / {reminder}切换人设 [名称] —> 管理全局人设\n"
+        "{reminder}添加人设 / {reminder}删除人设 —> 管理全局原始人设\n"
+        "{reminder}重载人设 [名称] —> 从原始模板重新加载人设\n"
+        "{reminder}人设 迁移 [强制] —> 将原始模板导入 profiles.json\n"
         "{reminder}设置全局后缀 / {reminder}删除全局后缀 —> 管理 AI 全局后缀\n"
         "{reminder}设置特定后缀 / {reminder}删除特定后缀 —> 管理个人 AI 后缀\n"
-        "{reminder}注销 —> 清空当前持久 Main Context\n"
+        "{reminder}清空上下文 —> 删除当前持久 Main Context（兼容旧命令：注销）\n"
         "{reminder}简儿记忆 [子命令] —> 管理长期记忆\n"
         "{reminder}TTS [开启|关闭|状态] —> 管理当前会话语音回复\n"
         "{reminder}Agent [开启|关闭|状态|工具|子代理] —> 管理白名单与 Agent 运行状态\n"
@@ -207,38 +207,81 @@ async def _invoke(
     return await method(event, actions, *args)
 
 
-@Command(f"{_REMINDER}ai管理菜单").handle()
+_model_menu_command = Alconna(
+    [f"{_REMINDER}模型菜单", f"{_REMINDER}ai管理菜单"]
+)
+
+
+@Command(_model_menu_command).handle()
 async def _model_menu(event: Any, actions: Any) -> bool:
     return await _invoke("show_model_menu", event, actions)
 
 
-@Command(f"{_REMINDER}切换AI <model>").handle()
+_switch_model_command = Alconna(
+    [f"{_REMINDER}切换模型", f"{_REMINDER}切换AI"],
+    Args["model", str],
+)
+
+
+@Command(_switch_model_command).handle()
 async def _switch_model(model: str, event: Any, actions: Any) -> bool:
     return await _invoke("switch_model", event, actions, model)
 
 
-@Command(f"{_REMINDER}角色扮演").handle()
+_persona_menu_command = Alconna(
+    [f"{_REMINDER}人设", f"{_REMINDER}角色扮演"]
+)
+
+
+@Command(_persona_menu_command).handle()
 async def _persona_menu(event: Any, actions: Any) -> bool:
     return await _invoke("show_persona_menu", event, actions)
 
 
-@Command(f"{_REMINDER}切换角色 <name>").handle()
+_switch_persona_command = Alconna(
+    [f"{_REMINDER}切换人设", f"{_REMINDER}切换角色"],
+    Args["name", str],
+)
+
+
+@Command(_switch_persona_command).handle()
 async def _switch_persona(name: str, event: Any, actions: Any) -> bool:
     return await _invoke("switch_persona", event, actions, name)
 
 
-@Command(f"{_REMINDER}添加预设 <definition>").handle()
-async def _add_persona(definition: str, event: Any, actions: Any) -> bool:
-    return await _invoke("add_persona", event, actions, definition)
+_add_persona_command = Alconna(
+    [f"{_REMINDER}添加人设", f"{_REMINDER}添加预设"],
+    Args["definition", MultiVar(str)],
+)
 
 
-@Command(f"{_REMINDER}重建人格 <name>").handle()
+@Command(_add_persona_command).handle()
+async def _add_persona(
+    definition: str | tuple[str, ...],
+    event: Any,
+    actions: Any,
+) -> bool:
+    text = (
+        " ".join(str(item) for item in definition)
+        if isinstance(definition, tuple)
+        else str(definition)
+    )
+    return await _invoke("add_persona", event, actions, text)
+
+
+_reload_persona_command = Alconna(
+    [f"{_REMINDER}重载人设", f"{_REMINDER}重建人格"],
+    Args["name", str],
+)
+
+
+@Command(_reload_persona_command).handle()
 async def _rebuild_persona(name: str, event: Any, actions: Any) -> bool:
     return await _invoke("rebuild_persona", event, actions, name)
 
 
 _persona_command = Alconna(
-    f"{_REMINDER}人格",
+    [f"{_REMINDER}人设", f"{_REMINDER}人格"],
     Args["action", str],
     Args["rest", MultiVar(str, "*")],
 )
@@ -257,7 +300,13 @@ async def _persona_command_handler(
     return await _invoke("migrate_personas", event, actions, force)
 
 
-@Command(f"{_REMINDER}删除预设 <name>").handle()
+_delete_persona_command = Alconna(
+    [f"{_REMINDER}删除人设", f"{_REMINDER}删除预设"],
+    Args["name", str],
+)
+
+
+@Command(_delete_persona_command).handle()
 async def _delete_persona(name: str, event: Any, actions: Any) -> bool:
     return await _invoke("delete_persona", event, actions, name)
 
@@ -338,7 +387,16 @@ async def _reject_shell_command(
     )
 
 
-@Command(f"{_REMINDER}注销").handle()
+_clear_context_command = Alconna(
+    [
+        f"{_REMINDER}清空上下文",
+        f"{_REMINDER}重置上下文",
+        f"{_REMINDER}注销",
+    ]
+)
+
+
+@Command(_clear_context_command).handle()
 async def _logout(event: Any, actions: Any) -> bool:
     return await _invoke("clear_context", event, actions)
 

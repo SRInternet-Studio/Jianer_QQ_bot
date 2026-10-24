@@ -24,6 +24,8 @@
 - 新增脱敏的 `config.example.json`，提供 OneBot、Milky、Kritor、飞书和 AI 基础配置结构。
 
 ### 变更
+- JianerAI 命令改用无歧义主名称：`模型菜单/切换模型`、`人设/切换人设`、
+  `添加人设/删除人设/重载人设`、`清空上下文`；旧命令继续作为兼容别名。
 - JianerMate 模型来源改为可多目录：新增 `jianer_mate_ai_config_dirs`（插件配置里的 `ai_config_dirs`），
   除默认 `aiconfig` 外还能并列加载其它 `*.ai.json` 目录，同名模型以先加载的为准并给出重复提示；
   `planner/replyer` 留空时按宿主 `default_mode` 自动选择，启动日志分别列出原生模型、桥接模型与已加载但不支持的条目。
@@ -54,6 +56,8 @@
 - 飞书绑定以 JSON 为权威源，通过持久 outbox 幂等合并 AI 身份；回调失败不回滚非 AI 绑定。
 
 ### 修复
+- QWeather 工具注册兼容只实现 `info/error/log` 的旧 logger，避免可选天气配置失败时
+  连带清空 JianerMate 的整张工具表。
 - JianerMate 的后台任务（表情包收集、主动发言、记忆审查、第三方工具加载）现在会记录异常，不再是静默消失的 `Task exception was never retrieved`。
 - 修复 JianerMate 被动回复整体不可用：`on_message_fallback` 调用了不存在的 `_has_media`，群里只有 `@` 或只发图片时直接抛 `AttributeError` 并中断派发；现在补齐该方法，纯 `@` 走「只是 @ 了你」提示，纯媒体按图片/语音/视频判定。
 - `~人格 转换` 遇到模型返回非 JSON 时不再只回一句「模型返回的 JSON 无法解析」：先以更严格的“只输出 JSON”提示重试一次，仍失败时提示所用模型并建议换模型或缩短设定；JSON 解析同时容忍对象/数组结尾的多余逗号。

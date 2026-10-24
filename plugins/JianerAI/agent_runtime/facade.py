@@ -612,7 +612,8 @@ class AgentFacade:
             f"白名单用户：{', '.join(sorted(self.group_whitelist(key))) or '无'}\n"
             f"当前人设：{self.profiles.active_name}\n"
             f"当前模型：{model}\n"
-            f"命令：{self.reminder}agent.on/off/status/stop/profile/context"
+            f"命令：{self.reminder}agent.on/off/status/stop/profile/context\n"
+            f"清空当前上下文：{self.reminder}清空上下文"
         )
 
     def profile_status(self) -> str:

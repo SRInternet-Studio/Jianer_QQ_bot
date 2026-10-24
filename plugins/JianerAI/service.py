@@ -2182,8 +2182,9 @@ class JianerAIService:
             f"{self.options.bot_name} 全局人设",
             f"当前：{self.agent_profiles.active_name}",
             "可用：" + ", ".join(self.agent_profiles.list()),
-            f"切换：{self.options.reminder}切换角色 [名称]",
-            f"添加：{self.options.reminder}添加预设 [名称] [简介] : [角色内容]",
+            f"切换：{self.options.reminder}切换人设 [名称]",
+            f"添加：{self.options.reminder}添加人设 [名称] [简介] : [角色内容]",
+            f"重载：{self.options.reminder}重载人设 [名称]",
         ]
         await self._send_text(event, actions, "\n".join(lines), reply=False)
         return True
@@ -2264,7 +2265,7 @@ class JianerAIService:
                 actions,
                 (
                     "用法："
-                    f"{self.options.reminder}添加预设 [名称] [简介] : [角色内容]"
+                    f"{self.options.reminder}添加人设 [名称] [简介] : [角色内容]"
                 ),
                 reply=False,
             )
