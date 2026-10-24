@@ -270,3 +270,4 @@ suffix_config.json
 prerequisites/current.json
 prerequisites/.persona-backup-*/
 .pytest_tmp_*/
+MIGRATION_FROM_D3BE294.md
