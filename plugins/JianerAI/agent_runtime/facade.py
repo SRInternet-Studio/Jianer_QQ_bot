@@ -55,6 +55,7 @@ class AgentFacade:
         collector_max_summary_chars: int = 8000,
         stop_permission: str = "any_admin",
         stop_open_after: float = 10.0,
+        reply_cooldown_seconds: float = 30.0,
         max_concurrency: int = 0,
         take_notices: Callable[[SessionKey], Sequence[Any]] | None = None,
         logger: Any | None = None,
@@ -78,6 +79,10 @@ class AgentFacade:
         )
         self.stop_permission = str(stop_permission or "any_admin")
         self.stop_open_after = max(0.1, float(stop_open_after))
+        self.reply_cooldown_seconds = max(
+            0.0,
+            float(reply_cooldown_seconds),
+        )
         self._api_semaphore = (
             asyncio.Semaphore(max(1, int(max_concurrency)))
             if int(max_concurrency) > 0
@@ -88,6 +93,7 @@ class AgentFacade:
         self._collectors: dict[SessionKey, Collector] = {}
         self._latest: dict[SessionKey, tuple[Any, Any, PermissionGroup, str]] = {}
         self._seen: dict[str, float] = {}
+        self._last_reply: dict[SessionKey, float] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._heartbeat_task: asyncio.Task[Any] | None = None
         self._whitelist = self._load_whitelist()
@@ -150,6 +156,9 @@ class AgentFacade:
             if principal not in group_white:
                 await collector.append_passive(agent_event)
                 return True
+            if self.reply_cooldown_active(key):
+                await collector.append_passive(agent_event)
+                return True
             await collector.append(agent_event)
             await collector.start(principal, perm, self._self_id(event))
             return True
@@ -165,6 +174,8 @@ class AgentFacade:
             )
             return True
         await collector.append(agent_event)
+        if self.reply_cooldown_active(key):
+            return True
         await collector.start(principal, perm, self._self_id(event))
         return True
 
@@ -193,6 +204,20 @@ class AgentFacade:
         key = self.session_key(event)
         self._seen[self._event_token(event, key)] = time.monotonic()
         self._prune_seen()
+
+    def note_agent_reply(self, key: SessionKey) -> None:
+        if self.reply_cooldown_seconds <= 0:
+            return
+        self._last_reply[key] = time.monotonic()
+
+    def reply_cooldown_active(self, key: SessionKey) -> bool:
+        if self.reply_cooldown_seconds <= 0:
+            return False
+        last = self._last_reply.get(key)
+        return (
+            last is not None
+            and time.monotonic() - last < self.reply_cooldown_seconds
+        )
 
     async def on_notice(self, event: Any, actions: Any) -> bool:
         name = type(event).__name__

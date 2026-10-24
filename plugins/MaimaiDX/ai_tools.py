@@ -34,14 +34,12 @@ if TYPE_CHECKING:  # JianerAI is an optional companion plugin.
         ToolContext,
         ToolExecutionError,
         ToolRegistration,
-        ToolRisk,
         ToolSpec,
     )
 
 
 JIANER_AI_PLUGIN_ID = "jianerbot-plugin-jianer-ai"
-JIANER_MATE_PLUGIN_ID = "jianerbot-plugin-jianer-mate"
-AI_TOOL_HOSTS = (JIANER_AI_PLUGIN_ID, JIANER_MATE_PLUGIN_ID)
+AI_TOOL_HOSTS = (JIANER_AI_PLUGIN_ID,)
 DIVINGFISH_SOURCE = "水鱼查分器"
 ALIAS_SOURCE = "Yuri-YuzuChaN别名数据源"
 SUPPORTED_PROTOCOLS = frozenset(adapter.SUPPORTED_PROTOCOLS)
@@ -701,7 +699,7 @@ def maimaidx_tool_specs() -> tuple[ToolSpec, ...]:
 
 
 def _jianer_ai_module(manager: Any) -> Any | None:
-    """Return the loaded AI host entry (JianerAI or JianerMate), if any."""
+    """Return the loaded JianerAI host entry, if any."""
 
     plugins = getattr(manager, "plugins", None) or {}
     for plugin_id in AI_TOOL_HOSTS:

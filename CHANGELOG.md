@@ -13,8 +13,10 @@
   持久禁用状态；旧 `ToolSpec`、`ToolPlugin`、`available/execute` 接口保持兼容。
 - 新增 `reverse_image_search` 工具（以图搜文）：读取当前消息图片或公开 `image_url`，依次尝试 Bing Visual Search、Yandex、Google Lens、SauceNAO，返回识别标签与相关网页；Bing 读取 `BING_VISUAL_SEARCH_KEY`，SauceNAO 读取可选 `SAUCENAO_API_KEY`。
 - `web_search` 新增 AnySearch 提供方（`WEB_SEARCH_PROVIDER=anysearch`）：调用 `POST https://api.anysearch.com/v1/search`，API Key 可选（匿名走每日免费额度），支持 `ANYSEARCH_ZONE`、`ANYSEARCH_LANGUAGE`、`ANYSEARCH_TAG`、`ANYSEARCH_PARAMS` 配置，也可加入 `WEB_SEARCH_FALLBACK_BACKENDS` 作为 DDGS 失败后的回退后端。
-- JianerMate 新增 `~模型` / `~模型 <代码>` / `~模型 重置`：列出可用模型并把本会话回复模型切换成任意原生或桥接模型，覆盖值存在 `mate.db` 的 `state` 表里，只影响当前群/私聊且重启后仍然生效。
-- 新增目录插件 `plugins/JianerMate/`（`jianerbot-plugin-jianer-mate`）：单人设群聊 AI，支持群内 @/私聊被动对话、按群开启的主动发言、短句多段回复与拟人化后处理（错别字自纠、颜文字/口癖）、全局表情包库（自动收集、视觉挑选、`~偷表情`/`~表情包` 管理）、MaiBot 风格人格（备用说话风格、群聊/私聊提示词、别名点名）、旧预设用 LLM 转写为人格（`~人格 转换/导入/重置`）；模型复用 `aiconfig`，非 OpenAI 兼容条目（Gemini/Anthropic/Responses）通过 JianerAI Provider 层桥接；长期记忆默认走 memorix（缺 embedding 配置自动回退旧存储）并在回复后自动审查写入，工具侧接入内置工具、只读平台 API、Agent Skills、MCP、第三方插件工具、`bash`（人工审批）与 `spawn_subagents`；支持 TTS 语音回复与回复后缀；拥有独立插件配置文件 `data/jianer_mate/config.json`（优先于宿主 `config.others` 的同名键）。
+- JianerAI 新增 HypeR 风格全局表情包库：图片内容寻址去重、规范化压缩、
+  中文 BM25 检索、容量淘汰、收藏者/使用次数元数据，并提供 `sticker_add`、
+  `sticker_delete`、`sticker_search`、`sticker_send`、`sticker_list` 五个
+  Agent 工具及 `~偷表情`、`~表情包` 管理命令。
 - `web_search` 支持模型用 `backend` 指定搜索后端；当前模型为 DeepSeek 官方 API 时自动改用 DeepSeek 网页搜索；DDGS 超时或网络错误后按智谱、博查、Bing 中国顺序自动回退，新增 `WEB_SEARCH_FALLBACK_BACKENDS`、`ZHIPUAI_API_KEY`、`BOCHA_API_KEY` 配置。
 - 新增目录插件 `plugins/Wordle/`（参考 `nonebot-plugin-wordle`，MIT）：`~wordle [-l 长度] [-d 词典]` 开局、`~wordle 猜 <单词>` 竞猜、`~wordle 提示/状态/结束`；群内共享一局、任何成员都可猜，开局后也可直接发送单词、提示或结束；用 PIL 渲染棋盘，内置多套词典与释义，长度 3~8、最多“长度+1”次机会，10 分钟超时自动结束。
 - 移植 `nonebot-plugin-maimaidx` v3.1.4 为 JianerCore 目录插件 `plugins/MaimaiDX/`，覆盖成绩、曲目、别名、猜歌、表格、数据源和主题等命令，并保留上游 MIT 许可与绘图署名。
@@ -33,10 +35,14 @@
   摘要包含工具名、参数与结果；长记录按 `agent_profile_summary_chunk_chars`
   分段后再合并。显示名仅作为 Jianer 旧预设的 UI 兼容层，不影响 memorix
   人设分区键。
-- JianerMate 模型来源改为可多目录：新增 `jianer_mate_ai_config_dirs`（插件配置里的 `ai_config_dirs`），
-  除默认 `aiconfig` 外还能并列加载其它 `*.ai.json` 目录，同名模型以先加载的为准并给出重复提示；
-  `planner/replyer` 留空时按宿主 `default_mode` 自动选择，启动日志分别列出原生模型、桥接模型与已加载但不支持的条目。
-- 舞萌DX 的 AI 工具宿主改为依次查找 JianerAI 与 JianerMate，切换到 JianerMate 后 `b50`、查歌、猜歌等 AI 工具依旧可用。
+- 删除独立插件 `plugins/JianerMate/`，AI 对话、人格、表情包、记忆和工具能力
+  统一由 JianerAI 提供，不再保留双 AI 宿主和互斥切换路径。
+- 舞萌DX 的 AI 工具只挂接 JianerAI 宿主，不再探测 JianerMate。
+- JianerAI 自动发言增加会话级冷却（默认 30 秒）；冷却期内普通消息只进入
+  Collector 缓存，被 @、回复 Bot 与主人私聊仍然立即处理。System Prompt 同时
+  要求只在被点名、强相关或确有信息时发言。
+- AI 回复统一按换行、自然句和 `max_message_length` 拆分为多条短消息；
+  单换行不再把多个自然段挤进同一条消息。
 - 舞萌DX 不再依赖 JianerAI 插件：移除插件依赖声明，未启用或尚未就绪时跳过 AI 工具注册并在监听启动后重试，命令功能与 `@机器人` 消息让位行为保持不变。
 - 舞萌DX 插件不再响应群聊中 `@机器人` 的消息，这类消息继续交给 JianerAI 处理；`b50 @成员` 等指定其他群成员的查询不受影响。
 - 网页搜索提供方改由宿主配置 `WEB_SEARCH_PROVIDER` 决定（`ddgs` 默认，或 `deepseek` 官方网页搜索 API `POST /v1/tools/search`），不再按当前对话模型的 BaseUrl 自动切换；`deepseek` 也可作为 DDGS 回退链的一环，密钥读取 `DEEPSEEK_API_KEY`。
@@ -63,12 +69,13 @@
 - 飞书绑定以 JSON 为权威源，通过持久 outbox 幂等合并 AI 身份；回调失败不回滚非 AI 绑定。
 
 ### 修复
+- 修复 HypeR Agent 失败日志把开始计时写成打印时刻、`duration_ms` 永远接近 0
+  的问题；现在记录真实耗时、具体 `AgentCoreError.code` 和错误摘要，并补充
+  每轮开始/完成的正常日志。
 - 修复运行中修改 `profiles.json` 后仍沿用启动时缓存人设的问题；当前人设现在
   按 HypeR 行为在每次构建 System Prompt 和切换前重新读取磁盘。
 - QWeather 工具注册兼容只实现 `info/error/log` 的旧 logger，避免可选天气配置失败时
-  连带清空 JianerMate 的整张工具表。
-- JianerMate 的后台任务（表情包收集、主动发言、记忆审查、第三方工具加载）现在会记录异常，不再是静默消失的 `Task exception was never retrieved`。
-- 修复 JianerMate 被动回复整体不可用：`on_message_fallback` 调用了不存在的 `_has_media`，群里只有 `@` 或只发图片时直接抛 `AttributeError` 并中断派发；现在补齐该方法，纯 `@` 走「只是 @ 了你」提示，纯媒体按图片/语音/视频判定。
+  连带清空 JianerAI 的整张工具表。
 - `~人格 转换` 遇到模型返回非 JSON 时不再只回一句「模型返回的 JSON 无法解析」：先以更严格的“只输出 JSON”提示重试一次，仍失败时提示所用模型并建议换模型或缩短设定；JSON 解析同时容忍对象/数组结尾的多余逗号。
 - 修复 Gemini 400 `any_of` schema 报错：构造 functionDeclarations 时把 `anyOf`/`oneOf` 的同级字段（`type`、`properties`、`required`、`description` 等）合并进各分支，OneBot、Milky 与 MCP 工具声明不再与 Gemini 限制冲突。
 - 修复 Gemini 3 缺少 `thoughtSignature` 的 400：回放时把单独的签名 part 合并到 functionCall；若上游完全没返回签名，则终止该轮工具回放，并把“工具调用失败：上游未返回 thoughtSignature”的原因直接返回给用户。

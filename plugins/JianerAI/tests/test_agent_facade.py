@@ -84,6 +84,29 @@ def test_mention_processes_buffered_batch_immediately(tmp_path: Path) -> None:
     assert after_runs == [None]
 
 
+def test_reply_cooldown_suppresses_automatic_group_reply(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    sessions = _Sessions(calls)
+    facade, _, _ = _facade(tmp_path, sessions)
+    key = facade.session_key(_event(mentioned=False))
+    facade.set_whitelisted(key, "user-1", True)
+    facade.note_agent_reply(key)
+
+    async def scenario():
+        handled = await facade.observe(
+            _event(mentioned=False),
+            SimpleNamespace(),
+        )
+        await asyncio.sleep(0.05)
+        await facade.close()
+        return handled
+
+    assert asyncio.run(scenario()) is True
+    assert calls == []
+
+
 def test_agent_on_off_command_updates_whitelist(tmp_path: Path) -> None:
     sessions = _Sessions([])
     facade, replies, _ = _facade(tmp_path, sessions)

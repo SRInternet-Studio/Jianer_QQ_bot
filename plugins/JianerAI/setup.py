@@ -29,6 +29,8 @@ __plugin_meta__ = PluginMetadata(
         "{reminder}设置特定后缀 / {reminder}删除特定后缀 —> 管理个人 AI 后缀\n"
         "{reminder}清空上下文 —> 删除当前持久 Main Context（兼容旧命令：注销）\n"
         "{reminder}简儿记忆 [子命令] —> 管理长期记忆\n"
+        "{reminder}偷表情 [关键词] —> 收藏当前或引用图片到全局表情包库\n"
+        "{reminder}表情包 [状态|列表|查看|删除] —> 管理全局表情包库\n"
         "{reminder}TTS [开启|关闭|状态] —> 管理当前会话语音回复\n"
         "{reminder}Agent [开启|关闭|状态|工具|子代理] —> 管理白名单与 Agent 运行状态\n"
         "{reminder}agent.context / stop / profile / func / model —> HypeR 风格 Agent 管理\n"
@@ -309,6 +311,57 @@ _delete_persona_command = Alconna(
 @Command(_delete_persona_command).handle()
 async def _delete_persona(name: str, event: Any, actions: Any) -> bool:
     return await _invoke("delete_persona", event, actions, name)
+
+
+@Command(
+    Alconna(
+        f"{_REMINDER}偷表情",
+        Args["keywords", MultiVar(str, "*")],
+    )
+).handle()
+async def _steal_sticker(
+    keywords: tuple[str, ...] | str = (),
+    event: Any = None,
+    actions: Any = None,
+) -> bool:
+    values = (keywords,) if isinstance(keywords, str) else keywords
+    return await _invoke(
+        "steal_sticker",
+        event,
+        actions,
+        " ".join(str(item) for item in values),
+    )
+
+
+@Command(
+    Alconna(
+        f"{_REMINDER}表情包",
+        Args["action", str],
+        Args["argument", str],
+        Args["extra", MultiVar(str, "*")],
+    )
+).handle()
+async def _sticker_with_extra(
+    action: str,
+    argument: str = "",
+    extra: tuple[str, ...] | str = (),
+    event: Any = None,
+    actions: Any = None,
+) -> bool:
+    values = (extra,) if isinstance(extra, str) else extra
+    return await _invoke(
+        "sticker_command",
+        event,
+        actions,
+        action,
+        argument,
+        " ".join(str(item) for item in values),
+    )
+
+
+@Command(Alconna(f"{_REMINDER}表情包")).handle()
+async def _sticker_status(event: Any = None, actions: Any = None) -> bool:
+    return await _invoke("sticker_command", event, actions, "状态", "", "")
 
 
 @Command(f"{_REMINDER}设置全局后缀 <suffix>").handle()

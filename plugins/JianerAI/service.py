@@ -89,6 +89,11 @@ from plugins.JianerAI.providers import (
     ProviderRegistry,
     UnknownModelError,
 )
+from plugins.JianerAI.sticker_store import (
+    StickerOptions,
+    StickerStore,
+    normalize_sticker_image,
+)
 from plugins.JianerAI.speech import (
     SpeechError,
     SpeechOptions,
@@ -114,6 +119,7 @@ from plugins.JianerAI.tools.web_browser import BrowserOptions
 from plugins.JianerAI.tools.agent_skills import AgentSkillManager
 from plugins.JianerAI.tools.loaded_plugins import load_active_plugin_tools
 from plugins.JianerAI.tools.bash import ShellApprovalManager
+from plugins.JianerAI.tools.stickers import sticker_tools
 
 
 _LOGGER = logging.getLogger("jianer_ai")
@@ -228,6 +234,14 @@ _MEMORY_REVIEW_SYSTEM_RULES = (
     "简洁、可用于去重的事实摘要。update 的 memory_id 必须来自输入的 allowed IDs。"
 )
 _BARE_MENTION_PROMPT = "用户在群聊中只@了你，请自然地回应对方。"
+
+
+def _int_argument(value: Any) -> int | None:
+    try:
+        parsed = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _trusted_milky_media_origin(
@@ -355,6 +369,13 @@ class RuntimeOptions:
     agent_browser_audit_path: Path = Path("data/jianer_browser/audit.jsonl")
     agent_browser_max_pages: int = 16
     agent_browser_idle_seconds: float = 900.0
+    agent_sticker_enabled: bool = True
+    agent_sticker_dir: Path = Path("data/jianer_ai/stickers")
+    agent_sticker_max_entries: int = 500
+    agent_sticker_max_size_mb: float = 5.0
+    agent_sticker_max_dimension: int = 4096
+    agent_sticker_send_interval_seconds: float = 10.0
+    agent_sticker_description_model: str = ""
     agent_skills_enabled: bool = True
     agent_skills_dirs: tuple[Path, ...] = ()
     agent_skills_max_file_bytes: int = 65536
@@ -376,6 +397,7 @@ class RuntimeOptions:
     agent_sys_request_timeout: float = 300.0
     agent_stop_perm: str = "any_admin"
     agent_stop_open_after: float = 10.0
+    agent_reply_cooldown_seconds: float = 30.0
     agent_max_concurrency: int = 0
 
     def __post_init__(self) -> None:
@@ -463,6 +485,16 @@ class RuntimeOptions:
         )
         if not browser_audit_path.is_absolute():
             browser_audit_path = project_root / browser_audit_path
+        sticker_dir = Path(
+            str(
+                others.get(
+                    "agent_sticker_dir",
+                    "data/jianer_ai/stickers",
+                )
+            )
+        )
+        if not sticker_dir.is_absolute():
+            sticker_dir = project_root / sticker_dir
         configured_skill_dirs = others.get("agent_skills_dirs", [".agents/skills"])
         if isinstance(configured_skill_dirs, str):
             configured_skill_dirs = [
@@ -723,6 +755,32 @@ class RuntimeOptions:
                 30.0,
                 float(others.get("agent_browser_idle_seconds", 900)),
             ),
+            agent_sticker_enabled=_runtime_bool(
+                others.get("agent_sticker_enabled", True),
+                default=True,
+            ),
+            agent_sticker_dir=sticker_dir.resolve(),
+            agent_sticker_max_entries=max(
+                1,
+                int(others.get("agent_sticker_max_entries", 500)),
+            ),
+            agent_sticker_max_size_mb=max(
+                0.1,
+                float(others.get("agent_sticker_max_size_mb", 5.0)),
+            ),
+            agent_sticker_max_dimension=max(
+                128,
+                int(others.get("agent_sticker_max_dimension", 4096)),
+            ),
+            agent_sticker_send_interval_seconds=max(
+                0.0,
+                float(
+                    others.get("agent_sticker_send_interval_seconds", 10.0)
+                ),
+            ),
+            agent_sticker_description_model=str(
+                others.get("agent_sticker_description_model") or ""
+            ).strip(),
             agent_skills_enabled=_runtime_bool(
                 others.get("agent_skills_enabled", True), default=True
             ),
@@ -796,6 +854,10 @@ class RuntimeOptions:
             agent_stop_open_after=max(
                 0.1,
                 float(others.get("agent_stop_open_after", 10.0)),
+            ),
+            agent_reply_cooldown_seconds=max(
+                0.0,
+                float(others.get("agent_reply_cooldown_seconds", 30.0)),
             ),
             agent_max_concurrency=max(
                 0,
@@ -1275,6 +1337,20 @@ class JianerAIService:
             approval_timeout_seconds=options.agent_bash_approval_timeout_seconds,
             command_timeout_seconds=options.agent_bash_command_timeout_seconds,
         )
+        self.sticker_store = StickerStore(
+            StickerOptions(
+                directory=options.agent_sticker_dir,
+                enabled=options.agent_sticker_enabled,
+                max_entries=options.agent_sticker_max_entries,
+                max_size_bytes=int(
+                    options.agent_sticker_max_size_mb * 1024 * 1024
+                ),
+                max_dimension=options.agent_sticker_max_dimension,
+                send_interval_seconds=(
+                    options.agent_sticker_send_interval_seconds
+                ),
+            )
+        )
         allowed_risks = {
             ToolRisk.READ_ONLY,
             ToolRisk.PRESENTATION,
@@ -1342,6 +1418,16 @@ class JianerAIService:
             register_platform_api_tools(platform_source)
             self.tools.register_plugin(
                 StaticToolPlugin("jianerbot-tool-platform-api", platform_source.specs)
+            )
+        if options.agent_sticker_enabled:
+            self.tools.register_plugin(
+                StaticToolPlugin(
+                    "jianerbot-tool-stickers",
+                    sticker_tools(
+                        self.sticker_store,
+                        self._describe_sticker_image,
+                    ),
+                )
             )
         if options.agent_skills_enabled:
             self.tools.register_plugin(
@@ -1478,6 +1564,7 @@ class JianerAIService:
             ),
             stop_permission=options.agent_stop_perm,
             stop_open_after=options.agent_stop_open_after,
+            reply_cooldown_seconds=options.agent_reply_cooldown_seconds,
             max_concurrency=options.agent_max_concurrency,
             take_notices=self.agent_subagents.take_reports,
             logger=self._logger,
@@ -1490,6 +1577,7 @@ class JianerAIService:
             self_id=str(getattr(runtime_config, "uin", "") or ""),
         )
         self._hyper_sinks: dict[SessionKey, HypeRMessageSink] = {}
+        self._hyper_run_started: dict[SessionKey, float] = {}
         self._agent_bootstrap_complete = False
         self._active_presets: dict[ConversationBase, str] = {}
         self._preset_locks: dict[ConversationBase, asyncio.Lock] = {}
@@ -1734,6 +1822,42 @@ class JianerAIService:
         )
         return self._model_for(conversation)
 
+    async def _describe_sticker_image(
+        self,
+        raw: bytes,
+        hint: str = "",
+    ) -> str:
+        try:
+            normalized, mime, _extension = await asyncio.to_thread(
+                normalize_sticker_image,
+                raw,
+                max_dimension=self.options.agent_sticker_max_dimension,
+                max_size_bytes=int(
+                    self.options.agent_sticker_max_size_mb * 1024 * 1024
+                ),
+            )
+            model = (
+                self.options.agent_sticker_description_model
+                or self.agent_api.active
+                or self.options.default_model
+            )
+            prompt = (
+                "请描述这张表情包图片，供之后按画面和情绪检索。"
+                "用简体中文，100 字以内，一整段话，不要分点、不要寒暄。\n"
+                "需要覆盖：画面主体；动作、表情与情绪；适合表达什么。\n"
+                "图中出现的文字要原样保留。\n"
+                f"收藏者备注（仅供参考）：{str(hint or '').strip() or '无'}"
+            )
+            description = await self.providers.chat(
+                model,
+                prompt,
+                attachments=(MediaAttachment(data=normalized, mime=mime),),
+            )
+            return str(description or "").strip()[:200]
+        except Exception:
+            self._log_info("JianerAI sticker description unavailable")
+            return ""
+
     async def _moderate_hyper_input(
         self,
         event: Any,
@@ -1851,6 +1975,22 @@ class JianerAIService:
             canonical,
         )
         self._hyper_sinks[key] = sink
+        self._hyper_run_started[key] = time.perf_counter()
+        self._log_info(
+            "JianerAI Agent turn started | "
+            + format_log_data(
+                {
+                    "protocol": key.protocol,
+                    "self_id": key.self_id,
+                    "conversation_kind": key.scene_type,
+                    "conversation_id": key.scene_id,
+                    "model": context.model,
+                    "batch_messages": len(batch),
+                    "prompt_chars": len(prompt),
+                    "attachment_count": len(attachments),
+                }
+            )
+        )
         return replace(
             context,
             history=tuple(
@@ -1912,6 +2052,19 @@ class JianerAIService:
         error: Exception | None,
     ) -> None:
         sink = self._hyper_sinks.pop(key, None)
+        started_at = self._hyper_run_started.pop(
+            key,
+            time.perf_counter(),
+        )
+        batch_prompt = "\n".join(
+            str(
+                (item.get("payload") or {}).get("text")
+                if isinstance(item.get("payload"), Mapping)
+                else ""
+            )
+            for item in batch
+            if isinstance(item, Mapping)
+        ).strip()
         if error is not None:
             if sink is not None and sink.visible_texts:
                 try:
@@ -1927,10 +2080,13 @@ class JianerAIService:
                     "user_id": principal,
                     "history_messages": len(batch),
                 },
-                "",
+                batch_prompt,
                 set(),
-                time.perf_counter(),
-                error_code=type(error).__name__,
+                started_at,
+                error_code=str(
+                    getattr(error, "code", type(error).__name__)
+                ),
+                error_message=str(error)[:500],
             )
             if type(error).__name__ not in {"AgentStopped"}:
                 try:
@@ -1948,6 +2104,16 @@ class JianerAIService:
                     elif isinstance(error, ProviderError):
                         failure_text = (
                             "模型请求失败。请检查当前 aiconfig 模型配置和网络连接。"
+                        )
+                    elif getattr(error, "code", "") == "agent_tools_unavailable":
+                        failure_text = (
+                            "Agent 工具没有成功加载。请重载 JianerAI，"
+                            "并检查启动日志中的工具注册错误。"
+                        )
+                    elif getattr(error, "code", "") == "agent_timeout":
+                        failure_text = (
+                            "本轮 Agent 处理超时。可以缩小问题范围后重试，"
+                            "或发送 ~Agent 停止 中止残留处理。"
                         )
                     else:
                         failure_text = (
@@ -1967,7 +2133,24 @@ class JianerAIService:
             return
         try:
             await sink.finalize()
+            self.agent_facade.note_agent_reply(key)
             conversation = sink.key
+            self._log_info(
+                "JianerAI Agent turn completed | "
+                + format_log_data(
+                    {
+                        "protocol": key.protocol,
+                        "self_id": key.self_id,
+                        "conversation_kind": key.scene_type,
+                        "conversation_id": key.scene_id,
+                        "duration_ms": round(
+                            (time.perf_counter() - started_at) * 1000,
+                            2,
+                        ),
+                        "visible_messages": len(sink.visible_texts),
+                    }
+                )
+            )
             user_text = "\n".join(
                 str(
                     (item.get("payload") or {}).get("text")
@@ -2239,6 +2422,213 @@ class JianerAIService:
         ]
         await self._send_text(event, actions, "\n".join(lines), reply=False)
         return True
+
+    async def steal_sticker(
+        self,
+        event: Any,
+        actions: Any,
+        keywords: str = "",
+    ) -> bool:
+        if not self.options.agent_sticker_enabled:
+            await self._send_text(
+                event,
+                actions,
+                "表情包功能当前已关闭。",
+                reply=False,
+            )
+            return True
+        attachments = await self._sticker_command_images(event, actions)
+        if not attachments:
+            await self._send_text(
+                event,
+                actions,
+                "没有找到图片：请带图发送，或回复一张图片后再试。",
+                reply=False,
+            )
+            return True
+        raw = attachments[0].data
+        hint = str(keywords or "").strip()
+        description = await self._describe_sticker_image(raw, hint)
+        result = await asyncio.to_thread(
+            self.sticker_store.add,
+            raw,
+            description or hint or "(未生成描述)",
+            hint,
+            str(getattr(event, "user_id", "") or ""),
+        )
+        if result.entry is None:
+            text = f"收藏失败：{result.reason or '未知原因'}。"
+        elif result.status == "duplicate":
+            text = f"这张图片已经在表情包库里：#{result.entry.id}。"
+        else:
+            text = (
+                f"已收藏表情包 #{result.entry.id}。\n"
+                f"描述：{result.entry.description or '(无)'}"
+            )
+        await self._send_text(event, actions, text, reply=False)
+        return True
+
+    async def sticker_command(
+        self,
+        event: Any,
+        actions: Any,
+        action: str = "",
+        argument: str = "",
+        extra: str = "",
+    ) -> bool:
+        normalized = str(action or "").strip().casefold()
+        if normalized in {"", "状态", "status"}:
+            status = self.sticker_store.status()
+            state = "开启" if status["enabled"] else "关闭"
+            await self._send_text(
+                event,
+                actions,
+                (
+                    f"表情包库：{status['count']} 张，"
+                    f"{status['bytes'] / (1024 * 1024):.1f} MB（{state}）\n"
+                    f"目录：{status['directory']}"
+                ),
+                reply=False,
+            )
+            return True
+        if normalized in {"添加", "收藏", "add"}:
+            keywords = " ".join(
+                item
+                for item in (str(argument or "").strip(), str(extra or "").strip())
+                if item
+            )
+            return await self.steal_sticker(event, actions, keywords)
+        if normalized in {"列表", "list"}:
+            try:
+                page = max(1, int(str(argument or "1").strip() or "1"))
+            except ValueError:
+                page = 1
+            page_size = 10
+            entries = self.sticker_store.list_recent(
+                page * page_size
+            )[(page - 1) * page_size : page * page_size]
+            if not entries:
+                await self._send_text(
+                    event,
+                    actions,
+                    "这一页没有表情包。",
+                    reply=False,
+                )
+                return True
+            lines = [
+                f"#{entry.id} [{entry.keywords or '无标签'}] "
+                f"{entry.description[:28]}"
+                for entry in entries
+            ]
+            await self._send_text(
+                event,
+                actions,
+                f"表情包第 {page} 页：\n" + "\n".join(lines),
+                reply=False,
+            )
+            return True
+        if normalized in {"查看", "信息", "info", "show"}:
+            sticker_id = _int_argument(argument)
+            entry = (
+                self.sticker_store.get(sticker_id)
+                if sticker_id is not None
+                else None
+            )
+            if entry is None:
+                await self._send_text(
+                    event,
+                    actions,
+                    "用法：~表情包 查看 <编号>",
+                    reply=False,
+                )
+                return True
+            caption = (
+                f"#{entry.id}｜{entry.description or '无描述'}\n"
+                f"关键词：{entry.keywords or '无'}\n"
+                f"收藏者：{entry.adder or '未知'}｜已用 {entry.use_count} 次"
+            )
+            capabilities = frozenset(getattr(actions, "capabilities", ()))
+            if Capability.SEND_IMAGE not in capabilities:
+                await self._send_text(
+                    event,
+                    actions,
+                    caption + "\n当前连接不支持发送图片。",
+                    reply=False,
+                )
+                return True
+            await self._send_sticker_entry(event, actions, entry.file)
+            await self._send_text(event, actions, caption, reply=False)
+            return True
+        if normalized in {"删除", "delete", "remove", "del"}:
+            sticker_id = _int_argument(argument)
+            if sticker_id is None:
+                await self._send_text(
+                    event,
+                    actions,
+                    "用法：~表情包 删除 <编号>",
+                    reply=False,
+                )
+                return True
+            removed = await asyncio.to_thread(
+                self.sticker_store.delete,
+                sticker_id,
+            )
+            await self._send_text(
+                event,
+                actions,
+                (
+                    f"已删除表情包 #{sticker_id}。"
+                    if removed is not None
+                    else f"没有找到 #{sticker_id}。"
+                ),
+                reply=False,
+            )
+            return True
+        await self._send_text(
+            event,
+            actions,
+            "用法：~表情包 [状态|列表 1|查看 <编号>|删除 <编号>]",
+            reply=False,
+        )
+        return True
+
+    async def _sticker_command_images(
+        self,
+        event: Any,
+        actions: Any,
+    ) -> tuple[MediaAttachment, ...]:
+        try:
+            base = self._conversation_base(event, actions)
+            key = ConversationKey(
+                protocol=base.protocol,
+                self_id=base.self_id,
+                kind=base.kind,
+                conversation_id=base.conversation_id,
+                preset=self.agent_profiles.active_name or "default",
+            )
+            _, attachments = await self._resolve_inputs(event, actions, key)
+        except Exception:
+            return ()
+        return tuple(
+            attachment
+            for attachment in attachments
+            if str(getattr(attachment, "mime", "")).startswith("image/")
+        )
+
+    async def _send_sticker_entry(
+        self,
+        event: Any,
+        actions: Any,
+        path: str,
+    ) -> None:
+        file = Path(path).resolve()
+        image = Segments.Image(f"file://{file}")
+        image.summary = "[表情包]"
+        setattr(image, "is_emoji", True)
+        await actions.send(
+            message=Manager.Message(image),
+            **self._target_kwargs(event),
+        )
 
         await asyncio.to_thread(self.presets.reload)
         key = await self._conversation_key(event, actions)
@@ -3120,6 +3510,7 @@ class JianerAIService:
             await self.agent_facade.close()
             await self.agent_subagents.close()
             self._hyper_sinks.clear()
+            self._hyper_run_started.clear()
             console_thread, self._memory_console_thread = self._memory_console_thread, None
             if console_thread is not None:
                 stop_console = getattr(console_thread, "stop", None)
@@ -4225,19 +4616,29 @@ class JianerAIService:
         at_user_ids: Sequence[str] = (),
     ) -> None:
         normalized = str(text or "（无可用回复）").rstrip()
-        parts = [
-            paragraph.rstrip()
-            for paragraph in re.split(
-                r"\n(?:[ \t]*\n)+",
-                normalized,
-            )
+        paragraphs = [
+            paragraph.strip()
+            for paragraph in re.split(r"\n+", normalized)
             if paragraph.strip()
         ]
-        parts = parts or ["（无可用回复）"]
+        parts: list[str] = []
+        for paragraph in paragraphs:
+            if len(paragraph) <= self.options.max_reply_chars:
+                parts.append(paragraph)
+            else:
+                parts.extend(self._split_reply(paragraph))
+        parts = [
+            part.strip()
+            for part in parts
+            if part.strip()
+        ] or ["（无可用回复）"]
         if len(parts) > _AI_FORWARD_THRESHOLD:
             if await self._send_ai_forward(event, actions, parts):
                 return
-            parts = ["\n\n".join(parts)]
+        if len(parts) > self.options.max_reply_parts:
+            parts = parts[: self.options.max_reply_parts - 1] + [
+                "\n".join(parts[self.options.max_reply_parts - 1 :])
+            ]
         await self._send_text_parts(
             event,
             actions,
@@ -6441,12 +6842,14 @@ class JianerAIService:
         started_at: float,
         *,
         error_code: str,
+        error_message: str = "",
     ) -> None:
         payload = dict(context)
         payload.update(
             {
-                "prompt": prompt,
+                "prompt": str(prompt or "")[:500],
                 "error_code": str(error_code),
+                "error_message": str(error_message)[:500],
                 "duration_ms": round(
                     (time.perf_counter() - started_at) * 1000,
                     2,

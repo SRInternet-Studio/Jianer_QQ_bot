@@ -73,6 +73,7 @@ from plugins.JianerAI.tools.web_browser import (
     BrowserOptions,
     web_browser_tool,
 )
+from plugins.JianerAI.tools.stickers import sticker_tools
 
 __all__ = [
     "BUILTIN_MUTATING_TOOL_NAMES",
@@ -120,6 +121,7 @@ __all__ = [
     "send_group_message_tool",
     "send_private_message_tool",
     "send_message_tool",
+    "sticker_tools",
     "HtmlCardRenderer",
     "RenderedCard",
     "QWeatherClient",

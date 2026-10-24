@@ -48,6 +48,8 @@ BUILTIN_MUTATING_TOOL_NAMES = frozenset(
         "update_my_memory",
         "mem_add",
         "mem_del",
+        "sticker_add",
+        "sticker_delete",
     }
 )
 
