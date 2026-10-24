@@ -226,6 +226,14 @@ class AgentCore:
             turns.append(response.turn)
             for provider_call in response.tool_calls:
                 self._raise_if_stopped()
+                call_started = time.perf_counter()
+                self._log_tool_event(
+                    "started",
+                    round=rounds,
+                    call_id=str(provider_call.id),
+                    tool=str(provider_call.name),
+                    arguments=provider_call.arguments,
+                )
                 spec = declarations.get(str(provider_call.name))
                 if spec is None:
                     result_content = json.dumps(
@@ -244,6 +252,23 @@ class AgentCore:
                     )
                     result_content = result.content
                     result_name = result.name
+                self._log_tool_event(
+                    "completed" if spec is not None and result.ok else "failed",
+                    round=rounds,
+                    call_id=str(provider_call.id),
+                    tool=result_name,
+                    duration_ms=round(
+                        (time.perf_counter() - call_started) * 1000,
+                        2,
+                    ),
+                    result_chars=len(result_content),
+                    result_preview=result_content,
+                    error_code=(
+                        result.error_code
+                        if spec is not None
+                        else "unknown_tool"
+                    ),
+                )
                 tool_count += 1
                 turns.append(
                     ToolResultTurn(
@@ -555,6 +580,26 @@ class AgentCore:
         if self._stop_event is not None and self._stop_event.is_set():
             raise AgentStopped()
 
+    def _log_tool_event(self, event: str, **fields: Any) -> None:
+        if self.logger is None:
+            return
+        payload = {
+            key: _safe_tool_log_value(value)
+            for key, value in fields.items()
+        }
+        try:
+            self.logger.info(
+                f"Agent tool call {event} | "
+                + json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                )[:3000]
+            )
+        except Exception:
+            pass
+
     def _repair_history(self) -> None:
         """Remove an incomplete tool-call suffix after interruption."""
 
@@ -703,6 +748,54 @@ def _profile_tool_call_text(call: Mapping[str, Any]) -> str:
         f"{json.dumps(arguments if arguments is not None else {}, ensure_ascii=False)}"
         ")"
     )
+
+
+_SENSITIVE_LOG_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "password",
+        "passwd",
+        "private_key",
+        "secret",
+        "token",
+    }
+)
+
+
+def _safe_tool_log_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 4:
+        return "…"
+    if isinstance(value, Mapping):
+        output: dict[str, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            folded = name.casefold()
+            if any(marker in folded for marker in _SENSITIVE_LOG_KEYS):
+                output[name] = "[REDACTED]"
+            else:
+                output[name] = _safe_tool_log_value(
+                    item,
+                    depth=depth + 1,
+                )
+        return output
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return [
+            _safe_tool_log_value(item, depth=depth + 1)
+            for item in value[:50]
+        ]
+    if isinstance(value, (bytes, bytearray)):
+        return f"<{len(value)} bytes>"
+    if isinstance(value, str):
+        return value if len(value) <= 500 else value[:500] + "…"
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:500]
 
 
 def _mapping_copy(value: Any) -> dict[str, Any] | None:

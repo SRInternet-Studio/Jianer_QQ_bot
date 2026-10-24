@@ -11,7 +11,11 @@ from jianer.adapters import ConversationKey, ConversationKind
 from plugins.JianerAI.agent_runtime.bootstrap import import_legacy_contexts
 from plugins.JianerAI.agent_runtime.collector import Collector
 from plugins.JianerAI.agent_runtime.content_store import ContentStore
-from plugins.JianerAI.agent_runtime.core import AgentCore, _retryable_provider_error
+from plugins.JianerAI.agent_runtime.core import (
+    AgentCore,
+    _retryable_provider_error,
+    _safe_tool_log_value,
+)
 from plugins.JianerAI.agent_runtime.models import AgentEvent, AgentRole, SessionKey
 from plugins.JianerAI.agent_runtime.profiles import ProfileError, ProfileStore
 from plugins.JianerAI.agent_runtime.prompts import (
@@ -704,6 +708,7 @@ def test_agent_core_executes_tool_then_finishes_and_persists_history(
     tmp_path: Path,
 ) -> None:
     executed: list[str] = []
+    logs: list[str] = []
 
     def send_handler(context, arguments):
         del context
@@ -751,6 +756,7 @@ def test_agent_core_executes_tool_then_finishes_and_persists_history(
             return ProviderResponse("{}", (), AssistantTurn(text="{}"))
 
     providers = Providers()
+    logger = SimpleNamespace(info=logs.append)
     key = SessionKey(
         scene_type="group",
         scene_id="group-1",
@@ -765,6 +771,7 @@ def test_agent_core_executes_tool_then_finishes_and_persists_history(
         store=ContextStore(tmp_path),
         model_resolver=lambda _key: "demo",
         prompt_builder=lambda specs: "system",
+        logger=logger,
     )
 
     result = asyncio.run(
@@ -777,6 +784,21 @@ def test_agent_core_executes_tool_then_finishes_and_persists_history(
     assert len(loaded) == 3
     assert loaded[-2]["role"] == "assistant"
     assert loaded[-1]["role"] == "tool"
+    assert any("Agent tool call started" in line for line in logs)
+    assert any("send_group_msg" in line for line in logs)
+    assert any("Agent tool call completed" in line for line in logs)
+
+
+def test_tool_log_values_redact_secrets() -> None:
+    value = _safe_tool_log_value(
+        {
+            "api_key": "sk-secret",
+            "nested": {"authorization": "Bearer secret", "text": "ok"},
+        }
+    )
+    assert value["api_key"] == "[REDACTED]"
+    assert value["nested"]["authorization"] == "[REDACTED]"
+    assert value["nested"]["text"] == "ok"
 
 
 def test_subagents_are_discovered_after_manager_restart(tmp_path: Path) -> None:
