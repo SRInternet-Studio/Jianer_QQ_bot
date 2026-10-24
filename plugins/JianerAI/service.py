@@ -4614,7 +4614,10 @@ class JianerAIService:
         reply: bool,
         at_user_ids: Sequence[str] = (),
     ) -> None:
-        parts = self._split_reply(str(text or "（无可用回复）"))
+        # Command menus, status output, and error notices are structured
+        # system text. They must remain intact instead of using the AI reply
+        # segmentation policy.
+        parts = [str(text or "（无可用回复）")]
         await self._send_text_parts(
             event,
             actions,
