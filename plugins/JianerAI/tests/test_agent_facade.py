@@ -8,7 +8,7 @@ from jianer.adapters import ConversationKey, ConversationKind
 
 from plugins.JianerAI.agent_runtime.facade import AgentFacade
 from plugins.JianerAI.agent_runtime.models import SessionKey
-from plugins.JianerAI.service import HypeRMessageSink
+from plugins.JianerAI.service import HypeRMessageSink, JianerAIService
 from plugins.JianerAI.tools.contracts import ToolContext
 
 
@@ -146,6 +146,44 @@ def test_hype_sink_applies_suffix_and_emits_one_tts() -> None:
     asyncio.run(scenario())
     assert sent == ["first后缀", "second后缀"]
     assert speech == ["first后缀\nsecond后缀"]
+
+
+def test_agent_command_help_describes_hype_runtime(tmp_path: Path) -> None:
+    facade, _, _ = _facade(tmp_path, _Sessions([]))
+    key = SessionKey(
+        scene_type="group",
+        scene_id="group-1",
+        protocol="milky",
+        self_id="bot-1",
+    )
+    text = facade.command_help(key)
+    assert "白名单用户" in text
+    assert "当前人设" in text
+    assert "当前模型" in text
+    assert "自动模式" not in text
+
+
+def test_legacy_auto_mode_output_explains_whitelist_semantics() -> None:
+    sent: list[str] = []
+    service = object.__new__(JianerAIService)
+    service.options = SimpleNamespace(reminder="~")
+
+    async def send_text(event, actions, text, *, reply=False):
+        del event, actions, reply
+        sent.append(text)
+
+    service._send_text = send_text
+
+    handled = asyncio.run(
+        service.configure_agent(
+            _event(text="~Agent 自动", mentioned=False),
+            SimpleNamespace(),
+            "自动",
+        )
+    )
+    assert handled is True
+    assert "旧" in sent[0]
+    assert "白名单" in sent[0]
 
 
 class _Core:

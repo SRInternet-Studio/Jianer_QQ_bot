@@ -2135,7 +2135,7 @@ class JianerAIService:
             "————————————————————",
             f"当前全局 Agent 模型: {models.get(current, current)} ({current})",
             "",
-            "可用AI:",
+            "可用 Agent 模型:",
         ]
         if models:
             lines.extend(f"- {friendly} (代码: {name})" for name, friendly in models.items())
@@ -2492,12 +2492,12 @@ class JianerAIService:
                 str(name or "").strip(),
             )
             text = (
-                f"已删除预设: {str(name).strip()}"
+                f"已删除全局人设：{str(name).strip()}"
                 if deleted
-                else "无法删除该预设。"
+                else "无法删除该全局人设。"
             )
         except Exception:
-            text = "无法删除当前正在使用的人设。"
+            text = "无法删除当前正在使用的人设；请先切换人设。"
         await self._send_text(event, actions, text, reply=False)
         return True
 
@@ -2676,7 +2676,19 @@ class JianerAIService:
                 )
             await self._send_text(event, actions, text, reply=False)
             return True
-        if normalized in _STATUS_WORDS | {"auto", "自动", "默认", ""}:
+        if normalized in {"auto", "自动", "默认"}:
+            await self._send_text(
+                event,
+                actions,
+                (
+                    "旧的“自动模式”已取消。群聊必须由白名单成员触发，"
+                    "私聊自动处理；使用 "
+                    f"{self.options.reminder}Agent 开启 加入当前群白名单。"
+                ),
+                reply=False,
+            )
+            return True
+        if normalized in _STATUS_WORDS | {""}:
             await self._send_text(
                 event,
                 actions,
@@ -2711,10 +2723,24 @@ class JianerAIService:
             await self._send_text(
                 event,
                 actions,
-                "当前 Agent 工具：\n" + "\n".join(f"- {name}" for name in names),
+                (
+                    "当前 Agent 工具：\n"
+                    + ("\n".join(f"- {name}" for name in names) if names else "- 无")
+                ),
                 reply=False,
             )
             return True
+        await self._send_text(
+            event,
+            actions,
+            (
+                f"用法：{self.options.reminder}Agent "
+                "开启 / 关闭 / 状态 / 工具 / 子代理\n"
+                "群聊自动处理必须先把用户加入白名单；私聊自动处理。"
+            ),
+            reply=False,
+        )
+        return True
         key = await self._conversation_key(event, actions)
         if normalized in {
             "tools",
@@ -2874,7 +2900,7 @@ class JianerAIService:
         await self._send_text(
             event,
             actions,
-            f"当前会话的短期上下文已清空，{self.options.bot_name}更轻松了~",
+            "当前 Main Context 已清空，持久历史和工具回合记录已一并删除。",
             reply=False,
         )
         return True

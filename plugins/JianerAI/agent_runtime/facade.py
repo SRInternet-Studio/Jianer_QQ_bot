@@ -606,10 +606,12 @@ class AgentFacade:
 
     def command_help(self, key: SessionKey) -> str:
         active = bool(self.group_whitelist(key)) if key.scene_type == "group" else True
+        model = getattr(self.model_manager, "active", "") or "未配置"
         return (
             f"Agent 状态：{'已启用' if active else '未启用'}\n"
             f"白名单用户：{', '.join(sorted(self.group_whitelist(key))) or '无'}\n"
             f"当前人设：{self.profiles.active_name}\n"
+            f"当前模型：{model}\n"
             f"命令：{self.reminder}agent.on/off/status/stop/profile/context"
         )
 

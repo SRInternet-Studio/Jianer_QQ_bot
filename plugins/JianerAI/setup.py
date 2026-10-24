@@ -18,18 +18,20 @@ __plugin_meta__ = PluginMetadata(
     name="jianerbot-plugin-jianer-ai",
     description="Jianer AI agent, tools, dialogue, personas, speech, suffixes, and memory.",
     usage=(
-        "@机器人 [问题] —> 群聊 AI 对话（裸 At 也会回应）；私聊直接发送问题\n"
-        "{reminder}ai管理菜单 / {reminder}切换AI [代码] —> 管理当前会话模型\n"
-        "{reminder}角色扮演 / {reminder}切换角色 [名称] —> 管理当前会话角色\n"
-        "{reminder}添加预设 / {reminder}删除预设 —> 管理角色预设\n"
-        "{reminder}重建人格 [名称] —> 重新生成结构化人格\n"
-        "{reminder}人格 迁移 [强制] —> 批量迁移旧预设\n"
+        "@机器人 [问题] —> 群聊需要当前用户已在白名单；私聊自动处理\n"
+        "{reminder}Agent 开启 / 关闭 —> 管理当前群白名单\n"
+        "{reminder}ai管理菜单 / {reminder}切换AI [代码] —> 管理全局 Agent 模型\n"
+        "{reminder}角色扮演 / {reminder}切换角色 [名称] —> 管理全局人设\n"
+        "{reminder}添加预设 / {reminder}删除预设 —> 管理全局原始人设\n"
+        "{reminder}重建人格 [名称] —> 从原始模板重新加载人设\n"
+        "{reminder}人格 迁移 [强制] —> 将原始模板导入 profiles.json\n"
         "{reminder}设置全局后缀 / {reminder}删除全局后缀 —> 管理 AI 全局后缀\n"
         "{reminder}设置特定后缀 / {reminder}删除特定后缀 —> 管理个人 AI 后缀\n"
-        "{reminder}注销 —> 清空当前会话的短期上下文\n"
+        "{reminder}注销 —> 清空当前持久 Main Context\n"
         "{reminder}简儿记忆 [子命令] —> 管理长期记忆\n"
         "{reminder}TTS [开启|关闭|状态] —> 管理当前会话语音回复\n"
-        "{reminder}Agent [开启|关闭|自动|状态|工具|子代理] —> 管理当前会话 Agent\n"
+        "{reminder}Agent [开启|关闭|状态|工具|子代理] —> 管理白名单与 Agent 运行状态\n"
+        "{reminder}agent.context / stop / profile / func / model —> HypeR 风格 Agent 管理\n"
         "{reminder}批准Shell / {reminder}拒绝Shell [请求ID] —> 审核 Agent 的 Shell 命令"
     ),
     requires={"jianerbot-plugin-alconna"},
