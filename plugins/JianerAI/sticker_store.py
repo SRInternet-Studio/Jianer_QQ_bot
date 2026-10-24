@@ -360,6 +360,26 @@ def normalize_sticker_image(
         raise StickerError("缺少 Pillow 依赖") from exc
     try:
         with Image.open(io.BytesIO(raw)) as source:
+            source_format = str(getattr(source, "format", "") or "").upper()
+            animated = bool(getattr(source, "is_animated", False))
+            frame_count = int(getattr(source, "n_frames", 1) or 1)
+            if source_format in {"GIF", "WEBP"} or (
+                source_format == "PNG" and animated
+            ):
+                # HypeR stores the original sticker bytes. Re-encoding an
+                # animated sticker would flatten it to the first frame.
+                if max(source.size) > max(128, int(max_dimension)):
+                    raise StickerError("动图尺寸超过上限")
+                if len(raw) > max_size_bytes:
+                    raise StickerError("动图超过大小上限")
+                passthrough = {
+                    "GIF": ("image/gif", ".gif"),
+                    "WEBP": ("image/webp", ".webp"),
+                    "PNG": ("image/png", ".png"),
+                }
+                mime, extension = passthrough[source_format]
+                if frame_count > 1 or source_format in {"GIF", "WEBP"}:
+                    return raw, mime, extension
             source.seek(0)
             image = ImageOps.exif_transpose(source).convert("RGBA")
     except Exception as exc:

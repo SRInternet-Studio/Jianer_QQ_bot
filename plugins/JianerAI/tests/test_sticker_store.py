@@ -16,6 +16,23 @@ def _image(color: str) -> bytes:
     return output.getvalue()
 
 
+def _animated_gif() -> bytes:
+    frames = [
+        Image.new("RGB", (64, 64), color)
+        for color in ("red", "blue", "green")
+    ]
+    output = io.BytesIO()
+    frames[0].save(
+        output,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=120,
+        loop=0,
+    )
+    return output.getvalue()
+
+
 def test_sticker_store_add_search_deduplicate_and_delete(
     tmp_path: Path,
 ) -> None:
@@ -68,6 +85,23 @@ def test_sticker_store_trims_old_entries_and_tools_register(
         "sticker_search",
         "sticker_send",
     }
+
+
+def test_animated_gif_is_stored_without_flattening(tmp_path: Path) -> None:
+    store = StickerStore(
+        StickerOptions(directory=tmp_path / "stickers", max_entries=10)
+    )
+    raw = _animated_gif()
+    result = store.add(raw, "游动的鱼", "奶鱼 动图", "user-1")
+
+    assert result.status == "added"
+    assert result.entry is not None
+    stored = Path(result.entry.file)
+    assert stored.suffix == ".gif"
+    assert stored.read_bytes() == raw
+    with Image.open(stored) as image:
+        assert image.is_animated is True
+        assert image.n_frames == 3
 
 
 async def _description() -> str:

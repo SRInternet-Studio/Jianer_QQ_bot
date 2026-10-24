@@ -132,7 +132,8 @@ def sticker_tools(
             name="sticker_add",
             description=(
                 "收藏一张图片到全局表情包库。可传图片 URL；省略 URL 时使用"
-                "当前消息或引用消息中的第一张图片。keywords 用于辅助检索。"
+                "当前消息或引用消息中的第一张图片。动画 GIF/WebP 会原样保存，"
+                "不会压成静态首帧。keywords 用于辅助检索。"
             ),
             input_schema={
                 "type": "object",
