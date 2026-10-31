@@ -11,17 +11,32 @@ from __future__ import annotations
 from typing import Any
 
 from arclet.alconna import Alconna
-from jianer.plugins.builtin.alconna import CommandMatcher as _CommandMatcher
+from jianer.plugins.builtin.alconna import (
+    CommandMatcher as _CommandMatcher,
+    _coerce_alconna,
+)
 
 from .. import adapter
+from . import trigger
 
 
 class CommandMatcher(_CommandMatcher):
     """Command matcher that ignores messages mentioning the bot itself."""
 
+    def __init__(self, command: str | Alconna):
+        super().__init__(command)
+        self._trigger_pattern = command
+
     async def dispatch(self, event: Any, actions: Any) -> bool:
         if adapter.mentions_self(event):
             return False
+        if not trigger.is_triggered(event):
+            return False
+        event = trigger.body_event(event)
+        if isinstance(self._trigger_pattern, str):
+            self.command = _coerce_alconna(
+                f"{trigger.reminder()}{self._trigger_pattern}"
+            )
         return await super().dispatch(event, actions)
 
 

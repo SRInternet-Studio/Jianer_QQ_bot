@@ -1,5 +1,6 @@
 """Register every MaimaiDX command and expose message-wide routes."""
 
+from . import trigger
 from .. import adapter
 from . import alias as alias_commands
 from . import base as base_commands
@@ -13,6 +14,9 @@ async def handle_raw(event, actions):
     # Messages that @ the bot belong to the AI fallback; never answer them.
     if adapter.mentions_self(event):
         return False
+    if not trigger.is_triggered(event):
+        return False
+    event = trigger.body_event(event)
     for handler in (
         base_commands.handle_pending_oauth,
         base_commands.handle_pending_divingfish_code,

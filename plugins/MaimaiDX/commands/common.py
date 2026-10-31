@@ -10,6 +10,7 @@ from ..core.clients.exceptions import UserNotBindError
 from ..core.database.qq import User, get_user, update_user
 from ..core.merge.models import ServiceName
 from ..runtime import runtime
+from . import trigger
 
 
 AUTHORIZE_ERROR = (
@@ -148,12 +149,10 @@ async def require_resources(event: Any, actions: Any) -> bool:
 
 
 def command_argument(event: Any, command: str, parsed: str = "") -> str:
-    raw = str(getattr(event, "msg_str", "") or "").strip()
-    if raw[: len(command)].lower() == command.lower():
-        value = raw[len(command) :].strip()
-    else:
-        value = str(parsed or "").strip()
-    return value
+    return (
+        trigger.command_body(getattr(event, "msg_str", ""), command)
+        or str(parsed or "").strip()
+    )
 
 
 def is_private(event: Any) -> bool:

@@ -8,10 +8,13 @@ __plugin_meta__ = PluginMetadata(
     name="jianerbot-plugin-maimaidx",
     description="舞萌DX曲目、查分、别名、猜歌和进度表插件。",
     usage=(
-        "帮助maimaiDX —> 查看舞萌DX插件使用说明\n"
-        "b50 [@成员|QQ号] / ap50 / info / ginfo —> 查询成绩与谱面\n"
-        "查歌 / id / 今日舞萌 / 定数表 / 完成表 —> 曲目与进度功能\n"
-        "lxbind / dfbind / 数据源 / 主题 —> 管理查分器与授权\n"
+        "{reminder}帮助maimaiDX —> 查看舞萌DX插件使用说明\n"
+        "{reminder}b50 [@成员|QQ号] / {reminder}ap50 / {reminder}info / "
+        "{reminder}ginfo —> 查询成绩与谱面\n"
+        "{reminder}查歌 / {reminder}id / {reminder}今日舞萌 / "
+        "{reminder}定数表 / {reminder}完成表 —> 曲目与进度功能\n"
+        "{reminder}lxbind / {reminder}dfbind / {reminder}数据源 / "
+        "{reminder}主题 —> 管理查分器与授权\n"
         "群里 @机器人 的消息交由 AI 处理，本插件不响应"
     ),
     requires={"jianerbot-plugin-alconna"},
