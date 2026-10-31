@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from plugins.JianerAI.agent_runtime.context_messages import (
+    current_batch_user_text,
+)
 from plugins.JianerAI.tools.contracts import (
     ToolContext,
     ToolExecutionError,
@@ -151,14 +154,4 @@ def _event_message_id(event: Any) -> str:
 
 
 def _current_user_text(history: Sequence[Mapping[str, str]]) -> str:
-    texts: list[str] = []
-    for item in history:
-        if not isinstance(item, Mapping):
-            continue
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        body = content.rsplit("\n", 1)[-1].strip()
-        if body:
-            texts.append(body)
-    return "\n".join(texts)
+    return current_batch_user_text(history)

@@ -1235,6 +1235,15 @@ def _history_messages(
     return selected
 
 
+def prepare_history_messages(
+    config: ModelConfig,
+    history: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, str], ...]:
+    """Apply the exact model history limits used by request payload builders."""
+
+    return tuple(_history_messages(config, history))
+
+
 def _openai_history_items(request: ChatRequest) -> list[dict[str, Any]]:
     if not request.history_items:
         return []

@@ -194,6 +194,15 @@ def _namespace_spec(
         supported_protocols=spec.supported_protocols,
         required_capabilities=spec.required_capabilities,
         required_privilege=spec.required_privilege,
+        perm=spec.perm,
+        scenes=spec.scenes,
+        group=spec.group,
+        main_visible=spec.main_visible,
+        sub_visible=spec.sub_visible,
+        system_visible=spec.system_visible,
+        release=spec.release,
+        preserve=spec.preserve,
+        direct_message=spec.direct_message,
         shutdown=None,
     )
 

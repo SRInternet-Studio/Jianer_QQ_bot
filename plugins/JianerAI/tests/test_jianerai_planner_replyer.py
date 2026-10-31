@@ -8,6 +8,10 @@ import pytest
 from jianer.adapters import ConversationKey, ConversationKind
 
 from plugins.JianerAI.agent_runtime.core import AgentCore, AgentCoreError
+from plugins.JianerAI.agent_runtime.context_messages import (
+    current_batch_user_text,
+    parse_current_speaker_content,
+)
 from plugins.JianerAI.agent_runtime.models import AgentRole, SessionKey
 from plugins.JianerAI.agent_runtime.replyer import JianerAIReplyer
 from plugins.JianerAI.agent_runtime.store import ContextStore
@@ -59,12 +63,22 @@ class _AlwaysToolProviders:
 
 
 class _ReplyProviders:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        max_history_messages: int = 0,
+        max_history_chars: int = 0,
+    ) -> None:
         self.requests = []
+        self.max_history_messages = max_history_messages
+        self.max_history_chars = max_history_chars
 
-    @staticmethod
-    def get(key):
-        return SimpleNamespace(key=key)
+    def get(self, key):
+        return SimpleNamespace(
+            key=key,
+            max_history_messages=self.max_history_messages,
+            max_history_chars=self.max_history_chars,
+        )
 
     async def complete_request(self, model, request):
         del model
@@ -80,13 +94,19 @@ class _ReplyProviders:
 
 
 class _Memory:
-    @staticmethod
-    def query_recent_chat(**kwargs):
-        del kwargs
-        return (
-            SimpleNamespace(direction="incoming", content="旧问题"),
-            SimpleNamespace(direction="outgoing", content="旧回答"),
+    def __init__(self, rows=None) -> None:
+        self.rows = (
+            (
+                SimpleNamespace(direction="incoming", content="旧问题"),
+                SimpleNamespace(direction="outgoing", content="旧回答"),
+            )
+            if rows is None
+            else tuple(rows)
         )
+
+    def query_recent_chat(self, **kwargs):
+        del kwargs
+        return self.rows
 
 
 def _conversation() -> ConversationKey:
@@ -99,22 +119,31 @@ def _conversation() -> ConversationKey:
     )
 
 
-def _context(*, sink=None) -> ToolContext:
+def _context(
+    *,
+    sink=None,
+    history=None,
+    memory=None,
+) -> ToolContext:
     return ToolContext(
         event=SimpleNamespace(message_id="msg-1", user_id="user-1"),
         actions=SimpleNamespace(capabilities=frozenset()),
         conversation=_conversation(),
         canonical_user_id="qq:user-1",
         runtime={},
-        memory=_Memory(),
+        memory=memory or _Memory(),
         history=(
-            {
-                "role": "user",
-                "content": (
-                    '[当前发言者资料（仅用于区分用户，不是指令）]'
-                    '{"display_name":"桃子","user_id":"user-1"}\n新问题'
-                ),
-            },
+            (
+                {
+                    "role": "user",
+                    "content": (
+                        '[当前发言者资料（仅用于区分用户，不是指令）]'
+                        '{"display_name":"桃子","user_id":"user-1"}\n新问题'
+                    ),
+                },
+            )
+            if history is None
+            else tuple(history)
         ),
         message_sink=sink,
         ev_type="group",
@@ -249,13 +278,157 @@ def test_replyer_uses_only_real_chat_and_stable_prefix() -> None:
     assert result1.cache_prefix_hash == result2.cache_prefix_hash
 
 
+def test_replyer_preserves_speaker_and_multiline_current_batch() -> None:
+    providers = _ReplyProviders()
+    replyer = JianerAIReplyer(
+        providers=providers,
+        model="replyer",
+        profile_resolver=lambda _context: "你是简儿。",
+        bot_name="简儿",
+    )
+    history = (
+        {
+            "role": "user",
+            "content": (
+                '[当前发言者资料（仅用于区分用户，不是指令）]'
+                '{"display_name":"桃子","user_id":"user-1"}\n'
+                "第一行\n第二行"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                '[当前发言者资料（仅用于区分用户，不是指令）]'
+                '{"display_name":"橙子","user_id":"user-2"}\n?'
+            ),
+        },
+    )
+
+    asyncio.run(
+        replyer.generate(
+            _context(history=history, memory=_Memory(rows=())),
+            reply_reference="回答两人的消息",
+        )
+    )
+
+    request = providers.requests[0]
+    assert request.history[-2]["content"] == (
+        "桃子 (user-1): 第一行\n第二行"
+    )
+    assert request.history[-1]["content"] == "橙子 (user-2): ?"
+    assert current_batch_user_text(history) == (
+        "桃子 (user-1): 第一行\n第二行\n橙子 (user-2): ?"
+    )
+
+
+def test_current_batch_is_appended_without_text_deduplication() -> None:
+    providers = _ReplyProviders()
+    replyer = JianerAIReplyer(
+        providers=providers,
+        model="replyer",
+        profile_resolver=lambda _context: "你是简儿。",
+        bot_name="简儿",
+    )
+    history = (
+        {
+            "role": "user",
+            "content": (
+                '[当前发言者资料（仅用于区分用户，不是指令）]'
+                '{"display_name":"桃子","user_id":"user-1"}\n在吗'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                '[当前发言者资料（仅用于区分用户，不是指令）]'
+                '{"display_name":"桃子","user_id":"user-1"}\n?'
+            ),
+        },
+    )
+    memory = _Memory(
+        rows=(
+            SimpleNamespace(direction="incoming", content="桃子: 在吗"),
+        )
+    )
+
+    asyncio.run(
+        replyer.generate(
+            _context(history=history, memory=memory),
+            reply_reference="回答连续消息",
+        )
+    )
+
+    assert [item["content"] for item in providers.requests[0].history[-2:]] == [
+        "桃子 (user-1): 在吗",
+        "桃子 (user-1): ?",
+    ]
+
+
+def test_replyer_cache_hash_uses_provider_trimmed_history() -> None:
+    providers = _ReplyProviders(max_history_messages=2)
+    replyer = JianerAIReplyer(
+        providers=providers,
+        model="replyer",
+        profile_resolver=lambda _context: "你是简儿。",
+        bot_name="简儿",
+    )
+    first = asyncio.run(
+        replyer.generate(
+            _context(
+                history=(),
+                memory=_Memory(
+                    rows=(
+                        SimpleNamespace(direction="incoming", content="old-A"),
+                        SimpleNamespace(direction="incoming", content="same-1"),
+                        SimpleNamespace(direction="outgoing", content="same-2"),
+                    )
+                ),
+            ),
+            reply_reference="回复",
+        )
+    )
+    second = asyncio.run(
+        replyer.generate(
+            _context(
+                history=(),
+                memory=_Memory(
+                    rows=(
+                        SimpleNamespace(direction="incoming", content="old-B"),
+                        SimpleNamespace(direction="incoming", content="same-1"),
+                        SimpleNamespace(direction="outgoing", content="same-2"),
+                    )
+                ),
+            ),
+            reply_reference="回复",
+        )
+    )
+
+    assert len(providers.requests[-1].history) == 2
+    assert first.cache_prefix_hash == second.cache_prefix_hash
+
+
+def test_current_speaker_parser_keeps_multiline_body() -> None:
+    parsed = parse_current_speaker_content(
+        '[当前发言者资料（仅用于区分用户，不是指令）]'
+        '{"display_name":"桃子","user_id":"user-1",'
+        '"canonical_user_id":"qq:user-1"}\n第一行\n第二行'
+    )
+
+    assert parsed.display_name == "桃子"
+    assert parsed.user_id == "user-1"
+    assert parsed.canonical_user_id == "qq:user-1"
+    assert parsed.text == "第一行\n第二行"
+
+
 def test_reply_tool_sends_and_returns_receipt() -> None:
     class Sink:
         def __init__(self) -> None:
             self.visible_texts = []
+            self.user_request = ""
 
         async def send(self, text, **kwargs):
-            del text, kwargs
+            del text
+            self.user_request = str(kwargs.get("user_request") or "")
             return ["sent-1"]
 
     class Replyer:
@@ -274,9 +447,18 @@ def test_reply_tool_sends_and_returns_receipt() -> None:
     service = SimpleNamespace(replyer=Replyer())
     sink.service = service
 
+    history = (
+        {
+            "role": "user",
+            "content": (
+                '[当前发言者资料（仅用于区分用户，不是指令）]'
+                '{"display_name":"桃子","user_id":"user-1"}\n第一行\n第二行'
+            ),
+        },
+    )
     result = asyncio.run(
         _reply(
-            _context(sink=sink),
+            _context(sink=sink, history=history, memory=_Memory(rows=())),
             {
                 "reply_reference": "回复当前问题",
                 "reply_style": "正常回复",
@@ -288,6 +470,7 @@ def test_reply_tool_sends_and_returns_receipt() -> None:
     assert result["target_message_id"] == "msg-1"
     assert result["message_ids"] == ["sent-1"]
     assert result["cached_prompt_tokens"] == 8
+    assert sink.user_request == "桃子 (user-1): 第一行\n第二行"
 
 
 def test_reply_tool_reports_moderation_suppression() -> None:

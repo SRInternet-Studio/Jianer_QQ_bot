@@ -722,7 +722,7 @@ def test_tool_registry_keeps_legacy_execute_and_adds_jianer_ai_dispatch() -> Non
 
 def test_decorated_tool_binds_to_compatibility_registry() -> None:
     class DemoTools(AgentToolBase):
-        @tool(group="demo")
+        @tool(group="demo", direct_message=True)
         async def greet(self, ctx, name: str) -> str:
             """Greet one user."""
             return f"hello {name}"
@@ -732,6 +732,7 @@ def test_decorated_tool_binds_to_compatibility_registry() -> None:
     spec = registry.specs[0]
     assert spec.name == "greet"
     assert spec.group == "demo"
+    assert spec.direct_message is True
     assert spec.input_schema["required"] == ["name"]
 
 

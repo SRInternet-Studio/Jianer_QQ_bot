@@ -10,7 +10,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from plugins.JianerAI.providers import ChatRequest, ProviderRegistry
+from plugins.JianerAI.agent_runtime.context_messages import (
+    current_batch_history,
+)
+from plugins.JianerAI.providers import (
+    ChatRequest,
+    ProviderRegistry,
+    prepare_history_messages,
+)
 from plugins.JianerAI.tools.contracts import ToolContext
 
 
@@ -56,6 +63,7 @@ class JianerAIReplyer:
         if not self.model:
             raise ValueError("JianerAIReplyer model must not be empty")
         config = self.providers.get(self.model)
+        self._model_config = config
         self.profile_resolver = profile_resolver
         self.bot_name = str(bot_name or "简儿").strip() or "简儿"
         model_history_limit = int(
@@ -95,6 +103,12 @@ class JianerAIReplyer:
         if not reference:
             raise ValueError("reply_reference must not be empty")
         history = await self._reply_history(context)
+        history = list(
+            prepare_history_messages(
+                self._model_config,
+                history,
+            )
+        )
         system_prompt = self._system_prompt(context)
         cache_prefix_hash = _cache_prefix_hash(system_prompt, history)
         final_message = self._final_message(
@@ -163,10 +177,7 @@ class JianerAIReplyer:
         context: ToolContext,
     ) -> list[dict[str, str]]:
         history = await asyncio.to_thread(self._load_recent_history, context)
-        current_batch = _normalise_batch_history(context.history)
-        for item in current_batch:
-            if not _history_contains(history, item):
-                history.append(item)
+        history.extend(current_batch_history(context.history))
         sink = getattr(context, "message_sink", None)
         for text in tuple(getattr(sink, "visible_texts", ())):
             normalized = str(text or "").strip()
@@ -230,35 +241,6 @@ class JianerAIReplyer:
             self.logger.exception(message)
         except Exception:
             pass
-
-
-def _normalise_batch_history(
-    history: Sequence[Mapping[str, str]],
-) -> list[dict[str, str]]:
-    output: list[dict[str, str]] = []
-    for item in history:
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        body = content.rsplit("\n", 1)[-1].strip() or content
-        output.append({"role": "user", "content": body})
-    return output
-
-
-def _history_contains(
-    history: Sequence[Mapping[str, str]],
-    item: Mapping[str, str],
-) -> bool:
-    content = str(item.get("content") or "").strip()
-    if not content:
-        return True
-    return any(
-        str(existing.get("content") or "").strip().endswith(content)
-        for existing in history[-5:]
-        if str(existing.get("role") or "") == "user"
-    )
-
-
 def _cache_prefix_hash(
     system_prompt: str,
     history: Sequence[Mapping[str, str]],

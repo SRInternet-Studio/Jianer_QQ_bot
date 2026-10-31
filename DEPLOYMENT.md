@@ -346,6 +346,9 @@ JianerAI 从 `aiconfig/*.ai.json` 读取模型，不以 `config.json` 里旧的 
 
 文件名去掉 `.ai.json` 后就是模型代码。上例的代码是 `primary`，因此在 `config.json -> others` 中设置：
 
+下面的示例为启用独立 Replyer 的状态；不启用时可把
+`agent_replyer_api_profile` 留空。
+
 ```json
 {
   "default_mode": "primary",
