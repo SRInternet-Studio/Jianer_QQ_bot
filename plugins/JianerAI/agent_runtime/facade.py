@@ -460,9 +460,6 @@ class AgentFacade:
             )
             return True
         if sub in {"model", "api"}:
-            if permission_level(perm) < permission_level("bot_owner"):
-                await self.reply(event, actions, "仅 Bot 主人可以切换模型。")
-                return True
             if self.model_manager is None:
                 await self.reply(event, actions, "模型管理器不可用。")
                 return True
@@ -503,9 +500,6 @@ class AgentFacade:
             await self.reply(event, actions, text)
             return True
         if sub == "replyer":
-            if permission_level(perm) < permission_level("bot_owner"):
-                await self.reply(event, actions, "仅 Bot 主人可以切换 Replyer 模型。")
-                return True
             manager = self.replyer_model_manager
             if manager is None:
                 await self.reply(event, actions, "Replyer 模型管理器不可用。")

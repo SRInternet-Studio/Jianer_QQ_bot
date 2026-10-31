@@ -213,7 +213,6 @@ def test_agent_replyer_model_command_updates_live_runtime(
     facade.replyer_model_manager = manager
     facade.apply_replyer_model = applied.append
     event = _event(text="~Agent 回复模型 replyer-b")
-    event.user_id = "owner"
     key = facade.session_key(event)
 
     handled = asyncio.run(
@@ -226,6 +225,41 @@ def test_agent_replyer_model_command_updates_live_runtime(
     assert replies[-1] == "已切换全局 Replyer 模型：replyer-b"
     saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert saved["others"]["agent_replyer_api_profile"] == "replyer-b"
+
+
+def test_member_can_switch_planner_model_like_legacy_command(
+    tmp_path: Path,
+) -> None:
+    facade, replies, _ = _facade(tmp_path, _Sessions([]))
+
+    class Manager:
+        active = "planner-a"
+
+        def activate(self, model):
+            self.active = str(model)
+            return self.active
+
+        @staticmethod
+        def reload():
+            return {}
+
+        def redacted_status(self):
+            return {"model": self.active}
+
+    manager = Manager()
+    facade.model_manager = manager
+    event = _event(text="~Agent 模型 planner-b")
+    key = facade.session_key(event)
+
+    handled = asyncio.run(
+        facade.handle_command(event, SimpleNamespace(), key, event.msg_str)
+    )
+
+    assert handled is True
+    assert manager.active == "planner-b"
+    assert replies[-1] == "已切换全局 Agent 模型：planner-b"
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved["others"]["agent_api_profile"] == "planner-b"
 
 
 def test_host_agent_command_keeps_replyer_model_arguments() -> None:
