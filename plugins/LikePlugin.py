@@ -1,6 +1,8 @@
 import json
+import asyncio
 from datetime import datetime
 
+from jianer import common as Manager
 from jianer.plugins import PluginMetadata
 from jianer.plugins.builtin.alconna import Command, Target, UniMessage
 
@@ -132,6 +134,51 @@ async def _handle_super_like_info(event, actions):
     return True
 
 
+async def _send_profile_like(actions, user_id, count: int):
+    protocol = str(getattr(actions, "protocol", "")).strip().lower()
+    if protocol == "milky":
+        connection = getattr(actions, "connection", None)
+        sender = getattr(connection, "http_send", None)
+        if not callable(sender):
+            raise RuntimeError("当前 Milky 连接不支持 HTTP API。")
+        response = await asyncio.to_thread(
+            sender,
+            "send_profile_like",
+            {"user_id": int(user_id), "count": int(count)},
+        )
+        if (
+            not isinstance(response, dict)
+            or str(response.get("status")) != "ok"
+            or isinstance(response.get("retcode"), bool)
+            or response.get("retcode") != 0
+        ):
+            raise RuntimeError(
+                f"Milky send_profile_like 失败: {_api_error(response)}"
+            )
+        return response
+
+    if protocol == "onebot":
+        custom = getattr(actions, "custom", None)
+        sender = getattr(custom, "send_like", None)
+        if not callable(sender):
+            raise RuntimeError("当前 OneBot 连接不支持 send_like action。")
+        response = Manager.Ret.fetch(await sender(user_id=int(user_id), times=int(count)))
+        if str(response.status) != "ok" or response.ret_code != 0:
+            raise RuntimeError(
+                f"OneBot send_like 失败: {_api_error(response.raw)}"
+            )
+        return response
+
+    raise RuntimeError(f"当前 {protocol or '未知'} 协议不支持QQ名片点赞。")
+
+
+def _api_error(raw) -> str:
+    if not isinstance(raw, dict):
+        return str(raw or {}).replace("{}", "")
+    message = raw.get("message") or raw.get("msg") or raw.get("wording") or ""
+    return str(message).strip()
+
+
 async def _send_like(event, actions, bot_name: str, *, action: str) -> bool:
     user_id = event.user_id
     protocol = str(
@@ -139,7 +186,7 @@ async def _send_like(event, actions, bot_name: str, *, action: str) -> bool:
         or getattr(event, "protocol", None)
         or ""
     ).strip().lower()
-    if protocol != "onebot":
+    if protocol not in {"onebot", "milky"}:
         await _send_text(
             actions,
             event,
@@ -153,7 +200,7 @@ async def _send_like(event, actions, bot_name: str, *, action: str) -> bool:
         return True
 
     try:
-        await actions.custom.send_like(user_id=user_id, times=DAILY_LIMIT)
+        await _send_profile_like(actions, user_id, DAILY_LIMIT)
 
         like_manager.record_like(user_id, DAILY_LIMIT)
         remaining = like_manager.get_remaining_likes(user_id)
