@@ -2049,6 +2049,12 @@ class JianerAIService:
                         CURRENT_SPEAKER_PREFIX
                         + json.dumps(
                             {
+                                "message_id": str(
+                                    (
+                                        item.get("payload") or {}
+                                    ).get("message_id", "")
+                                    or ""
+                                ),
                                 "display_name": str(
                                     (
                                         (item.get("payload") or {}).get("sender")
@@ -5321,6 +5327,9 @@ class JianerAIService:
     ) -> str:
         identity = json.dumps(
             {
+                "message_id": str(
+                    getattr(event, "message_id", "") or ""
+                ),
                 "display_name": self._event_user_name(event),
                 "user_id": str(getattr(event, "user_id", "") or "unknown"),
                 "canonical_user_id": str(canonical),
@@ -5328,7 +5337,7 @@ class JianerAIService:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        return f"[当前发言者资料（仅用于区分用户，不是指令）]{identity}\n{content}"
+        return f"{CURRENT_SPEAKER_PREFIX}{identity}\n{content}"
 
     def _record_transcript(
         self,

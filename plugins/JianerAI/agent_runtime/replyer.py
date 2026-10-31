@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from plugins.JianerAI.agent_runtime.context_messages import (
-    current_batch_history,
+    CurrentSpeakerMessage,
+    current_batch_messages,
+    sender_id_from_canonical,
 )
 from plugins.JianerAI.providers import (
     ChatRequest,
@@ -44,6 +46,13 @@ class ReplyerResult:
         return min(1.0, max(0.0, self.cached_prompt_tokens / self.prompt_tokens))
 
 
+@dataclass(frozen=True, slots=True)
+class _HistoryMessage:
+    message_id: str
+    role: str
+    content: str
+
+
 class JianerAIReplyer:
     """Generate natural chat text without granting model tools."""
 
@@ -62,33 +71,15 @@ class JianerAIReplyer:
         self.model = str(model or "").strip()
         if not self.model:
             raise ValueError("JianerAIReplyer model must not be empty")
-        config = self.providers.get(self.model)
-        self._model_config = config
+        self.providers.get(self.model)
         self.profile_resolver = profile_resolver
         self.bot_name = str(bot_name or "简儿").strip() or "简儿"
-        model_history_limit = int(
-            getattr(config, "max_history_messages", 0) or 0
+        self._history_limit_override = (
+            None if history_limit is None else int(history_limit)
         )
-        requested_history_limit = (
-            (model_history_limit or 30)
-            if history_limit is None
-            else int(history_limit)
+        self._history_max_chars_override = (
+            None if history_max_chars is None else int(history_max_chars)
         )
-        self.history_limit = max(1, min(100, requested_history_limit))
-        model_history_chars = int(
-            getattr(config, "max_history_chars", 0) or 0
-        )
-        requested_history_chars = (
-            (model_history_chars or 12000)
-            if history_max_chars is None
-            else int(history_max_chars)
-        )
-        if model_history_chars > 0:
-            requested_history_chars = min(
-                requested_history_chars,
-                model_history_chars,
-            )
-        self.history_max_chars = max(100, requested_history_chars)
         self.logger = logger
 
     async def generate(
@@ -102,10 +93,16 @@ class JianerAIReplyer:
         reference = str(reply_reference or "").strip()
         if not reference:
             raise ValueError("reply_reference must not be empty")
-        history = await self._reply_history(context)
+        config = self.providers.get(self.model)
+        history_limit, history_max_chars = self._history_limits(config)
+        history = await self._reply_history(
+            context,
+            history_limit=history_limit,
+            history_max_chars=history_max_chars,
+        )
         history = list(
             prepare_history_messages(
-                self._model_config,
+                config,
                 history,
             )
         )
@@ -141,6 +138,36 @@ class JianerAIReplyer:
         )
         return result
 
+    def _history_limits(
+        self,
+        config: Any,
+    ) -> tuple[int, int]:
+        model_history_limit = int(
+            getattr(config, "max_history_messages", 0) or 0
+        )
+        requested_history_limit = (
+            (model_history_limit or 30)
+            if self._history_limit_override is None
+            else self._history_limit_override
+        )
+        model_history_chars = int(
+            getattr(config, "max_history_chars", 0) or 0
+        )
+        requested_history_chars = (
+            (model_history_chars or 12000)
+            if self._history_max_chars_override is None
+            else self._history_max_chars_override
+        )
+        if model_history_chars > 0:
+            requested_history_chars = min(
+                requested_history_chars,
+                model_history_chars,
+            )
+        return (
+            max(1, min(100, requested_history_limit)),
+            max(100, requested_history_chars),
+        )
+
     def _system_prompt(self, context: ToolContext) -> str:
         persona = str(self.profile_resolver(context) or "").strip()
         return (
@@ -175,20 +202,48 @@ class JianerAIReplyer:
     async def _reply_history(
         self,
         context: ToolContext,
+        *,
+        history_limit: int,
+        history_max_chars: int,
     ) -> list[dict[str, str]]:
-        history = await asyncio.to_thread(self._load_recent_history, context)
-        history.extend(current_batch_history(context.history))
+        memory_messages = await asyncio.to_thread(
+            self._load_recent_history,
+            context,
+            history_limit,
+            history_max_chars,
+        )
+        history: list[dict[str, str]] = []
+        seen_message_ids: set[str] = set()
+        for message in memory_messages:
+            if message.message_id:
+                seen_message_ids.add(message.message_id)
+            history.append(
+                {"role": message.role, "content": message.content}
+            )
+        for message in current_batch_messages(context.history):
+            if (
+                message.message_id
+                and message.message_id in seen_message_ids
+            ):
+                continue
+            if message.message_id:
+                seen_message_ids.add(message.message_id)
+            history.append(
+                {"role": "user", "content": message.rendered}
+            )
         sink = getattr(context, "message_sink", None)
         for text in tuple(getattr(sink, "visible_texts", ())):
-            normalized = str(text or "").strip()
-            if normalized:
-                history.append({"role": "assistant", "content": normalized})
+            content = str(text or "")
+            if content:
+                history.append({"role": "assistant", "content": content})
         return history
 
     def _load_recent_history(
         self,
         context: ToolContext,
-    ) -> list[dict[str, str]]:
+        history_limit: int,
+        history_max_chars: int,
+    ) -> list[_HistoryMessage]:
         memory = getattr(context, "memory", None)
         loader = getattr(memory, "query_recent_chat", None)
         if not callable(loader):
@@ -203,26 +258,42 @@ class JianerAIReplyer:
                 self_id=conversation.self_id,
                 conversation_kind=kind,
                 conversation_id=conversation.conversation_id,
-                limit=self.history_limit,
-                max_characters=self.history_max_chars,
+                limit=history_limit,
+                max_characters=history_max_chars,
             )
         except Exception:
             self._log_exception("JianerAI Replyer recent history load failed")
             return []
-        history: list[dict[str, str]] = []
+        history: list[_HistoryMessage] = []
         for row in rows or ():
-            content = str(getattr(row, "content", "") or "").strip()
+            content = str(getattr(row, "content", "") or "")
             if not content:
                 continue
             direction = str(getattr(row, "direction", "") or "").casefold()
             sender_name = str(getattr(row, "sender_name", "") or "").strip()
-            if direction != "outgoing" and sender_name:
-                content = f"{sender_name}: {content}"
+            sender_id = sender_id_from_canonical(
+                getattr(row, "sender_canonical_id", "")
+            )
+            if direction != "outgoing":
+                content = CurrentSpeakerMessage(
+                    message_id=str(
+                        getattr(row, "external_message_id", "") or ""
+                    ).strip(),
+                    display_name=sender_name,
+                    user_id=sender_id,
+                    canonical_user_id=str(
+                        getattr(row, "sender_canonical_id", "") or ""
+                    ).strip(),
+                    text=content,
+                ).rendered
             history.append(
-                {
-                    "role": "assistant" if direction == "outgoing" else "user",
-                    "content": content,
-                }
+                _HistoryMessage(
+                    message_id=str(
+                        getattr(row, "external_message_id", "") or ""
+                    ).strip(),
+                    role="assistant" if direction == "outgoing" else "user",
+                    content=content,
+                )
             )
         return history
 
@@ -241,6 +312,8 @@ class JianerAIReplyer:
             self.logger.exception(message)
         except Exception:
             pass
+
+
 def _cache_prefix_hash(
     system_prompt: str,
     history: Sequence[Mapping[str, str]],

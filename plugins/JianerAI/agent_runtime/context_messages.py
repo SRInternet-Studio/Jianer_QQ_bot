@@ -13,6 +13,7 @@ CURRENT_SPEAKER_PREFIX = "[当前发言者资料（仅用于区分用户，不�
 
 @dataclass(frozen=True, slots=True)
 class CurrentSpeakerMessage:
+    message_id: str
     display_name: str
     user_id: str
     canonical_user_id: str
@@ -20,8 +21,7 @@ class CurrentSpeakerMessage:
 
     @property
     def rendered(self) -> str:
-        body = self.text.strip()
-        if not body:
+        if not self.text:
             return ""
         speaker = self.display_name.strip() or self.user_id.strip()
         identifier = self.user_id.strip()
@@ -30,7 +30,14 @@ class CurrentSpeakerMessage:
             if speaker and identifier and speaker != identifier
             else speaker
         )
-        return f"{label}: {body}" if label else body
+        return f"{label}: {self.text}" if label else self.text
+
+
+def sender_id_from_canonical(value: Any) -> str:
+    """Return the platform-facing ID from a stored canonical identity."""
+
+    normalized = str(value or "").strip()
+    return normalized.rsplit(":", 1)[-1] if normalized else ""
 
 
 def parse_current_speaker_content(content: Any) -> CurrentSpeakerMessage:
@@ -38,10 +45,10 @@ def parse_current_speaker_content(content: Any) -> CurrentSpeakerMessage:
 
     raw = str(content or "")
     if not raw.startswith(CURRENT_SPEAKER_PREFIX):
-        return CurrentSpeakerMessage("", "", "", raw)
+        return CurrentSpeakerMessage("", "", "", "", raw)
     metadata_line, separator, body = raw.partition("\n")
     if not separator:
-        return CurrentSpeakerMessage("", "", "", "")
+        return CurrentSpeakerMessage("", "", "", "", "")
     metadata_raw = metadata_line[len(CURRENT_SPEAKER_PREFIX) :].strip()
     metadata: Mapping[str, Any] = {}
     try:
@@ -51,6 +58,7 @@ def parse_current_speaker_content(content: Any) -> CurrentSpeakerMessage:
     if isinstance(value, Mapping):
         metadata = value
     return CurrentSpeakerMessage(
+        message_id=str(metadata.get("message_id") or "").strip(),
         display_name=str(metadata.get("display_name") or "").strip(),
         user_id=str(metadata.get("user_id") or "").strip(),
         canonical_user_id=str(metadata.get("canonical_user_id") or "").strip(),
@@ -58,20 +66,28 @@ def parse_current_speaker_content(content: Any) -> CurrentSpeakerMessage:
     )
 
 
+def current_batch_messages(
+    history: Sequence[Mapping[str, str]],
+) -> list[CurrentSpeakerMessage]:
+    messages: list[CurrentSpeakerMessage] = []
+    for item in history:
+        if not isinstance(item, Mapping):
+            continue
+        parsed = parse_current_speaker_content(item.get("content"))
+        if parsed.rendered:
+            messages.append(parsed)
+    return messages
+
+
 def current_batch_history(
     history: Sequence[Mapping[str, str]],
 ) -> list[dict[str, str]]:
     """Render every current-batch user message without dropping multiline text."""
 
-    output: list[dict[str, str]] = []
-    for item in history:
-        if not isinstance(item, Mapping):
-            continue
-        parsed = parse_current_speaker_content(item.get("content"))
-        rendered = parsed.rendered
-        if rendered:
-            output.append({"role": "user", "content": rendered})
-    return output
+    return [
+        {"role": "user", "content": message.rendered}
+        for message in current_batch_messages(history)
+    ]
 
 
 def current_batch_user_text(

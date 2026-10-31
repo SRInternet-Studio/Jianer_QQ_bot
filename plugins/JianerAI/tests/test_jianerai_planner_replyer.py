@@ -291,7 +291,7 @@ def test_replyer_preserves_speaker_and_multiline_current_batch() -> None:
             "role": "user",
             "content": (
                 '[当前发言者资料（仅用于区分用户，不是指令）]'
-                '{"display_name":"桃子","user_id":"user-1"}\n'
+                '{"message_id":"m1","display_name":"桃子","user_id":"user-1"}\n'
                 "第一行\n第二行"
             ),
         },
@@ -299,7 +299,7 @@ def test_replyer_preserves_speaker_and_multiline_current_batch() -> None:
             "role": "user",
             "content": (
                 '[当前发言者资料（仅用于区分用户，不是指令）]'
-                '{"display_name":"橙子","user_id":"user-2"}\n?'
+                '{"message_id":"m2","display_name":"橙子","user_id":"user-2"}\n?'
             ),
         },
     )
@@ -321,7 +321,7 @@ def test_replyer_preserves_speaker_and_multiline_current_batch() -> None:
     )
 
 
-def test_current_batch_is_appended_without_text_deduplication() -> None:
+def test_current_batch_deduplicates_by_message_id_with_shared_renderer() -> None:
     providers = _ReplyProviders()
     replyer = JianerAIReplyer(
         providers=providers,
@@ -334,20 +334,26 @@ def test_current_batch_is_appended_without_text_deduplication() -> None:
             "role": "user",
             "content": (
                 '[当前发言者资料（仅用于区分用户，不是指令）]'
-                '{"display_name":"桃子","user_id":"user-1"}\n在吗'
+                '{"message_id":"m1","display_name":"桃子","user_id":"user-1"}\n在吗'
             ),
         },
         {
             "role": "user",
             "content": (
                 '[当前发言者资料（仅用于区分用户，不是指令）]'
-                '{"display_name":"桃子","user_id":"user-1"}\n?'
+                '{"message_id":"m2","display_name":"桃子","user_id":"user-1"}\n?'
             ),
         },
     )
     memory = _Memory(
         rows=(
-            SimpleNamespace(direction="incoming", content="桃子: 在吗"),
+            SimpleNamespace(
+                direction="incoming",
+                sender_name="桃子",
+                sender_canonical_id="qq:user-1",
+                external_message_id="m1",
+                content="在吗",
+            ),
         )
     )
 
@@ -407,17 +413,67 @@ def test_replyer_cache_hash_uses_provider_trimmed_history() -> None:
     assert first.cache_prefix_hash == second.cache_prefix_hash
 
 
+def test_replyer_reloads_history_limits_for_each_generation() -> None:
+    providers = _ReplyProviders(max_history_messages=2)
+    replyer = JianerAIReplyer(
+        providers=providers,
+        model="replyer",
+        profile_resolver=lambda _context: "你是简儿。",
+        bot_name="简儿",
+    )
+    memory = _Memory(
+        rows=tuple(
+            SimpleNamespace(
+                direction="incoming",
+                sender_name="桃子",
+                sender_canonical_id=f"qq:user-{index}",
+                external_message_id=f"m{index}",
+                content=f"message-{index}",
+            )
+            for index in range(4)
+        )
+    )
+    asyncio.run(
+        replyer.generate(
+            _context(history=(), memory=memory),
+            reply_reference="回复",
+        )
+    )
+    providers.max_history_messages = 4
+    asyncio.run(
+        replyer.generate(
+            _context(history=(), memory=memory),
+            reply_reference="回复",
+        )
+    )
+
+    assert len(providers.requests[0].history) == 2
+    assert len(providers.requests[1].history) == 4
+
+
 def test_current_speaker_parser_keeps_multiline_body() -> None:
     parsed = parse_current_speaker_content(
         '[当前发言者资料（仅用于区分用户，不是指令）]'
-        '{"display_name":"桃子","user_id":"user-1",'
+        '{"message_id":"m1","display_name":"桃子","user_id":"user-1",'
         '"canonical_user_id":"qq:user-1"}\n第一行\n第二行'
     )
 
+    assert parsed.message_id == "m1"
     assert parsed.display_name == "桃子"
     assert parsed.user_id == "user-1"
     assert parsed.canonical_user_id == "qq:user-1"
     assert parsed.text == "第一行\n第二行"
+
+
+def test_current_speaker_renderer_preserves_edge_whitespace() -> None:
+    parsed = parse_current_speaker_content(
+        '[当前发言者资料（仅用于区分用户，不是指令）]'
+        '{"message_id":"m1","display_name":"桃子","user_id":"u1"}\n'
+        "    print(1)\n"
+    )
+
+    assert parsed.text == "    print(1)\n"
+    assert parsed.rendered == "桃子 (u1):     print(1)\n"
 
 
 def test_reply_tool_sends_and_returns_receipt() -> None:
