@@ -1,7 +1,7 @@
 """帮助内容生成与展示（图片/文本）。"""
 import os
 
-from Tools.tools import create_help_message_image_async
+from Tools.tools import create_help_message_images_async
 
 from .help_mode import normalize_help_mode
 from .protocol import is_feishu_protocol, is_qq_protocol
@@ -139,26 +139,30 @@ async def send_help_visual(
                 await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
             return
     bg_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "bg.jpeg")
-    image_path = await create_help_message_image_async(content, bg_path)
+    image_paths = await create_help_message_images_async(content, bg_path)
     if isinstance(event, Events.PrivateMessageEvent):
         if is_qq_protocol(config) and mode == "文本":
             await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
             return
-        if image_path:
+        if image_paths:
             try:
-                await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Image(image_path)))
+                await actions.send(
+                    user_id=event.user_id,
+                    message=Manager.Message(*(Segments.Image(path) for path in image_paths)),
+                )
                 return
             except Exception:
                 logger.warning("帮助图片发送失败，已回退为文本")
         await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
         return
     if isinstance(event, Events.GroupMessageEvent):
-        if image_path:
+        if image_paths:
             try:
+                images = tuple(Segments.Image(path) for path in image_paths)
                 if reply_message_id:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), Segments.Image(image_path)))
+                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), *images))
                 else:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Image(image_path)))
+                    await actions.send(group_id=event.group_id, message=Manager.Message(*images))
                 return
             except Exception:
                 logger.warning("群聊帮助图片发送失败，已回退为文本")

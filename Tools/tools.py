@@ -3,6 +3,8 @@ from typing import Tuple, Optional, Any
 import platform
 import psutil
 import io, gc, os
+import math
+from pathlib import Path
 import shutil, subprocess
 import warnings
 import edge_tts
@@ -264,96 +266,93 @@ async def replace_at_with_nickname(message, Manager, Segments, actions) -> str:
     return "".join(new_message)
 
 async def create_help_message_image_async(help_text: str, background_path: str = "assets/bg.jpeg") -> Optional[str]:
+    paths = await create_help_message_images_async(help_text, background_path)
+    return paths[0] if paths else None
+
+async def create_help_message_images_async(help_text: str, background_path: str = "assets/bg.jpeg") -> list[str]:
+    """按 16:9 横排纵列分页渲染帮助内容，返回顺序分页图片路径。"""
     try:
         if not help_text:
-            return None
+            return []
         if not os.path.isabs(background_path):
             background_path = os.path.abspath(background_path)
         if not os.path.isfile(background_path):
-            return None
-
-        out_dir = os.path.abspath(os.path.join("static", "help_cards"))
-        os.makedirs(out_dir, exist_ok=True)
-        digest = hashlib.md5(help_text.encode("utf-8")).hexdigest()
-        out_path = os.path.join(out_dir, f"help_{digest}.jpg")
-        
-        # 缓存机制：如果已经生成过该图片，直接返回
-        if os.path.exists(out_path):
-            return out_path
+            return []
 
         import html
         from Tools.site_catch import Catcher
 
-        safe_text = html.escape(help_text)
+        out_dir = os.path.abspath(os.path.join("static", "help_cards"))
+        os.makedirs(out_dir, exist_ok=True)
+        digest = hashlib.md5(help_text.encode("utf-8")).hexdigest()
+        for path in tuple(Path(out_dir).glob(f"help_{digest}*")):
+            os.remove(path)
+
+        lines = [line.strip() for line in help_text.strip().split("\n") if line.strip()]
+        title = html.escape(lines[0]) if lines else "帮助"
+        command_lines = []
+        other_lines = []
+        for index, line in enumerate(lines[1:] if lines else []):
+            if "->" in line:
+                cmd, desc = line.split("->", 1)
+                command_lines.append((cmd.strip(), desc.strip()))
+            elif "—>" in line:
+                cmd, desc = line.split("—>", 1)
+                command_lines.append((cmd.strip(), desc.strip()))
+            elif index == 0:
+                other_lines.append(line)
+            else:
+                other_lines.append(line)
+
+        command_count_per_page = 6
+        if not command_lines:
+            command_pages = [[]]
+        else:
+            page_count = math.ceil(len(command_lines) / command_count_per_page)
+            per_page = math.ceil(len(command_lines) / page_count)
+            command_pages = [
+                command_lines[start:start + per_page]
+                for start in range(0, len(command_lines), per_page)
+            ]
+
+        paths = []
         bg_url = "file:///" + background_path.replace("\\", "/")
 
-        # 文本解析逻辑：极简玻璃卡片式UI
-        lines = help_text.strip().split('\n')
-        html_lines = []
-        
-        in_commands = False
-        
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-                
-            is_cmd = False
-            cmd, desc = None, None
-            if '—>' in line:
-                cmd, desc = line.split('—>', 1)
-                is_cmd = True
-            elif '->' in line:
-                cmd, desc = line.split('->', 1)
-                is_cmd = True
-                
-            if is_cmd:
-                if not in_commands:
-                    html_lines.append('<div class="commands-container">')
-                    in_commands = True
-                
-                cmd = html.escape(cmd.strip())
-                desc = html.escape(desc.strip())
-                html_lines.append(f'''
-                <div class="command-item">
-                    <div class="cmd-badge">{cmd}</div>
-                    <div class="cmd-desc">{desc}</div>
-                </div>
-                ''')
-            else:
-                if in_commands:
-                    html_lines.append('</div>')
-                    in_commands = False
-                    
-                if line.startswith('注：') or line.startswith('注意：'):
-                    html_lines.append(f'<div class="notice-box">{html.escape(line)}</div>')
-                elif '示例' in line or '举个' in line:
-                    html_lines.append(f'<div class="example-box">{html.escape(line)}</div>')
-                else:
-                    if i == 0:
-                        html_lines.append(f'<div class="title-line">{html.escape(line)}</div>')
-                    elif i == len(lines) - 1:
-                        html_lines.append(f'<div class="footer-line">{html.escape(line)}</div>')
-                    else:
-                        html_lines.append(f'<div class="text-line">{html.escape(line)}</div>')
-                        
-        if in_commands:
-            html_lines.append('</div>')
+        for page_index, page_commands in enumerate(command_pages):
+            rows = max(1, math.ceil(len(page_commands) / 2)) if page_commands else 1
+            command_html = []
+            for cmd, desc in page_commands:
+                command_html.append(
+                    f"""
+                    <div class="command-card">
+                        <div class="cmd-badge">{html.escape(cmd)}</div>
+                        <div class="cmd-desc">{html.escape(desc)}</div>
+                    </div>
+                    """
+                )
+            commands_html = "\n".join(command_html)
+            other_html = "\n".join(
+                f'<div class="text-line">{html.escape(line)}</div>'
+                for line in other_lines
+            ) if page_index == 0 else ""
+            page_foot = ""
+            if len(command_pages) > 1:
+                page_foot = f'<div class="page-foot">{page_index + 1} / {len(command_pages)}</div>'
 
-        parsed_html_content = '\n'.join(html_lines)
-
-        html_content = f"""
+            html_content = f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>help_{digest}</title>
+    <title>help_page_{page_index}</title>
     <style>
+        html {{ width: 1920px; height: 1080px; }}
         body {{
             margin: 0;
             padding: 0;
-            width: 1080px;
-            min-height: 1080px;
+            width: 1920px;
+            height: 1080px;
+            overflow: hidden;
             display: flex;
             justify-content: center;
             align-items: center;
@@ -364,121 +363,121 @@ async def create_help_message_image_async(help_text: str, background_path: str =
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             color: #fff;
         }}
-        .container {{
-            width: 860px;
-            margin: 80px auto;
-            background: rgba(20, 20, 20, 0.5);
-            backdrop-filter: blur(40px) saturate(120%);
-            -webkit-backdrop-filter: blur(40px) saturate(120%);
-            border-radius: 32px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
-            padding: 70px 80px;
+        .screen {{
+            width: 1560px;
+            height: 860px;
+            background: rgba(18, 18, 20, 0.54);
+            backdrop-filter: blur(34px) saturate(120%);
+            -webkit-backdrop-filter: blur(34px) saturate(120%);
+            border: 1px solid rgba(255,255,255,0.16);
+            border-radius: 28px;
+            box-shadow: 0 28px 58px rgba(0,0,0,0.38);
+            padding: 32px 48px 36px;
             box-sizing: border-box;
-        }}
-        .content {{
             display: flex;
             flex-direction: column;
         }}
-        .title-line {{
-            font-size: 38px;
-            font-weight: 600;
-            margin-bottom: 15px;
-            text-align: center;
-            letter-spacing: 2px;
-            color: #fff;
-        }}
-        .notice-box {{
-            font-size: 20px;
-            color: rgba(255, 255, 255, 0.6);
-            margin-bottom: 45px;
-            text-align: center;
-            font-weight: 400;
-            letter-spacing: 1px;
-        }}
-        .commands-container {{
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            margin-bottom: 45px;
-        }}
-        .command-item {{
+        .title {{
+            min-height: 52px;
             display: flex;
             align-items: center;
+            justify-content: center;
+            font-size: 36px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            overflow-wrap: anywhere;
+        }}
+        .other {{ display: flex; flex-direction: column; gap: 6px; margin: 6px 0 12px; }}
+        .text-line {{
+            font-size: 21px;
+            color: rgba(255,255,255,0.8);
+            text-align: center;
+            overflow-wrap: anywhere;
+        }}
+        .commands {{
+            flex: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-rows: repeat({rows}, minmax(0, 1fr));
+            gap: 16px;
+            align-content: space-evenly;
+        }}
+        .command-card {{
+            min-width: 0;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: 280px minmax(0, 1fr);
+            align-items: center;
+            gap: 18px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.13);
+            border-radius: 18px;
+            padding: 18px 22px;
+            box-sizing: border-box;
+            overflow: hidden;
+        }}
+        .cmd-badge, .cmd-desc {{
+            flex: 1;
+            font-size: 20px;
+            line-height: 1.45;
+            padding: 10px 12px;
+            overflow-wrap: anywhere;
         }}
         .cmd-badge {{
-            font-size: 22px;
-            font-weight: 500;
-            color: #fff;
-            width: 280px;
-            flex-shrink: 0;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 12px 20px;
+            flex: none;
+            max-width: 300px;
+            background: rgba(255,255,255,0.12);
             border-radius: 12px;
-            text-align: right;
-            margin-right: 24px;
-            box-sizing: border-box;
-            letter-spacing: 1px;
+            text-align: center;
         }}
         .cmd-desc {{
-            font-size: 22px;
-            color: rgba(255, 255, 255, 0.85);
-            font-weight: 400;
-            line-height: 1.5;
-            flex: 1;
+            color: rgba(255,255,255,0.86);
         }}
-        .example-box {{
+        .page-foot {{
+            position: fixed;
+            right: 46px;
+            bottom: 32px;
             font-size: 20px;
-            color: rgba(255, 255, 255, 0.6);
-            text-align: center;
-            margin-bottom: 30px;
-            font-style: italic;
-        }}
-        .footer-line {{
-            text-align: center;
-            font-size: 24px;
-            color: rgba(255, 255, 255, 0.9);
-            font-weight: 500;
-            margin-top: 10px;
-            letter-spacing: 1px;
-        }}
-        .text-line {{
-            font-size: 22px;
-            color: rgba(255, 255, 255, 0.8);
-            margin-bottom: 16px;
-            text-align: center;
+            color: rgba(255,255,255,0.78);
         }}
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="content">{parsed_html_content}</div>
+    <div class="screen">
+        <div class="title">{title}</div>
+        <div class="other">{other_html}</div>
+        <div class="commands">{commands_html}</div>
     </div>
+    {page_foot}
 </body>
 </html>
 """
-        temps_dir = os.path.abspath("temps")
-        os.makedirs(temps_dir, exist_ok=True)
-        temp_html_path = os.path.join(temps_dir, f"help_{digest}.html")
-        with open(temp_html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
 
-        catcher = await Catcher.init()
-        try:
-            # 使用 (1080, 0) 让高度自适应，但由于body有min-height 1080，效果会很好看
-            res_path = await catcher.catch(f"file:///{temp_html_path.replace(chr(92), '/')}", (0, 0))
-            if os.path.exists(res_path):
-                # 转为JPEG并保存，减小体积
-                img = Image.open(res_path).convert("RGB")
-                img.save(out_path, format="JPEG", quality=92)
-                os.remove(res_path)
-        finally:
-            await catcher.quit()
-            if os.path.exists(temp_html_path):
-                os.remove(temp_html_path)
+            temps_dir = os.path.abspath("temps")
+            os.makedirs(temps_dir, exist_ok=True)
+            temp_html_path = os.path.join(temps_dir, f"help_{digest}_{page_index}.html")
+            with open(temp_html_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
 
-        return out_path if os.path.exists(out_path) else None
+            catcher = await Catcher.init()
+            try:
+                res_path = await catcher.catch(
+                    f"file:///{temp_html_path.replace(chr(92), '/')}", (1920, 1080)
+                )
+            finally:
+                await catcher.quit()
+                if os.path.exists(temp_html_path):
+                    os.remove(temp_html_path)
+
+            out_path = os.path.join(out_dir, f"help_{digest}_{page_index}.jpg")
+            with Image.open(res_path) as img:
+                img.convert("RGB").save(out_path, format="JPEG", quality=92)
+            os.remove(res_path)
+            paths.append(out_path)
+
+        return paths
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return None
+        return []
