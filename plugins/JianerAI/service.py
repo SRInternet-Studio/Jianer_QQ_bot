@@ -1666,6 +1666,20 @@ class JianerAIService:
             return
         if self._is_blocked_group(event):
             return
+        task = asyncio.create_task(
+            self._observe_message(event, actions),
+            name="jianer-ai-observe-message",
+        )
+        self._track_background_task(
+            task,
+            failure_message="JianerAI background observation failed",
+        )
+
+    async def _observe_message(self, event: Any, actions: Any) -> None:
+        if self._closed or not self._is_message_event(event):
+            return
+        if self._is_blocked_group(event):
+            return
         await self._ensure_started()
         text = self._event_text(event)
         if not str(text or "").strip().startswith(self.options.reminder):

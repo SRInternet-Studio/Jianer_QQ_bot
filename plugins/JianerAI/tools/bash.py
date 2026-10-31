@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import hashlib
 import os
+import re
 import signal
 import subprocess
 import time
@@ -13,12 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from jianer import common as Manager, segments as Segments
+
 from plugins.JianerAI.tools.contracts import (
     ToolContext,
     ToolExecutionError,
     ToolRisk,
     ToolSpec,
 )
+from plugins.RunCommand.DANGEROUS_PATTERNS import DANGEROUS_PATTERNS
 
 
 _MAX_COMMAND_CHARS = 4096
@@ -135,6 +140,12 @@ class ShellApprovalManager:
         )
         self._pending[request_id] = pending
         try:
+            await self._notify_root(context, pending)
+            if self._match_dangerous_command(command) is not None:
+                raise ToolExecutionError(
+                    "bash_dangerous_command",
+                    "DCG 已拦截该 Bash 命令，未提交审核或执行。",
+                )
             await send(
                 self._review_message(pending),
                 at_user_ids=(str(getattr(context.event, "user_id", "") or ""),),
@@ -232,6 +243,53 @@ class ShellApprovalManager:
             f"{self.reminder}批准Shell {pending.request_id}\n"
             f"{self.reminder}拒绝Shell {pending.request_id}"
         )
+
+    async def _notify_root(
+        self,
+        context: ToolContext,
+        pending: _PendingApproval,
+    ) -> None:
+        runtime = getattr(context, "runtime", {})
+        if isinstance(runtime, Mapping):
+            raw_root_users = runtime.get("root_users", ())
+        else:
+            raw_root_users = getattr(runtime, "root_users", ())
+        if isinstance(raw_root_users, str):
+            raw_root_users = (raw_root_users,)
+        root_user = next(
+            (str(item).strip() for item in raw_root_users if str(item).strip()),
+            "",
+        )
+        if not root_user:
+            return
+        actions = getattr(context, "actions", None)
+        send = getattr(actions, "send", None)
+        if not callable(send):
+            raise ToolExecutionError(
+                "bash_root_notify_unavailable",
+                "无法向 ROOT_User 发送 Bash 请求记录。",
+            )
+        now = datetime.datetime.now().astimezone().strftime("%H:%M:%S")
+        await send(
+            user_id=root_user,
+            message=Manager.Message(
+                Segments.Text(
+                    f"用户 {_requester_label(context.event)} 在 {now} "
+                    "以Agent的Bash工具执行了以下命令：\n"
+                    f"{pending.command}"
+                )
+            ),
+        )
+
+    @staticmethod
+    def _match_dangerous_command(command: str) -> str | None:
+        for pattern in DANGEROUS_PATTERNS:
+            try:
+                if re.search(pattern, command, flags=re.IGNORECASE):
+                    return pattern
+            except re.error:
+                continue
+        return None
 
     async def _wait_for_decision(
         self,
@@ -350,6 +408,26 @@ def _conversation_scope(context: ToolContext) -> tuple[str, str, str, str]:
         str(getattr(kind, "value", kind)),
         str(getattr(conversation, "conversation_id", "")),
     )
+
+
+def _requester_label(event: Any) -> str:
+    user_id = str(getattr(event, "user_id", "") or "").strip()
+    sender = getattr(event, "sender", None)
+    nickname = ""
+    for field in ("card", "nickname"):
+        value = (
+            sender.get(field)
+            if isinstance(sender, Mapping)
+            else getattr(sender, field, None)
+        )
+        if value is not None and str(value).strip():
+            nickname = str(value).strip().lstrip("@")
+            break
+    if nickname and user_id:
+        return f"@{nickname}({user_id})"
+    if user_id:
+        return user_id
+    return nickname or "未知用户"
 
 
 __all__ = ["ShellApprovalManager"]

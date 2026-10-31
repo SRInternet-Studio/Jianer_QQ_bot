@@ -209,6 +209,68 @@ def test_legacy_auto_mode_output_explains_whitelist_semantics() -> None:
     assert "白名单" in sent[0]
 
 
+def test_message_observation_does_not_wait_for_ai_work() -> None:
+    service = object.__new__(JianerAIService)
+    service._closed = False
+    service._background_tasks = set()
+    service._is_message_event = lambda _event: True
+    service._is_blocked_group = lambda _event: False
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_observe(_event, _actions):
+        started.set()
+        await release.wait()
+
+    service._observe_message = slow_observe
+
+    async def scenario():
+        await service.observe(_event(), SimpleNamespace())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert len(service._background_tasks) == 1
+        release.set()
+        await asyncio.gather(*service._background_tasks)
+
+    asyncio.run(scenario())
+
+
+def test_agent_response_runs_after_mention_dispatch_returns(tmp_path: Path) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    facade, _, _ = _facade(tmp_path, _Sessions([]))
+
+    class _SlowCore:
+        history = []
+        working = False
+
+        async def event_handler(self, event, *, context, tool_choice="auto"):
+            del event, context, tool_choice
+            started.set()
+            await release.wait()
+            return SimpleNamespace(text="{}")
+
+        @staticmethod
+        def should_auto_summarize() -> bool:
+            return False
+
+    async def get_main(_key):
+        return _SlowCore()
+
+    facade.sessions.get_main = get_main
+
+    async def scenario():
+        await asyncio.wait_for(
+            facade.observe(_event(), SimpleNamespace()),
+            timeout=1,
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert facade._tasks
+        release.set()
+        await facade.close()
+
+    asyncio.run(scenario())
+
+
 class _Core:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
