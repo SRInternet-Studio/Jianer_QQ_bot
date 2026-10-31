@@ -40,6 +40,8 @@ Context，完整保存模型 tool call、tool result、reasoning 和 provider �
 - `~设置特定后缀`、`~删除特定后缀`
 - `~TTS [开启|关闭|状态]`
 - `~Agent [开启|关闭|状态|工具|子代理]`：管理当前群白名单、工具和 Sub-Agent 状态
+- `~Agent 模型 [代码|reload]`：查看或切换全局 Planner 模型
+- `~Agent 回复模型 [代码|reload|off]`：查看、切换或关闭全局 Replyer 模型
 - `~清空上下文`：清空当前 Main Context；兼容旧名 `~注销`、`~重置上下文`
 - `~agent.on/off/status/stop/profile/context/func/model`：JianerAI Agent 管理别名
 

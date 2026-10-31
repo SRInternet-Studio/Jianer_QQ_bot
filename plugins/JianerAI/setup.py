@@ -33,7 +33,7 @@ __plugin_meta__ = PluginMetadata(
         "{reminder}表情包 [状态|列表|查看|删除] —> 管理全局表情包库\n"
         "{reminder}TTS [开启|关闭|状态] —> 管理当前会话语音回复\n"
         "{reminder}Agent [开启|关闭|状态|工具|子代理] —> 管理白名单与 Agent 运行状态\n"
-        "{reminder}agent.context / stop / profile / func / model —> JianerAI Agent 管理\n"
+        "{reminder}agent.context / stop / profile / func / model / replyer —> JianerAI Agent 管理\n"
         "{reminder}批准Shell / {reminder}拒绝Shell [请求ID] —> 审核 Agent 的 Shell 命令"
     ),
     requires={"jianerbot-plugin-alconna"},

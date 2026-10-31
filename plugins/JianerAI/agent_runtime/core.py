@@ -357,6 +357,7 @@ class AgentCore:
             specs = tuple(spec for spec in specs if not spec.direct_message)
             required = {"reply"}
         else:
+            specs = tuple(spec for spec in specs if spec.name != "reply")
             required = {
                 "send_message",
                 "send_group_msg",

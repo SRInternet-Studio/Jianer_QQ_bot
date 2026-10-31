@@ -833,6 +833,70 @@ def test_replyer_mode_hides_direct_message_tools(tmp_path) -> None:
     assert names == ["reply"]
 
 
+def test_replyer_mode_disabled_also_hides_registered_reply_tool(tmp_path) -> None:
+    registry = _registry()
+    registry.register(reply_tool())
+    core = AgentCore(
+        SessionKey(
+            scene_type="group",
+            scene_id="group-1",
+            protocol="milky",
+            self_id="bot-1",
+        ),
+        role=AgentRole.MAIN,
+        providers=_PlannerProviders(),
+        tools=registry,
+        store=ContextStore(tmp_path),
+        model_resolver=lambda _key: "planner",
+        prompt_builder=lambda _specs: "system",
+        replyer_enabled=False,
+    )
+
+    names = [spec.name for spec in core.available_tools(_context())]
+    assert "reply" not in names
+
+
+def test_service_can_enable_and_disable_replyer_model_at_runtime() -> None:
+    class Providers:
+        @staticmethod
+        def get(model):
+            return SimpleNamespace(key=model, max_history_messages=0)
+
+    class Sessions:
+        def __init__(self):
+            self.enabled = None
+
+        def set_replyer_enabled(self, enabled):
+            self.enabled = enabled
+
+    class Tools:
+        def __init__(self):
+            self.registered = []
+
+        def register(self, spec):
+            self.registered.append(spec.name)
+
+    service = object.__new__(JianerAIService)
+    service.providers = Providers()
+    service.options = SimpleNamespace(bot_name="简儿")
+    service.agent_sessions = Sessions()
+    service.tools = Tools()
+    service.replyer = None
+    service._reply_tool_registered = False
+    service._render_jianer_ai_replyer_profile = lambda _context: "你是简儿。"
+    service._logger = SimpleNamespace()
+
+    assert service.apply_replyer_model("replyer-a") == "replyer-a"
+    assert isinstance(service.replyer, JianerAIReplyer)
+    assert service.replyer.model == "replyer-a"
+    assert service.agent_sessions.enabled is True
+    assert service.tools.registered == ["reply"]
+
+    assert service.apply_replyer_model("") == ""
+    assert service.replyer is None
+    assert service.agent_sessions.enabled is False
+
+
 def test_runtime_options_read_replyer_and_round_limits() -> None:
     options = RuntimeOptions.from_runtime(
         {

@@ -667,6 +667,37 @@ def test_agent_api_manager_prefers_configured_active_model(
     assert manager.active == "deepseek"
 
 
+def test_replyer_api_manager_allows_models_without_tools(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "replyer.ai.json").write_text(
+        json.dumps(
+            {
+                "FriendlyName": "replyer",
+                "Model": "replyer-model",
+                "ApiKey": "test-key",
+                "ResponseType": "OpenAI Chat Completions",
+                "BaseUrl": "https://replyer.example/v1",
+                "ToolsEnabled": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = ProviderRegistry(tmp_path)
+    manager = ApiModelManager(
+        registry,
+        active_model="replyer",
+        require_tools=False,
+        allow_empty=True,
+    )
+
+    assert manager.active == "replyer"
+    assert manager.redacted_status()["supports_tools"] is None
+    assert manager.activate("") == ""
+    assert manager.active == ""
+    assert manager.redacted_status()["status"] == "disabled"
+
+
 def test_collector_compresses_and_preserves_recent_events() -> None:
     async def scenario():
         collector = Collector(max_buffer=4, keep_after_compress=2)

@@ -81,6 +81,14 @@ class JianerAIReplyer:
         )
         self.logger = logger
 
+    def set_model(self, model: str) -> str:
+        normalized = str(model or "").strip()
+        if not normalized:
+            raise ValueError("JianerAIReplyer model must not be empty")
+        self.providers.get(normalized)
+        self.model = normalized
+        return normalized
+
     async def generate(
         self,
         context: ToolContext,

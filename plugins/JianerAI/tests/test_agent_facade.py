@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -182,8 +183,48 @@ def test_agent_command_help_describes_jianer_ai_runtime(tmp_path: Path) -> None:
     text = facade.command_help(key)
     assert "白名单用户" in text
     assert "当前人设" in text
-    assert "当前模型" in text
+    assert "当前 Planner 模型" in text
+    assert "当前 Replyer 模型" in text
     assert "自动模式" not in text
+
+
+def test_agent_replyer_model_command_updates_live_runtime(
+    tmp_path: Path,
+) -> None:
+    facade, replies, _ = _facade(tmp_path, _Sessions([]))
+    applied: list[str] = []
+
+    class Manager:
+        active = ""
+
+        def activate(self, model):
+            self.active = str(model)
+            return self.active
+
+        @staticmethod
+        def reload():
+            return {}
+
+        def redacted_status(self):
+            return {"model": self.active, "available": ["replyer-a", "replyer-b"]}
+
+    manager = Manager()
+    facade.replyer_model_manager = manager
+    facade.apply_replyer_model = applied.append
+    event = _event(text="~Agent 回复模型 replyer-b")
+    event.user_id = "owner"
+    key = facade.session_key(event)
+
+    handled = asyncio.run(
+        facade.handle_command(event, SimpleNamespace(), key, event.msg_str)
+    )
+
+    assert handled is True
+    assert manager.active == "replyer-b"
+    assert applied == ["replyer-b"]
+    assert replies[-1] == "已切换全局 Replyer 模型：replyer-b"
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved["others"]["agent_replyer_api_profile"] == "replyer-b"
 
 
 def test_legacy_auto_mode_output_explains_whitelist_semantics() -> None:

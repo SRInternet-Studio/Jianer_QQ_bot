@@ -1398,8 +1398,7 @@ class JianerAIService:
         )
         if options.agent_bash_enabled:
             mutating_tool_names |= frozenset({"bash"})
-        if options.agent_replyer_api_profile:
-            mutating_tool_names |= frozenset({"reply"})
+        mutating_tool_names |= frozenset({"reply"})
         self.tools = tools or ToolRegistry(
             allowed_risks=frozenset(allowed_risks),
             allowed_mutating_tools=(
@@ -1502,21 +1501,31 @@ class JianerAIService:
             default_model=options.default_model,
             active_model=configured_api,
         )
+        if options.agent_replyer_api_profile:
+            self.providers.get(options.agent_replyer_api_profile)
+        self.replyer_api = ApiModelManager(
+            self.providers,
+            active_model=options.agent_replyer_api_profile,
+            require_tools=False,
+            allow_empty=True,
+        )
         self.agent_profiles = ProfileStore(
             agent_data_root / "profiles.json",
             legacy_metadata=options.project_root / "prerequisites" / "current.json",
             active_name=configured_profile,
         )
         self.replyer: JianerAIReplyer | None = None
-        if options.agent_replyer_api_profile:
+        self._reply_tool_registered = False
+        if self.replyer_api.active:
             self.replyer = JianerAIReplyer(
                 providers=self.providers,
-                model=options.agent_replyer_api_profile,
+                model=self.replyer_api.active,
                 profile_resolver=self._render_jianer_ai_replyer_profile,
                 bot_name=options.bot_name,
                 logger=self._logger,
             )
             self.tools.register(reply_tool())
+            self._reply_tool_registered = True
         ensure_partition = getattr(
             self.memory, "ensure_persona_partition", None
         )
@@ -1593,6 +1602,8 @@ class JianerAIService:
             after_run=self._after_jianer_ai_run,
             reply=self._reply_agent_command,
             model_manager=self.agent_api,
+            replyer_model_manager=self.replyer_api,
+            apply_replyer_model=self.apply_replyer_model,
             tools=self.tools,
             collector_max_buffer=options.agent_collector_max_buffer,
             collector_keep_after_compress=(
@@ -1863,6 +1874,31 @@ class JianerAIService:
             preset=self.agent_profiles.active_name or "default",
         )
         return self._model_for(conversation)
+
+    def apply_replyer_model(self, model: str) -> str:
+        """Apply one global Replyer model to the live Agent runtime."""
+
+        normalized = str(model or "").strip()
+        if not normalized:
+            self.replyer = None
+            self.agent_sessions.set_replyer_enabled(False)
+            return ""
+        if self.replyer is None:
+            self.providers.get(normalized)
+            self.replyer = JianerAIReplyer(
+                providers=self.providers,
+                model=normalized,
+                profile_resolver=self._render_jianer_ai_replyer_profile,
+                bot_name=self.options.bot_name,
+                logger=self._logger,
+            )
+        else:
+            self.replyer.set_model(normalized)
+        if not self._reply_tool_registered:
+            self.tools.register(reply_tool())
+            self._reply_tool_registered = True
+        self.agent_sessions.set_replyer_enabled(True)
+        return normalized
 
     async def _describe_sticker_image(
         self,

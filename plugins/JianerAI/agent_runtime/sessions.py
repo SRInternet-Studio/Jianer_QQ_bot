@@ -100,6 +100,12 @@ class AgentSessionManager:
             core.last_used = asyncio.get_running_loop().time()
             return core
 
+    def set_replyer_enabled(self, enabled: bool) -> None:
+        self.replyer_enabled = bool(enabled)
+        for core in self._contexts.values():
+            if core.role is AgentRole.MAIN:
+                core.replyer_enabled = self.replyer_enabled
+
     def loaded(self) -> tuple[AgentCore, ...]:
         return (self.system, *self._contexts.values())
 
