@@ -436,6 +436,33 @@ def _canonical_for_alias(protocol: str, self_id: str, external_id: str) -> str:
     return f"{protocol}:{digest}"
 
 
+def _looks_like_legacy_canonical_external_id(
+    *,
+    protocol: str,
+    canonical_id: str,
+    external_id: str,
+) -> bool:
+    """Detect pre-upgrade non-QQ rows that copied the canonical digest."""
+
+    protocol_s = normalize_protocol(protocol)
+    if protocol_s in QQ_PROTOCOLS or protocol_s == "qq":
+        return False
+    canonical = str(canonical_id or "").strip()
+    external = str(external_id or "").strip()
+    prefix = f"{protocol_s}:"
+    if not canonical.startswith(prefix) or not external:
+        return False
+    digest = canonical[len(prefix) :]
+    return (
+        len(digest) == 32
+        and all(
+            character in "0123456789abcdef"
+            for character in digest.casefold()
+        )
+        and external == digest
+    )
+
+
 def _json(value: Mapping[str, Any] | None) -> str:
     return json.dumps(dict(value or {}), ensure_ascii=False, sort_keys=True)
 
@@ -4809,26 +4836,59 @@ class JianerMemoryStore:
                 if len(content) > max_chars and not selected:
                     content = content[-max_chars:]
                 used += len(content)
+                sender_canonical = (
+                    str(row["sender_person_id"])
+                    if row["sender_person_id"] is not None
+                    else ""
+                )
+                sender_external = str(row["sender_external_id"] or "")
+                if _looks_like_legacy_canonical_external_id(
+                    protocol=str(partition["protocol"]),
+                    canonical_id=sender_canonical,
+                    external_id=sender_external,
+                ):
+                    sender_external = ""
+                    try:
+                        canonical_root = self._resolve_canonical_in_tx(
+                            conn,
+                            sender_canonical,
+                        )
+                    except KeyError:
+                        canonical_root = sender_canonical
+                    alias = conn.execute(
+                        """
+                        SELECT external_id
+                        FROM sys_identity_aliases
+                        WHERE canonical_id = ?
+                          AND protocol = ?
+                          AND self_id = ?
+                          AND external_id != ?
+                        ORDER BY updated_at DESC, external_id
+                        LIMIT 1
+                        """,
+                        (
+                            canonical_root,
+                            normalize_protocol(str(partition["protocol"])),
+                            str(partition["self_id"]),
+                            sender_canonical.split(":", 1)[-1],
+                        ),
+                    ).fetchone()
+                    if alias is not None:
+                        sender_external = str(alias["external_id"])
                 selected.append(
                     ChatMessage(
                         message_uid=int(row["message_uid"]),
                         conversation_pk=int(partition["conversation_ref"]),
                         message_key=str(row["message_key"]),
                         direction=str(row["direction"]),
-                        sender_canonical_id=(
-                            str(row["sender_person_id"])
-                            if row["sender_person_id"] is not None
-                            else None
-                        ),
+                        sender_canonical_id=sender_canonical or None,
                         sender_name=str(row["sender_name"]),
                         content=content,
                         occurred_at=int(row["occurred_at"]),
                         message_type=str(row["message_type"]),
                         active_preset=str(row["preset_key"] or "default"),
                         external_message_id=str(row["external_message_id"] or ""),
-                        sender_external_id=str(
-                            row["sender_external_id"] or ""
-                        ),
+                        sender_external_id=sender_external,
                     )
                 )
             return tuple(reversed(selected))

@@ -565,6 +565,63 @@ def test_memory_transcript_round_trips_sender_external_id(tmp_path) -> None:
     assert messages[0].sender_canonical_id == "feishu:7d2a4c1c9e6b"
 
 
+def test_legacy_non_qq_digest_resolves_external_id_from_alias(tmp_path) -> None:
+    store = JianerMemoryStore(tmp_path / "memory.db")
+    canonical = store.ensure_identity(
+        protocol="feishu",
+        self_id="bot-1",
+        external_id="ou_actual",
+    )
+    store.record_transcript(
+        protocol="feishu",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-1",
+        message_id="legacy-1",
+        sender_canonical=canonical,
+        preset="Role",
+        content="旧消息",
+        timestamp=int(time.time()),
+        sender_name="桃子",
+    )
+
+    messages = store.query_recent_chat(
+        protocol="feishu",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-1",
+    )
+
+    assert len(messages) == 1
+    assert messages[0].sender_external_id == "ou_actual"
+
+
+def test_legacy_non_qq_digest_without_alias_is_hidden(tmp_path) -> None:
+    store = JianerMemoryStore(tmp_path / "memory.db")
+    store.record_transcript(
+        protocol="feishu",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-1",
+        message_id="legacy-2",
+        sender_canonical=f"feishu:{'a' * 32}",
+        preset="Role",
+        content="无别名旧消息",
+        timestamp=int(time.time()),
+        sender_name="桃子",
+    )
+
+    messages = store.query_recent_chat(
+        protocol="feishu",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-1",
+    )
+
+    assert len(messages) == 1
+    assert messages[0].sender_external_id == ""
+
+
 def test_service_transcript_write_forwards_sender_external_id() -> None:
     captured = {}
 
