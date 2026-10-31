@@ -19,3 +19,14 @@
 ## 文档
 
 - [原生 Python 部署教程](DEPLOYMENT.md)
+
+## 使用 uv 启动
+
+依赖固定在同仓库的 `pyproject.toml` 与 `uv.lock` 中：
+
+```bash
+uv sync --frozen --no-dev
+uv run --frozen --no-dev python main.py
+```
+
+更新依赖时先修改 `pyproject.toml`，再执行 `uv lock` 并提交锁文件。

@@ -1,4 +1,4 @@
-"""Global HypeR-style persona profiles backed by raw persona templates."""
+"""Global JianerAI persona profiles backed by raw persona templates."""
 
 from __future__ import annotations
 

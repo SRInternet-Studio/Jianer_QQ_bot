@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 from plugins.JianerAI.service import JianerAIService
+from jianer.adapters import Capability
 
 
 def test_command_text_is_not_segmented() -> None:
@@ -92,3 +93,33 @@ def test_send_ai_text_splits_long_paragraph_and_caps_parts() -> None:
     assert "".join(captured[0]).replace("\n", "") == (
         "一" * 25 + "。" + "二" * 25 + "。" + "三" * 25
     )
+
+
+def test_send_text_parts_returns_message_ids_and_uses_reply_override() -> None:
+    service = object.__new__(JianerAIService)
+    service._target_kwargs = lambda event: {"group_id": event.group_id}
+    sent = []
+
+    class Actions:
+        capabilities = frozenset({Capability.SEND_REPLY})
+
+        @staticmethod
+        async def send(**kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(
+                data=SimpleNamespace(message_id=f"out-{len(sent)}")
+            )
+
+    message_ids = asyncio.run(
+        service._send_text_parts(
+            SimpleNamespace(group_id="group-1", message_id="trigger-1"),
+            Actions(),
+            ["第一段", "第二段"],
+            reply=True,
+            reply_to_message_id="target-1",
+        )
+    )
+
+    assert message_ids == ["out-1", "out-2"]
+    assert "target-1" in repr(sent[0]["message"])
+    assert "trigger-1" not in repr(sent[0]["message"])

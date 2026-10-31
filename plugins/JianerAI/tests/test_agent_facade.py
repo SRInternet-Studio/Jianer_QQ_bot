@@ -8,7 +8,7 @@ from jianer.adapters import ConversationKey, ConversationKind
 
 from plugins.JianerAI.agent_runtime.facade import AgentFacade
 from plugins.JianerAI.agent_runtime.models import SessionKey
-from plugins.JianerAI.service import HypeRMessageSink, JianerAIService
+from plugins.JianerAI.service import JianerAIMessageSink, JianerAIService
 from plugins.JianerAI.tools.contracts import ToolContext
 
 
@@ -124,7 +124,7 @@ def test_agent_on_off_command_updates_whitelist(tmp_path: Path) -> None:
     assert len(replies) == 2
 
 
-def test_hype_sink_applies_suffix_and_emits_one_tts() -> None:
+def test_jianer_ai_sink_applies_suffix_and_emits_one_tts() -> None:
     sent: list[str] = []
     speech: list[str] = []
 
@@ -159,7 +159,7 @@ def test_hype_sink_applies_suffix_and_emits_one_tts() -> None:
         conversation_id="group-1",
         preset="Role",
     )
-    sink = HypeRMessageSink(service, _event(), SimpleNamespace(), key, "qq:user")
+    sink = JianerAIMessageSink(service, _event(), SimpleNamespace(), key, "qq:user")
 
     async def scenario():
         await sink.send("first")
@@ -171,7 +171,7 @@ def test_hype_sink_applies_suffix_and_emits_one_tts() -> None:
     assert speech == ["first后缀\nsecond后缀"]
 
 
-def test_agent_command_help_describes_hype_runtime(tmp_path: Path) -> None:
+def test_agent_command_help_describes_jianer_ai_runtime(tmp_path: Path) -> None:
     facade, _, _ = _facade(tmp_path, _Sessions([]))
     key = SessionKey(
         scene_type="group",

@@ -1,9 +1,15 @@
 # JianerAI
 
-`jianerbot-plugin-jianer-ai` 是简儿的 JianerCore 目录插件，统一承载 HypeR
-风格的 Agent 事件管线、持久 Main/System Context、Collector、工具发送、长期
+`jianerbot-plugin-jianer-ai` 是简儿的 JianerCore 目录插件，统一承载 JianerAI
+Agent 事件管线、持久 Main/System Context、Collector、工具发送、长期
 记忆、回复后缀、TTS、图片与引用解析。入口固定为 `setup.py`，依赖内置
 `jianerbot-plugin-alconna`。
+
+启用 `agent_replyer_api_profile` 后，普通聊天采用 Planner / Replyer 分工：
+Planner 使用 Agent Main Context 决定是否发言、回复目标和工具调用；只有
+`reply` 工具会调用独立 Replyer 生成最终正文。Replyer 只读取真实聊天和当前
+消息批次，不能看到 Planner 推理、工具结果或 Sub-Agent 内部过程。未配置
+Replyer 模型时继续使用原有消息工具，保持旧行为。
 
 ## 触发规则
 
@@ -35,7 +41,7 @@ Context，完整保存模型 tool call、tool result、reasoning 和 provider �
 - `~TTS [开启|关闭|状态]`
 - `~Agent [开启|关闭|状态|工具|子代理]`：管理当前群白名单、工具和 Sub-Agent 状态
 - `~清空上下文`：清空当前 Main Context；兼容旧名 `~注销`、`~重置上下文`
-- `~agent.on/off/status/stop/profile/context/func/model`：HypeR 风格别名
+- `~agent.on/off/status/stop/profile/context/func/model`：JianerAI Agent 管理别名
 
 后缀只在 `SuffixStore.apply_ai_reply()` 中应用；ping、群发、休眠等宿主消息不会
 经过后缀处理。私聊 TTS 默认关闭，群聊默认开启。
@@ -75,6 +81,9 @@ Context，完整保存模型 tool call、tool result、reasoning 和 provider �
 - `TTS`：音色、语速、音量与音高
 - `agent_profile`：当前全局人设名，来自 `data/jianer_ai/profiles.json`
 - `agent_api_profile`：当前全局 Agent 模型代码；留空时使用 `default_mode`
+- `agent_replyer_api_profile`：独立 Replyer 模型代码；留空保持旧直发行为，
+  非空时必须对应有效的 `aiconfig/*.ai.json`
+- `agent_max_rounds`：Planner 单次运行的内部工具轮次上限，默认 16
 - `agent_white`：群白名单，键为 `protocol:self_id:group_id`，值为用户 ID 列表
 - `agent_heartbeat`：启用 System Context 周期维护，默认关闭
 - `agent_max_concurrency`：全局 Agent 模型调用并发上限，`0` 表示不限
@@ -281,7 +290,7 @@ base64 请求上超时，归一化后这类图片不会再让整轮对话失败�
 
 ## 全局人设
 
-HypeR 风格人设保存在 `data/jianer_ai/profiles.json`：
+JianerAI 人设保存在 `data/jianer_ai/profiles.json`：
 
 ```json
 {
@@ -313,7 +322,8 @@ HypeR 风格人设保存在 `data/jianer_ai/profiles.json`：
 
 当 `agent_platform_api_enabled` 为真时，模型获得当前协议对应的静态 API 工具：
 
-- `send_group_msg` / `send_private_msg`：HypeR 主回复工具。
+- `reply`：启用独立 Replyer 后的普通聊天正文工具。
+- `send_group_msg` / `send_private_msg`：未启用 Replyer 时的兼容回复工具。
 - `collected_send`：长文本或合并转发发送。
 - `send_message`：兼容工具，支持正文、At 列表、引用消息与图片链接。
 - OneBot V11：按 [OneBot V11 公开 API](https://11.onebot.dev/api/public.html) 注册 38 个

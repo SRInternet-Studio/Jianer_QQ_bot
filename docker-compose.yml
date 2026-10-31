@@ -15,7 +15,10 @@ services:
     command: ["python", "main.py"]
 
   webui:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jianer-bot:local
     container_name: jianer-webui
     working_dir: /app
     restart: unless-stopped
@@ -29,5 +32,4 @@ services:
       - ./:/app
     ports:
       - "${WEBUI_PORT:-5000}:${WEBUI_PORT:-5000}"
-    command: >
-      sh -c "python -m pip install --no-cache-dir -r requirements.txt --disable-pip-version-check --no-warn-script-location && python app.py"
+    command: ["python", "app.py"]

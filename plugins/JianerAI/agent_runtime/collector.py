@@ -1,4 +1,4 @@
-"""Adaptive event collector matching HypeR's aggregation behavior."""
+"""Adaptive event collector matching JianerAI aggregation behavior."""
 
 from __future__ import annotations
 

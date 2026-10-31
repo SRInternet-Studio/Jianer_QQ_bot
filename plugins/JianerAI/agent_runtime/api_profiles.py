@@ -1,4 +1,4 @@
-"""HypeR-style active API profile facade over aiconfig model files."""
+"""JianerAI active API profile facade over aiconfig model files."""
 
 from __future__ import annotations
 

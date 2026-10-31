@@ -687,7 +687,7 @@ def test_collector_compresses_and_preserves_recent_events() -> None:
     assert len(buffer) == 3
 
 
-def test_tool_registry_keeps_legacy_execute_and_adds_hype_dispatch() -> None:
+def test_tool_registry_keeps_legacy_execute_and_adds_jianer_ai_dispatch() -> None:
     registry = ToolRegistry(
         allowed_risks=frozenset({ToolRisk.READ_ONLY, ToolRisk.MUTATING}),
     )
@@ -710,13 +710,13 @@ def test_tool_registry_keeps_legacy_execute_and_adds_hype_dispatch() -> None:
             ToolCall("1", "echo", {"text": "legacy"}),
             context,
         )
-        hype = await registry.dispatch("echo", {"text": "hype"}, context)
-        return old, hype
+        jianer_ai = await registry.dispatch("echo", {"text": "jianer_ai"}, context)
+        return old, jianer_ai
 
-    old, hype = asyncio.run(scenario())
+    old, jianer_ai = asyncio.run(scenario())
     assert old.ok is True
     assert json.loads(old.content)["data"] == "legacy"
-    assert json.loads(hype)["data"] == "hype"
+    assert json.loads(jianer_ai)["data"] == "jianer_ai"
     assert registry.schema("main")[0]["function"]["name"] == "echo"
 
 
@@ -933,7 +933,7 @@ def test_anthropic_protocol_is_rejected() -> None:
         )
 
 
-def test_registry_filters_hype_permissions_and_scenes() -> None:
+def test_registry_filters_jianer_ai_permissions_and_scenes() -> None:
     registry = ToolRegistry(
         allowed_risks=frozenset({ToolRisk.READ_ONLY}),
     )

@@ -36,6 +36,8 @@ class AgentSessionManager:
         bot_name: str = "简儿",
         bot_name_en: str = "Jianer",
         allowed_tool_names: frozenset[str] | None = None,
+        replyer_enabled: bool = False,
+        max_rounds: int = 16,
         total_timeout_seconds: float = 600.0,
         max_history_chars: int = 60000,
         idle_seconds: float = 12 * 3600,
@@ -56,6 +58,8 @@ class AgentSessionManager:
         self.bot_name = str(bot_name or "简儿")
         self.bot_name_en = str(bot_name_en or "Jianer")
         self.allowed_tool_names = allowed_tool_names
+        self.replyer_enabled = bool(replyer_enabled)
+        self.max_rounds = max(1, int(max_rounds))
         self.total_timeout_seconds = total_timeout_seconds
         self.max_history_chars = max_history_chars
         self.idle_seconds = max(60.0, float(idle_seconds))
@@ -380,6 +384,10 @@ class AgentSessionManager:
             model_resolver=self.model_resolver,
             prompt_builder=prompt_builder,
             allowed_tool_names=self.allowed_tool_names,
+            replyer_enabled=(
+                self.replyer_enabled and role is AgentRole.MAIN
+            ),
+            max_rounds=self.max_rounds,
             total_timeout_seconds=self.total_timeout_seconds,
             max_history_chars=self.max_history_chars,
             logger=self.logger,

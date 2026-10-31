@@ -1,4 +1,4 @@
-"""HypeR-style class/decorator tool declarations.
+"""JianerAI class/decorator tool declarations.
 
 Existing ToolSpec providers remain first-class.  New built-ins can use
 ``AgentToolBase`` and ``@tool`` while the compatibility registry presents

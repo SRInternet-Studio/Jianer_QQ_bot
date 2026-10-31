@@ -341,6 +341,15 @@ class ProviderResponse:
     text: str
     tool_calls: tuple[ProviderToolCall, ...]
     turn: AssistantTurn
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_prompt_tokens: int = 0
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        if self.prompt_tokens <= 0:
+            return 0.0
+        return min(1.0, max(0.0, self.cached_prompt_tokens / self.prompt_tokens))
 
 
 @dataclass(frozen=True, slots=True)
@@ -745,7 +754,14 @@ class ProviderRegistry:
                 textual_calls = _parse_dsml_tool_calls(result.text)
                 if textual_calls:
                     turn = AssistantTurn(tool_calls=textual_calls)
-                    result = ProviderResponse("", textual_calls, turn)
+                    result = ProviderResponse(
+                        "",
+                        textual_calls,
+                        turn,
+                        result.prompt_tokens,
+                        result.completion_tokens,
+                        result.cached_prompt_tokens,
+                    )
                 elif _looks_like_dsml_tool_call(result.text):
                     raise ProviderRequestError(
                         "provider returned malformed textual tool calls"
@@ -780,7 +796,14 @@ class ProviderRegistry:
                 tool_calls=result.tool_calls,
                 provider_content=result.turn.provider_content,
             )
-            return ProviderResponse(normalized_text, result.tool_calls, turn)
+            return ProviderResponse(
+                normalized_text,
+                result.tool_calls,
+                turn,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.cached_prompt_tokens,
+            )
         return result
 
     async def _recover_gemini_empty_response(
@@ -857,7 +880,8 @@ class ProviderRegistry:
         )
         payload = _build_responses_payload(config, prepared_request)
         response = await self._request("responses", config, payload)
-        return _extract_responses_response(response)
+        result = _extract_responses_response(response)
+        return _with_usage(result, _extract_usage(response))
 
     async def _prepare_openai_chat_request(
         self,
@@ -2732,7 +2756,10 @@ async def _extract_openai_response(response: Any) -> ProviderResponse:
             )
         )
     turn = AssistantTurn(text=text, tool_calls=tuple(calls))
-    return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
+    return _with_usage(
+        ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn),
+        _extract_usage(response),
+    )
 
 
 def _extract_openai_chunk_delta(chunk: Any) -> Any:
@@ -2766,7 +2793,14 @@ def _normalize_agent_response(
         tool_calls=calls,
         provider_content=response.turn.provider_content,
     )
-    return ProviderResponse(text=text, tool_calls=calls, turn=turn)
+    return ProviderResponse(
+        text=text,
+        tool_calls=calls,
+        turn=turn,
+        prompt_tokens=response.prompt_tokens,
+        completion_tokens=response.completion_tokens,
+        cached_prompt_tokens=response.cached_prompt_tokens,
+    )
 
 
 def _is_async_or_sync_stream(value: Any) -> bool:
@@ -2861,10 +2895,13 @@ def _extract_responses_response(response: Any) -> ProviderResponse:
         tool_calls=tuple(calls),
         provider_content=provider_content,
     )
-    return ProviderResponse(
-        text=text,
-        tool_calls=tuple(calls),
-        turn=turn,
+    return _with_usage(
+        ProviderResponse(
+            text=text,
+            tool_calls=tuple(calls),
+            turn=turn,
+        ),
+        _extract_usage(plain),
     )
 
 
@@ -2908,7 +2945,10 @@ def _extract_anthropic_response(response: Any) -> ProviderResponse:
             ]
         },
     )
-    return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
+    return _with_usage(
+        ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn),
+        _extract_usage(response),
+    )
 
 
 def _extract_transcription_text(response: Any) -> str:
@@ -3084,7 +3124,10 @@ def _extract_gemini_response(response: Any) -> ProviderResponse:
         tool_calls=tuple(calls),
         provider_content=content,
     )
-    return ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn)
+    return _with_usage(
+        ProviderResponse(text=text, tool_calls=tuple(calls), turn=turn),
+        _extract_usage(response),
+    )
 
 
 def _gemini_empty_response_error(response: Any) -> EmptyProviderResponseError:
@@ -3205,6 +3248,113 @@ def _get_value(value: Any, key: str) -> Any:
     if isinstance(value, Mapping):
         return value.get(key)
     return getattr(value, key, None)
+
+
+def _usage_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _first_usage_value(
+    usage: Mapping[str, Any],
+    aliases: Sequence[str],
+) -> int:
+    for alias in aliases:
+        value = usage.get(alias)
+        if value is not None:
+            return _usage_int(value)
+    return 0
+
+
+def _extract_usage(
+    response: Any,
+) -> tuple[int, int, int]:
+    """Return prompt, completion, and cached prompt tokens."""
+
+    plain = _plain_value(response)
+    if not isinstance(plain, Mapping):
+        return 0, 0, 0
+    usage = plain.get("usage")
+    if not isinstance(usage, Mapping):
+        usage = plain.get("usageMetadata")
+    if not isinstance(usage, Mapping):
+        usage = plain.get("usage_metadata")
+    if not isinstance(usage, Mapping):
+        return 0, 0, 0
+
+    prompt_tokens = _first_usage_value(
+        usage,
+        (
+            "prompt_tokens",
+            "input_tokens",
+            "promptTokenCount",
+            "prompt_token_count",
+        ),
+    )
+    completion_tokens = _first_usage_value(
+        usage,
+        (
+            "completion_tokens",
+            "output_tokens",
+            "candidatesTokenCount",
+            "candidates_token_count",
+        ),
+    )
+    cached_tokens = _first_usage_value(
+        usage,
+        (
+            "prompt_cache_hit_tokens",
+            "cached_tokens",
+            "cachedContentTokenCount",
+            "cached_content_token_count",
+            "cache_read_input_tokens",
+        ),
+    )
+    if cached_tokens <= 0:
+        for details_key in (
+            "prompt_tokens_details",
+            "input_tokens_details",
+            "inputTokensDetails",
+        ):
+            details = usage.get(details_key)
+            if not isinstance(details, Mapping):
+                continue
+            cached_tokens = _first_usage_value(
+                details,
+                (
+                    "cached_tokens",
+                    "cachedTokenCount",
+                    "cache_read_input_tokens",
+                ),
+            )
+            if cached_tokens > 0:
+                break
+    return prompt_tokens, completion_tokens, cached_tokens
+
+
+def _with_usage(
+    response: ProviderResponse,
+    usage: tuple[int, int, int],
+) -> ProviderResponse:
+    prompt_tokens, completion_tokens, cached_tokens = usage
+    if (
+        prompt_tokens == response.prompt_tokens
+        and completion_tokens == response.completion_tokens
+        and cached_tokens == response.cached_prompt_tokens
+    ):
+        return response
+    return ProviderResponse(
+        text=response.text,
+        tool_calls=response.tool_calls,
+        turn=response.turn,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_prompt_tokens=cached_tokens,
+    )
 
 
 def _plain_mapping(value: Any) -> dict[str, Any]:

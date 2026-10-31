@@ -1,4 +1,4 @@
-"""Event facade for the HypeR-style JianerAI Agent runtime."""
+"""Event facade for the JianerAI JianerAI Agent runtime."""
 
 from __future__ import annotations
 

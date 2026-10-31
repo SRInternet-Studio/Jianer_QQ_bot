@@ -54,6 +54,8 @@
         "default_mode": "grok",
         "agent_profile": "XingYu",
         "agent_api_profile": "grok",
+        "agent_replyer_api_profile": "",
+        "agent_max_rounds": 16,
         "agent_heartbeat": false,
         "agent_max_concurrency": 0,
         "agent_white": {},

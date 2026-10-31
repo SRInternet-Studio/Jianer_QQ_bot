@@ -1,4 +1,4 @@
-"""Global sticker library ported from HypeR_Bot."""
+"""Global sticker library for the JianerAI sticker library."""
 
 from __future__ import annotations
 
@@ -366,7 +366,7 @@ def normalize_sticker_image(
             if source_format in {"GIF", "WEBP"} or (
                 source_format == "PNG" and animated
             ):
-                # HypeR stores the original sticker bytes. Re-encoding an
+                # JianerAI stores the original sticker bytes. Re-encoding an
                 # animated sticker would flatten it to the first frame.
                 if max(source.size) > max(128, int(max_dimension)):
                     raise StickerError("动图尺寸超过上限")

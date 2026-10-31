@@ -1,0 +1,70 @@
+[project]
+name = "jianer-qq-bot"
+version = "0.0.0"
+description = "Jianer QQ Bot runtime and JianerAI agent"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "aiofiles>=23.2.1,<25",
+    "aiohttp",
+    "aiosqlite>=0.22.1",
+    "cryptography",
+    "ddgs>=9.14.4,<10",
+    "edge-tts",
+    "emoji",
+    "faiss-cpu>=1.8,<2",
+    "fastapi>=0.115,<1",
+    "flask",
+    "flask-cors",
+    "flask-sock",
+    "flask-socketio",
+    "google-genai>=2.16,<3",
+    "httpx",
+    "httpx-ws>=0.7.2,<1",
+    "jieba>=0.42,<1",
+    "jianer-bot>=0.92.7",
+    "json-repair>=0.30,<1",
+    "lark-oapi",
+    "mcp>=1.9,<2",
+    "nest-asyncio>=1.5",
+    "networkx>=3",
+    "numpy>=2,<3",
+    "nvidia-ml-py",
+    "openai>=2.30,<3",
+    "pandas>=1.5",
+    "paramiko>=3.5.1",
+    "pillow",
+    "playwright>=1.58,<1.59",
+    "psutil",
+    "pyarrow>=10",
+    "pycryptodome",
+    "pyecharts>=2,<3",
+    "pygithub",
+    "pyjwt[crypto]>=2.10,<3",
+    "pymysql",
+    "py7zr>=0.21,<2",
+    "pydantic>=2,<3",
+    "python-dotenv>=1.0,<2",
+    "python-multipart>=0.0.9",
+    "pyyaml>=6,<7",
+    "requests",
+    "rich>=14",
+    "scipy>=1.10,<2",
+    "sqlalchemy>=2,<3",
+    "sqlmodel>=0.0.38",
+    "tenacity>=8",
+    "tomlkit>=0.13,<1",
+    "uvicorn>=0.30,<1",
+    "websocket-client",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.24,<2",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"

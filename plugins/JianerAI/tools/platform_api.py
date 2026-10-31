@@ -601,6 +601,7 @@ def send_message_tool() -> ToolSpec:
         },
         handler=_send_message,
         risk=ToolRisk.MUTATING,
+        direct_message=True,
         timeout_seconds=20.0,
         max_output_chars=4000,
     )
@@ -634,6 +635,7 @@ def send_group_message_tool() -> ToolSpec:
         scenes=frozenset({"group"}),
         group="qq",
         sub_visible=False,
+        direct_message=True,
         timeout_seconds=20.0,
         max_output_chars=4000,
     )
@@ -662,6 +664,7 @@ def send_private_message_tool() -> ToolSpec:
         scenes=frozenset({"private"}),
         group="qq",
         sub_visible=False,
+        direct_message=True,
         timeout_seconds=20.0,
         max_output_chars=4000,
     )
@@ -693,6 +696,7 @@ def collected_send_tool() -> ToolSpec:
         group="qq",
         sub_visible=False,
         preserve=True,
+        direct_message=True,
         timeout_seconds=30.0,
         max_output_chars=4000,
     )
@@ -758,6 +762,7 @@ def platform_command_tool() -> ToolSpec:
         },
         handler=_platform_command,
         risk=ToolRisk.MUTATING,
+        direct_message=True,
         required_privilege=True,
         supported_protocols=frozenset({"onebot"}),
         timeout_seconds=20.0,
@@ -802,6 +807,7 @@ def register_platform_api_tools(registry: Any) -> tuple[ToolSpec, ...]:
                 input_schema=api["input_schema"],
                 handler=invoke_milky_api,
                 risk=risk,
+                direct_message=_is_direct_message_api(endpoint),
                 required_privilege=True,
                 supported_protocols=frozenset({"milky"}),
                 timeout_seconds=20.0,
@@ -838,6 +844,7 @@ def register_platform_api_tools(registry: Any) -> tuple[ToolSpec, ...]:
                 input_schema=api["input_schema"],
                 handler=invoke_lark_api,
                 risk=risk,
+                direct_message=_is_direct_message_api(str(api["name"])),
                 required_privilege=True,
                 supported_protocols=frozenset({"feishu", "lark"}),
                 timeout_seconds=20.0,
@@ -878,6 +885,7 @@ def register_platform_api_tools(registry: Any) -> tuple[ToolSpec, ...]:
                 input_schema=api["input_schema"],
                 handler=invoke_onebot_api,
                 risk=risk,
+                direct_message=_is_direct_message_api(action),
                 required_privilege=True,
                 supported_protocols=frozenset({"onebot"}),
                 timeout_seconds=35.0,
@@ -887,6 +895,23 @@ def register_platform_api_tools(registry: Any) -> tuple[ToolSpec, ...]:
     for spec in specs:
         registry.register(spec)
     return tuple(specs)
+
+
+def _is_direct_message_api(name: str) -> bool:
+    normalized = str(name or "").strip().casefold()
+    return (
+        normalized.startswith(("send_", "reply_", "lark_send_", "lark_reply_"))
+        or normalized
+        in {
+            "send_msg",
+            "send_group_msg",
+            "send_private_msg",
+            "send_group_forward_msg",
+            "send_private_forward_msg",
+            "collected_send",
+            "send_message",
+        }
+    )
 
 
 def _validate_onebot_special_arguments(

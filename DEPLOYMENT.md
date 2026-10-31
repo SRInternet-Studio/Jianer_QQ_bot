@@ -87,57 +87,68 @@ ffprobe -version
 ```bash
 python3 --version
 sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip ffmpeg fonts-noto-cjk
+sudo apt install -y git python3 python3-venv ffmpeg fonts-noto-cjk
 ```
 
 如果 `python3 --version` 低于 3.11，请使用发行版为当前版本提供的 Python 3.11/3.12 软件包或受信任的软件源，不要用旧解释器继续安装。
 
-## 5. 创建虚拟环境并安装 Python 依赖
+## 5. 使用 uv 安装 Python 依赖
 
+项目使用 `pyproject.toml` 声明依赖，并由提交到仓库的 `uv.lock` 固定完整解析结果。
 不要把依赖直接装到系统 Python。以下命令都在项目根目录执行。
 
-### 5.1 Windows PowerShell
+### 5.1 安装 uv
+
+Windows PowerShell：
 
 ```powershell
-py -3.12 -m venv .venv
-Set-ExecutionPolicy -Scope Process Bypass
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip check
+winget install --id=astral-sh.uv -e
+uv --version
 ```
 
-### 5.2 Linux
+Debian/Ubuntu：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip check
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
+uv --version
 ```
 
-`requirements.txt` 当前允许安装 `jianer-bot>=0.92.5`，因此未来重新部署时可能得到比本教程验证版本更新的 JianerCore。每次验收都应记录实际版本：
+### 5.2 同步运行依赖
+
+Windows PowerShell 与 Linux 使用相同命令：
 
 ```bash
-python -c "import importlib.metadata as m; print(m.version('jianer-bot'))"
+uv lock --check
+uv sync --frozen --no-dev
+uv run --frozen --no-dev python -c "import jianer; print('uv environment ready')"
 ```
 
-如果要保留一次已经验收通过的完整依赖快照，可在验收后执行 `python -m pip freeze`，把结果保存到部署记录中。不要用旧快照覆盖新提交声明的依赖范围。
+`uv sync` 会在项目根目录创建 `.venv`。`uv run` 会使用该环境和锁定依赖，
+不需要手动激活虚拟环境。不要在部署机执行不带 `--frozen` 的同步来绕过已提交的锁文件。
+
+每次验收都应记录实际 JianerCore 版本：
+
+```bash
+uv run --frozen --no-dev python -c "import importlib.metadata as m; print(m.version('jianer-bot'))"
+```
+
+需要修改依赖时，先编辑 `pyproject.toml`，再执行 `uv lock`，同时提交
+`pyproject.toml` 与 `uv.lock`。
 
 ### 5.3 安装 Playwright Chromium
 
 Windows：
 
 ```powershell
-python -m playwright install chromium
+uv run --frozen --no-dev python -m playwright install chromium
 ```
 
 Debian/Ubuntu：先用管理员权限安装 Chromium 所需系统库，再以实际运行机器人的账号下载浏览器：
 
 ```bash
 sudo .venv/bin/python -m playwright install-deps chromium
-.venv/bin/python -m playwright install chromium
+uv run --frozen --no-dev python -m playwright install chromium
 ```
 
 浏览器默认安装到运行账号的用户目录。以后由 `systemd` 使用 `jianer` 用户运行时，也必须让同一个 `jianer` 用户执行第二条安装命令，否则服务可能找不到 Chromium。
@@ -340,11 +351,15 @@ JianerAI 从 `aiconfig/*.ai.json` 读取模型，不以 `config.json` 里旧的 
   "default_mode": "primary",
   "memory_mode": "primary",
   "agent_api_profile": "primary",
+  "agent_replyer_api_profile": "primary",
+  "agent_max_rounds": 16,
   "agent_profile": "XingYu"
 }
 ```
 
-`agent_api_profile` 指定当前全局 Agent 模型；`agent_profile` 指定
+`agent_api_profile` 指定 Planner 模型；`agent_replyer_api_profile` 指定独立
+Replyer 模型，留空时保留旧的直发工具行为。`agent_max_rounds` 限制 Planner
+单次运行的内部工具轮次；`agent_profile` 指定
 `data/jianer_ai/profiles.json` 中的全局人设。原始人设模板直接作为 prompt，
 不再生成结构化人格 JSON。人设文件会在每次构建 System Prompt 前重新读取，
 完整人设固定放在 System Prompt 末尾。切换人设时保留最近轮次原文，其余上下文
@@ -468,18 +483,18 @@ chmod 600 secrets/*
 Windows：
 
 ```powershell
-python -m json.tool config.json > $null
+uv run --frozen --no-dev python -m json.tool config.json > $null
 Get-ChildItem aiconfig -Filter *.ai.json | ForEach-Object {
-    python -m json.tool $_.FullName > $null
+    uv run --frozen --no-dev python -m json.tool $_.FullName > $null
 }
 ```
 
 Linux：
 
 ```bash
-python -m json.tool config.json >/dev/null
+uv run --frozen --no-dev python -m json.tool config.json >/dev/null
 for file in aiconfig/*.ai.json; do
-    python -m json.tool "$file" >/dev/null
+    uv run --frozen --no-dev python -m json.tool "$file" >/dev/null
 done
 ```
 
@@ -488,16 +503,16 @@ done
 Windows：
 
 ```powershell
-python -m pip check
+uv pip check --python .venv
 $env:PYTHONPATH = (Get-Location).Path
-python -c "from jianer.plugins import PluginManager; r=PluginManager().load_plugins('plugins'); assert not r.failed, r.failed; print(f'loaded={len(r.loaded)} warnings={len(r.warnings)}')"
+uv run --frozen --no-dev python -c "from jianer.plugins import PluginManager; r=PluginManager().load_plugins('plugins'); assert not r.failed, r.failed; print(f'loaded={len(r.loaded)} warnings={len(r.warnings)}')"
 ```
 
 Linux：
 
 ```bash
-python -m pip check
-PYTHONPATH="$PWD" python -c "from jianer.plugins import PluginManager; r=PluginManager().load_plugins('plugins'); assert not r.failed, r.failed; print(f'loaded={len(r.loaded)} warnings={len(r.warnings)}')"
+uv pip check --python .venv
+PYTHONPATH="$PWD" uv run --frozen --no-dev python -c "from jianer.plugins import PluginManager; r=PluginManager().load_plugins('plugins'); assert not r.failed, r.failed; print(f'loaded={len(r.loaded)} warnings={len(r.warnings)}')"
 ```
 
 这一步只证明 Python 依赖和插件静态装载成功，不证明 QQ/飞书、AI、查分器、天气或真实消息发送已经可用。
@@ -507,19 +522,19 @@ PYTHONPATH="$PWD" python -c "from jianer.plugins import PluginManager; r=PluginM
 先启动协议端并完成账号登录，再在项目根目录运行：
 
 ```bash
-python main.py
+uv run --frozen --no-dev python main.py
 ```
 
 Windows 未激活虚拟环境时也可以显式运行：
 
 ```powershell
-.\.venv\Scripts\python.exe main.py
+uv run --frozen --no-dev python main.py
 ```
 
 Linux 未激活虚拟环境时：
 
 ```bash
-.venv/bin/python main.py
+uv run --frozen --no-dev python main.py
 ```
 
 观察日志，至少确认：
@@ -692,11 +707,10 @@ cd /opt/jianer/Jianer_QQ_bot
 git status --short
 git rev-parse HEAD
 git pull --ff-only origin dev
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m playwright install chromium
-python -m pip check
-PYTHONPATH="$PWD" python -c "from jianer.plugins import PluginManager; r=PluginManager().load_plugins('plugins'); assert not r.failed, r.failed"
+uv lock --check
+uv sync --frozen --no-dev
+uv run --frozen --no-dev python -m playwright install chromium
+PYTHONPATH="$PWD" uv run --frozen --no-dev python -c "from jianer.plugins import PluginManager; r=PluginManager().load_plugins('plugins'); assert not r.failed, r.failed"
 sudo systemctl start jianer-bot
 sudo journalctl -u jianer-bot -n 100 --no-pager
 ```
@@ -736,7 +750,7 @@ Windows 更新时同样遵循：停止任务 → 备份 → `git status` → `gi
 
 - 确认文件名是 `aiconfig/<代码>.ai.json`；
 - `default_mode` 与 `memory_mode` 应等于文件名中的 `<代码>`；
-- 用 `python -m json.tool` 校验 JSON；
+- 用 `uv run --frozen --no-dev python -m json.tool` 校验 JSON；
 - 核对 `ResponseType`、`Model`、`BaseUrl` 和 `ApiKey`；
 - 不要把 `aiconfig/example.ai.json` 当成真实模型配置。
 
@@ -745,7 +759,7 @@ Windows 更新时同样遵循：停止任务 → 备份 → `git status` → `gi
 使用实际运行机器人服务的同一账号执行：
 
 ```bash
-.venv/bin/python -m playwright install chromium
+uv run --frozen --no-dev python -m playwright install chromium
 ```
 
 Linux 若缺系统库，再执行 `sudo .venv/bin/python -m playwright install-deps chromium`。
@@ -777,8 +791,8 @@ Linux 安装 `fonts-noto-cjk` 并重启服务。MaimaiDX 还需要自己的 `dat
 
 ## 16. 部署验收清单
 
-- [ ] 使用 Python 3.11/3.12 的独立虚拟环境
-- [ ] `python -m pip check` 通过
+- [ ] 使用 Python 3.11/3.12，并已通过 `uv sync --frozen --no-dev` 创建 `.venv`
+- [ ] `uv lock --check` 与 `uv pip check --python .venv` 通过
 - [ ] `config.json` JSON 校验通过，`owner` 与 `ROOT_User` 非空
 - [ ] 当前协议的 `connections.<协议>` 与顶层 `connection` 已核对
 - [ ] `aiconfig` 中只有示例和受保护的真实配置，模型代码与 `default_mode` 一致
