@@ -397,17 +397,19 @@ async def _configure_tts(state: str, event: Any, actions: Any) -> bool:
 
 _agent_command = Alconna(
     f"{_REMINDER}Agent",
-    Args["state", str, "status"],
+    Args["state", MultiVar(str, "*")],
 )
 
 
 @Command(_agent_command).handle()
 async def _configure_agent(
-    state: str = "status",
+    state: tuple[str, ...] | str = "status",
     event: Any = None,
     actions: Any = None,
 ) -> bool:
-    return await _invoke("configure_agent", event, actions, state)
+    values = (state,) if isinstance(state, str) else state
+    normalized = " ".join(str(item) for item in values).strip() or "status"
+    return await _invoke("configure_agent", event, actions, normalized)
 
 
 @Command(f"{_REMINDER}批准Shell <request_id>").handle()

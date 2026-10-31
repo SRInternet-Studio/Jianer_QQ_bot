@@ -1107,6 +1107,8 @@ def _normalize_subcommand(value: str) -> str:
         "回复器": "replyer",
         "rmodel": "replyer",
         "reply-model": "replyer",
+        "模型": "model",
+        "模型菜单": "model",
         "pf.ad": "profile.add",
         "pf.rm": "profile.remove",
         "pf.ma": "profile.master",

@@ -10,6 +10,7 @@ from jianer.adapters import ConversationKey, ConversationKind
 from plugins.JianerAI.agent_runtime.facade import AgentFacade
 from plugins.JianerAI.agent_runtime.models import SessionKey
 from plugins.JianerAI.service import JianerAIMessageSink, JianerAIService
+from plugins.JianerAI.setup import _REMINDER, _agent_command
 from plugins.JianerAI.tools.contracts import ToolContext
 
 
@@ -225,6 +226,42 @@ def test_agent_replyer_model_command_updates_live_runtime(
     assert replies[-1] == "已切换全局 Replyer 模型：replyer-b"
     saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert saved["others"]["agent_replyer_api_profile"] == "replyer-b"
+
+
+def test_host_agent_command_keeps_replyer_model_arguments() -> None:
+    result = _agent_command.parse(
+        f"{_REMINDER}Agent 回复模型 replyer-b"
+    )
+
+    assert result.matched is True
+    assert result.main_args["state"] == ("回复模型", "replyer-b")
+
+
+def test_configure_agent_delegates_replyer_command_to_facade() -> None:
+    calls: list[str] = []
+
+    class Facade:
+        @staticmethod
+        async def handle_command(event, actions, key, text):
+            del event, actions, key
+            calls.append(text)
+            return True
+
+    service = object.__new__(JianerAIService)
+    service.options = SimpleNamespace(reminder="~")
+    service.agent_facade = Facade()
+    event = _event(text="~Agent 回复模型 replyer-b")
+
+    handled = asyncio.run(
+        service.configure_agent(
+            event,
+            SimpleNamespace(),
+            "回复模型 replyer-b",
+        )
+    )
+
+    assert handled is True
+    assert calls == ["~Agent 回复模型 replyer-b"]
 
 
 def test_legacy_auto_mode_output_explains_whitelist_semantics() -> None:

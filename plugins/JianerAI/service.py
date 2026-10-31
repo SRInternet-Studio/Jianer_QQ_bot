@@ -3203,6 +3203,30 @@ class JianerAIService:
     ) -> bool:
         session_key = AgentFacade.session_key(event)
         normalized = str(state or "status").strip().casefold()
+        command_head = normalized.split(maxsplit=1)[0] if normalized else ""
+        if command_head in {
+            "model",
+            "api",
+            "replyer",
+            "rmodel",
+            "reply-model",
+            "模型",
+            "回复模型",
+            "回复器",
+            "func",
+            "function",
+            "profile",
+            "context",
+            "stop",
+            "on",
+            "off",
+        }:
+            return await self.agent_facade.handle_command(
+                event,
+                actions,
+                session_key,
+                f"{self.options.reminder}Agent {state}",
+            )
         if normalized in _TRUE_WORDS | _FALSE_WORDS:
             if session_key.scene_type != "group":
                 text = "私聊自动处理始终开启，无需白名单。"
