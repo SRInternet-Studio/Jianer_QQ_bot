@@ -436,10 +436,9 @@ def _canonical_for_alias(protocol: str, self_id: str, external_id: str) -> str:
     return f"{protocol}:{digest}"
 
 
-def _looks_like_legacy_canonical_external_id(
+def _looks_like_legacy_canonical_digest(
     *,
     protocol: str,
-    canonical_id: str,
     external_id: str,
 ) -> bool:
     """Detect pre-upgrade non-QQ rows that copied the canonical digest."""
@@ -447,19 +446,15 @@ def _looks_like_legacy_canonical_external_id(
     protocol_s = normalize_protocol(protocol)
     if protocol_s in QQ_PROTOCOLS or protocol_s == "qq":
         return False
-    canonical = str(canonical_id or "").strip()
     external = str(external_id or "").strip()
-    prefix = f"{protocol_s}:"
-    if not canonical.startswith(prefix) or not external:
+    if not external:
         return False
-    digest = canonical[len(prefix) :]
     return (
-        len(digest) == 32
+        len(external) == 32
         and all(
             character in "0123456789abcdef"
-            for character in digest.casefold()
+            for character in external.casefold()
         )
-        and external == digest
     )
 
 
@@ -4842,12 +4837,16 @@ class JianerMemoryStore:
                     else ""
                 )
                 sender_external = str(row["sender_external_id"] or "")
-                if _looks_like_legacy_canonical_external_id(
-                    protocol=str(partition["protocol"]),
-                    canonical_id=sender_canonical,
+                source_protocol = normalize_protocol(
+                    str(row["sender_protocol"] or partition["protocol"])
+                )
+                source_self_id = str(
+                    row["sender_self_id"] or partition["self_id"]
+                )
+                if _looks_like_legacy_canonical_digest(
+                    protocol=source_protocol,
                     external_id=sender_external,
                 ):
-                    sender_external = ""
                     try:
                         canonical_root = self._resolve_canonical_in_tx(
                             conn,
@@ -4855,26 +4854,34 @@ class JianerMemoryStore:
                         )
                     except KeyError:
                         canonical_root = sender_canonical
-                    alias = conn.execute(
+                    aliases = conn.execute(
                         """
                         SELECT external_id
                         FROM sys_identity_aliases
                         WHERE canonical_id = ?
                           AND protocol = ?
                           AND self_id = ?
-                          AND external_id != ?
                         ORDER BY updated_at DESC, external_id
-                        LIMIT 1
                         """,
                         (
                             canonical_root,
-                            normalize_protocol(str(partition["protocol"])),
-                            str(partition["self_id"]),
-                            sender_canonical.split(":", 1)[-1],
+                            source_protocol,
+                            source_self_id,
                         ),
-                    ).fetchone()
-                    if alias is not None:
-                        sender_external = str(alias["external_id"])
+                    ).fetchall()
+                    alias_ids = {
+                        str(alias["external_id"])
+                        for alias in aliases
+                    }
+                    if sender_external not in alias_ids:
+                        sender_external = next(
+                            (
+                                str(alias["external_id"])
+                                for alias in aliases
+                                if str(alias["external_id"]) != sender_external
+                            ),
+                            "",
+                        )
                 selected.append(
                     ChatMessage(
                         message_uid=int(row["message_uid"]),

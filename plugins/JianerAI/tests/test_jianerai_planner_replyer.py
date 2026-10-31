@@ -622,6 +622,59 @@ def test_legacy_non_qq_digest_without_alias_is_hidden(tmp_path) -> None:
     assert messages[0].sender_external_id == ""
 
 
+def test_legacy_digest_resolves_after_identity_merge(tmp_path) -> None:
+    store = JianerMemoryStore(tmp_path / "memory.db")
+    target_canonical = store.resolve_identity(
+        protocol="qq",
+        self_id="bot-qq",
+        external_id="12345",
+    )
+    source_canonical = store.ensure_identity(
+        protocol="feishu",
+        self_id="bot-feishu",
+        external_id="ou_actual",
+    )
+    store.record_transcript(
+        protocol="feishu",
+        self_id="bot-feishu",
+        conversation_kind="group",
+        conversation_id="group-1",
+        message_id="legacy-merge-1",
+        sender_canonical=source_canonical,
+        preset="Role",
+        content="合并前旧消息",
+        timestamp=int(time.time()),
+        sender_name="桃子",
+    )
+    store.authorize(
+        protocol="feishu",
+        self_id="bot-feishu",
+        external_id="ou_actual",
+        canonical_user_id=target_canonical,
+        reason="binding",
+    )
+    assert store.merge_identity(
+        source_protocol="feishu",
+        source_self_id="bot-feishu",
+        source_external_id="ou_actual",
+        target_protocol="qq",
+        target_self_id="bot-qq",
+        target_external_id="12345",
+        reason="binding",
+    )
+
+    messages = store.query_recent_chat(
+        protocol="feishu",
+        self_id="bot-feishu",
+        conversation_kind="group",
+        conversation_id="group-1",
+    )
+
+    assert len(messages) == 1
+    assert messages[0].sender_canonical_id == "qq:12345"
+    assert messages[0].sender_external_id == "ou_actual"
+
+
 def test_service_transcript_write_forwards_sender_external_id() -> None:
     captured = {}
 
