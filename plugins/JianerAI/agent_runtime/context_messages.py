@@ -31,15 +31,6 @@ class CurrentSpeakerMessage:
             else speaker
         )
         return f"{label}: {self.text}" if label else self.text
-
-
-def sender_id_from_canonical(value: Any) -> str:
-    """Return the platform-facing ID from a stored canonical identity."""
-
-    normalized = str(value or "").strip()
-    return normalized.rsplit(":", 1)[-1] if normalized else ""
-
-
 def parse_current_speaker_content(content: Any) -> CurrentSpeakerMessage:
     """Remove only the known speaker metadata line from one batch message."""
 

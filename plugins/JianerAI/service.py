@@ -1744,6 +1744,9 @@ class JianerAIService:
                 content,
                 timestamp,
                 sender_name=self._event_user_name(event),
+                sender_external_id=str(
+                    getattr(event, "user_id", "") or ""
+                ),
                 message_type=self._transcript_message_type(event),
                 segments_json=self._transcript_segments_json(event),
             )
@@ -2055,16 +2058,21 @@ class JianerAIService:
                                     ).get("message_id", "")
                                     or ""
                                 ),
-                                "display_name": str(
+                                "display_name": self._sender_display_name(
                                     (
-                                        (item.get("payload") or {}).get("sender")
-                                        or {}
-                                    ).get("card")
-                                    or (
-                                        (item.get("payload") or {}).get("sender")
-                                        or {}
-                                    ).get("nickname")
-                                    or "unknown"
+                                        item.get("payload") or {}
+                                    ).get("sender"),
+                                    is_group=key.scene_type == "group",
+                                    fallback=str(
+                                        (
+                                            (
+                                                item.get("payload") or {}
+                                            ).get("sender", {}).get(
+                                                "user_id", ""
+                                            )
+                                            or principal
+                                        )
+                                    ),
                                 ),
                                 "user_id": str(
                                     (
@@ -5298,8 +5306,12 @@ class JianerAIService:
         return str(canonical)
 
     @staticmethod
-    def _event_user_name(event: Any) -> str:
-        sender = getattr(event, "sender", None)
+    def _sender_display_name(
+        sender: Any,
+        *,
+        is_group: bool,
+        fallback: str = "",
+    ) -> str:
         if isinstance(sender, Mapping):
             nickname = sender.get("nickname")
             card = sender.get("card")
@@ -5309,15 +5321,23 @@ class JianerAIService:
             card = getattr(sender, "card", None)
             sender_id = getattr(sender, "user_id", None)
         candidates = (
-            (card, nickname, sender_id, getattr(event, "user_id", ""))
-            if getattr(event, "group_id", None) is not None
-            else (nickname, sender_id, getattr(event, "user_id", ""))
+            (card, nickname, sender_id, fallback)
+            if is_group
+            else (nickname, sender_id, fallback)
         )
         for candidate in candidates:
             value = re.sub(r"\s+", " ", str(candidate or "")).strip()
             if value:
                 return value[:128]
         return "unknown"
+
+    @classmethod
+    def _event_user_name(cls, event: Any) -> str:
+        return cls._sender_display_name(
+            getattr(event, "sender", None),
+            is_group=getattr(event, "group_id", None) is not None,
+            fallback=str(getattr(event, "user_id", "") or ""),
+        )
 
     def _group_speaker_prompt(
         self,
@@ -5350,6 +5370,7 @@ class JianerAIService:
         *,
         direction: str = "incoming",
         sender_name: str = "",
+        sender_external_id: str | None = None,
         message_type: str = "text",
         segments_json: str = "[]",
     ) -> bool:
@@ -5366,6 +5387,7 @@ class JianerAIService:
                 timestamp=timestamp,
                 direction=direction,
                 sender_name=sender_name,
+                sender_external_id=sender_external_id,
                 message_type=message_type,
                 segments_json=segments_json,
             )

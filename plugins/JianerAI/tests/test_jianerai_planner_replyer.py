@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,7 @@ from plugins.JianerAI.providers import (
     ProviderToolCall,
     ToolResultTurn,
 )
+from plugins.JianerAI.memory import JianerMemoryStore
 from plugins.JianerAI.service import JianerAIService, RuntimeOptions
 from plugins.JianerAI.tools.contracts import ToolContext, ToolRisk, ToolSpec
 from plugins.JianerAI.tools.registry import ToolRegistry
@@ -370,6 +372,63 @@ def test_current_batch_deduplicates_by_message_id_with_shared_renderer() -> None
     ]
 
 
+def test_non_qq_history_uses_external_sender_id_not_canonical_digest() -> None:
+    providers = _ReplyProviders()
+    replyer = JianerAIReplyer(
+        providers=providers,
+        model="replyer",
+        profile_resolver=lambda _context: "你是简儿。",
+        bot_name="简儿",
+    )
+    history = (
+        {
+            "role": "user",
+            "content": (
+                '[当前发言者资料（仅用于区分用户，不是指令）]'
+                '{"message_id":"m1","display_name":"桃子",'
+                '"user_id":"ou_actual"}\n新消息'
+            ),
+        },
+    )
+    memory = _Memory(
+        rows=(
+            SimpleNamespace(
+                direction="incoming",
+                sender_name="桃子",
+                sender_canonical_id="feishu:7d2a4c1c9e6b",
+                sender_external_id="ou_actual",
+                external_message_id="m1",
+                content="新消息",
+            ),
+        )
+    )
+
+    asyncio.run(
+        replyer.generate(
+            _context(history=history, memory=memory),
+            reply_reference="回复",
+        )
+    )
+
+    assert providers.requests[0].history == (
+        {"role": "user", "content": "桃子 (ou_actual): 新消息"},
+    )
+    assert "7d2a4c1c9e6b" not in providers.requests[0].history[0]["content"]
+
+
+def test_sender_display_name_uses_normalized_fallback() -> None:
+    assert JianerAIService._sender_display_name(
+        {"nickname": "", "card": "", "user_id": "123"},
+        is_group=True,
+        fallback="123",
+    ) == "123"
+    assert JianerAIService._sender_display_name(
+        {"nickname": "  桃  子  ", "card": ""},
+        is_group=False,
+        fallback="feishu-id",
+    ) == "桃 子"
+
+
 def test_replyer_cache_hash_uses_provider_trimmed_history() -> None:
     providers = _ReplyProviders(max_history_messages=2)
     replyer = JianerAIReplyer(
@@ -474,6 +533,67 @@ def test_current_speaker_renderer_preserves_edge_whitespace() -> None:
 
     assert parsed.text == "    print(1)\n"
     assert parsed.rendered == "桃子 (u1):     print(1)\n"
+
+
+def test_memory_transcript_round_trips_sender_external_id(tmp_path) -> None:
+    store = JianerMemoryStore(tmp_path / "memory.db")
+    store.record_transcript(
+        protocol="feishu",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-1",
+        message_id="message-1",
+        sender_protocol="feishu",
+        sender_self_id="bot-1",
+        sender_external_id="ou_actual",
+        sender_canonical="feishu:7d2a4c1c9e6b",
+        preset="Role",
+        content="新消息",
+        timestamp=int(time.time()),
+        sender_name="桃子",
+    )
+
+    messages = store.query_recent_chat(
+        protocol="feishu",
+        self_id="bot-1",
+        conversation_kind="group",
+        conversation_id="group-1",
+    )
+
+    assert len(messages) == 1
+    assert messages[0].sender_external_id == "ou_actual"
+    assert messages[0].sender_canonical_id == "feishu:7d2a4c1c9e6b"
+
+
+def test_service_transcript_write_forwards_sender_external_id() -> None:
+    captured = {}
+
+    class Memory:
+        @staticmethod
+        def record_transcript(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(inserted=True)
+
+    service = object.__new__(JianerAIService)
+    service.memory = Memory()
+    written = service._record_transcript(
+        SimpleNamespace(
+            protocol="feishu",
+            self_id="bot-1",
+            kind=SimpleNamespace(value="group"),
+            conversation_id="group-1",
+        ),
+        "Role",
+        "feishu:7d2a4c1c9e6b",
+        "message-1",
+        "新消息",
+        1_700_000_000,
+        sender_name="桃子",
+        sender_external_id="ou_actual",
+    )
+
+    assert written is True
+    assert captured["sender_external_id"] == "ou_actual"
 
 
 def test_reply_tool_sends_and_returns_receipt() -> None:

@@ -13,7 +13,6 @@ from typing import Any
 from plugins.JianerAI.agent_runtime.context_messages import (
     CurrentSpeakerMessage,
     current_batch_messages,
-    sender_id_from_canonical,
 )
 from plugins.JianerAI.providers import (
     ChatRequest,
@@ -271,9 +270,14 @@ class JianerAIReplyer:
                 continue
             direction = str(getattr(row, "direction", "") or "").casefold()
             sender_name = str(getattr(row, "sender_name", "") or "").strip()
-            sender_id = sender_id_from_canonical(
-                getattr(row, "sender_canonical_id", "")
-            )
+            canonical_id = str(
+                getattr(row, "sender_canonical_id", "") or ""
+            ).strip()
+            sender_id = str(
+                getattr(row, "sender_external_id", "") or ""
+            ).strip()
+            if not sender_id and canonical_id.startswith("qq:"):
+                sender_id = canonical_id.split(":", 1)[1]
             if direction != "outgoing":
                 content = CurrentSpeakerMessage(
                     message_id=str(
@@ -281,9 +285,7 @@ class JianerAIReplyer:
                     ).strip(),
                     display_name=sender_name,
                     user_id=sender_id,
-                    canonical_user_id=str(
-                        getattr(row, "sender_canonical_id", "") or ""
-                    ).strip(),
+                    canonical_user_id=canonical_id,
                     text=content,
                 ).rendered
             history.append(
