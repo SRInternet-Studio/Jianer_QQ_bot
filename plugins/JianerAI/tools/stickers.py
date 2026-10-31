@@ -1,4 +1,4 @@
-"""JianerAI model tools for the global sticker library."""
+"""HypeR-compatible model tools for the global sticker library."""
 
 from __future__ import annotations
 

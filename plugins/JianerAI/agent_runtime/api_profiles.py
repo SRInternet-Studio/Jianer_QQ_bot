@@ -1,4 +1,4 @@
-"""JianerAI active API profile facade over aiconfig model files."""
+"""HypeR-style active API profile facade over aiconfig model files."""
 
 from __future__ import annotations
 
@@ -21,28 +21,19 @@ class ApiModelManager:
         *,
         default_model: str = "",
         active_model: str = "",
-    require_tools: bool = True,
-    allow_empty: bool = False,
     ) -> None:
         self.providers = providers
-        self.require_tools = bool(require_tools)
-        self.allow_empty = bool(allow_empty)
         self._active = ""
         preferred = str(active_model or default_model or "").strip()
         models = self.providers.list_models()
-        if preferred in models and (
-            not self.require_tools or self.providers.supports_tools(preferred)
-        ):
+        if preferred in models and self.providers.supports_tools(preferred):
             self._active = preferred
-        elif self.allow_empty and not preferred:
-            self._active = ""
         elif models:
             self._active = next(
                 (
                     key
                     for key in models
-                    if not self.require_tools
-                    or self.providers.supports_tools(key)
+                    if self.providers.supports_tools(key)
                 ),
                 next(iter(models)),
             )
@@ -58,14 +49,11 @@ class ApiModelManager:
 
     def activate(self, model: str) -> str:
         normalized = str(model or "").strip()
-        if not normalized and self.allow_empty:
-            self._active = ""
-            return ""
         try:
             self.providers.get(normalized)
         except UnknownModelError as exc:
             raise ModelConfigError(f"unknown Agent model: {normalized}") from exc
-        if self.require_tools and not self.providers.supports_tools(normalized):
+        if not self.providers.supports_tools(normalized):
             raise ModelConfigError(
                 f"Agent model {normalized!r} does not support tools"
             )
@@ -75,30 +63,15 @@ class ApiModelManager:
     def reload(self) -> Mapping[str, str]:
         models = self.providers.reload()
         if self._active not in models:
-            self._active = ""
-            if models and not self.allow_empty:
-                self._active = (
-                    next(
-                        (
-                            key
-                            for key in models
-                            if not self.require_tools
-                            or self.providers.supports_tools(key)
-                        ),
-                        "",
-                    )
-                )
+            self._active = (
+                next(iter(models))
+                if models
+                else ""
+            )
         return models
 
     def redacted_status(self) -> dict[str, Any]:
         current = self._active
-        if not current and self.allow_empty:
-            return {
-                "model": "",
-                "status": "disabled",
-                "supports_tools": False,
-                "available": sorted(self.providers.list_models()),
-            }
         try:
             config = self.providers.get(current)
         except Exception:
@@ -113,10 +86,6 @@ class ApiModelManager:
             "provider": config.provider,
             "model_id": config.model,
             "base_url": config.base_url,
-            "supports_tools": (
-                self.providers.supports_tools(current)
-                if self.require_tools
-                else None
-            ),
+            "supports_tools": self.providers.supports_tools(current),
             "available": sorted(self.providers.list_models()),
         }

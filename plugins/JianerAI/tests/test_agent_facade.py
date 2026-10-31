@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,8 +8,7 @@ from jianer.adapters import ConversationKey, ConversationKind
 
 from plugins.JianerAI.agent_runtime.facade import AgentFacade
 from plugins.JianerAI.agent_runtime.models import SessionKey
-from plugins.JianerAI.service import JianerAIMessageSink, JianerAIService
-from plugins.JianerAI.setup import _REMINDER, _agent_command
+from plugins.JianerAI.service import HypeRMessageSink, JianerAIService
 from plugins.JianerAI.tools.contracts import ToolContext
 
 
@@ -126,7 +124,7 @@ def test_agent_on_off_command_updates_whitelist(tmp_path: Path) -> None:
     assert len(replies) == 2
 
 
-def test_jianer_ai_sink_applies_suffix_and_emits_one_tts() -> None:
+def test_hype_sink_applies_suffix_and_emits_one_tts() -> None:
     sent: list[str] = []
     speech: list[str] = []
 
@@ -161,7 +159,7 @@ def test_jianer_ai_sink_applies_suffix_and_emits_one_tts() -> None:
         conversation_id="group-1",
         preset="Role",
     )
-    sink = JianerAIMessageSink(service, _event(), SimpleNamespace(), key, "qq:user")
+    sink = HypeRMessageSink(service, _event(), SimpleNamespace(), key, "qq:user")
 
     async def scenario():
         await sink.send("first")
@@ -173,7 +171,7 @@ def test_jianer_ai_sink_applies_suffix_and_emits_one_tts() -> None:
     assert speech == ["first后缀\nsecond后缀"]
 
 
-def test_agent_command_help_describes_jianer_ai_runtime(tmp_path: Path) -> None:
+def test_agent_command_help_describes_hype_runtime(tmp_path: Path) -> None:
     facade, _, _ = _facade(tmp_path, _Sessions([]))
     key = SessionKey(
         scene_type="group",
@@ -184,118 +182,8 @@ def test_agent_command_help_describes_jianer_ai_runtime(tmp_path: Path) -> None:
     text = facade.command_help(key)
     assert "白名单用户" in text
     assert "当前人设" in text
-    assert "当前 Planner 模型" in text
-    assert "当前 Replyer 模型" in text
+    assert "当前模型" in text
     assert "自动模式" not in text
-
-
-def test_agent_replyer_model_command_updates_live_runtime(
-    tmp_path: Path,
-) -> None:
-    facade, replies, _ = _facade(tmp_path, _Sessions([]))
-    applied: list[str] = []
-
-    class Manager:
-        active = ""
-
-        def activate(self, model):
-            self.active = str(model)
-            return self.active
-
-        @staticmethod
-        def reload():
-            return {}
-
-        def redacted_status(self):
-            return {"model": self.active, "available": ["replyer-a", "replyer-b"]}
-
-    manager = Manager()
-    facade.replyer_model_manager = manager
-    facade.apply_replyer_model = applied.append
-    event = _event(text="~Agent 回复模型 replyer-b")
-    key = facade.session_key(event)
-
-    handled = asyncio.run(
-        facade.handle_command(event, SimpleNamespace(), key, event.msg_str)
-    )
-
-    assert handled is True
-    assert manager.active == "replyer-b"
-    assert applied == ["replyer-b"]
-    assert replies[-1] == "已切换全局 Replyer 模型：replyer-b"
-    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-    assert saved["others"]["agent_replyer_api_profile"] == "replyer-b"
-
-
-def test_member_can_switch_planner_model_like_legacy_command(
-    tmp_path: Path,
-) -> None:
-    facade, replies, _ = _facade(tmp_path, _Sessions([]))
-
-    class Manager:
-        active = "planner-a"
-
-        def activate(self, model):
-            self.active = str(model)
-            return self.active
-
-        @staticmethod
-        def reload():
-            return {}
-
-        def redacted_status(self):
-            return {"model": self.active}
-
-    manager = Manager()
-    facade.model_manager = manager
-    event = _event(text="~Agent 模型 planner-b")
-    key = facade.session_key(event)
-
-    handled = asyncio.run(
-        facade.handle_command(event, SimpleNamespace(), key, event.msg_str)
-    )
-
-    assert handled is True
-    assert manager.active == "planner-b"
-    assert replies[-1] == "已切换全局 Agent 模型：planner-b"
-    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-    assert saved["others"]["agent_api_profile"] == "planner-b"
-
-
-def test_host_agent_command_keeps_replyer_model_arguments() -> None:
-    result = _agent_command.parse(
-        f"{_REMINDER}Agent 回复模型 replyer-b"
-    )
-
-    assert result.matched is True
-    assert result.main_args["state"] == ("回复模型", "replyer-b")
-
-
-def test_configure_agent_delegates_replyer_command_to_facade() -> None:
-    calls: list[str] = []
-
-    class Facade:
-        @staticmethod
-        async def handle_command(event, actions, key, text):
-            del event, actions, key
-            calls.append(text)
-            return True
-
-    service = object.__new__(JianerAIService)
-    service.options = SimpleNamespace(reminder="~")
-    service.agent_facade = Facade()
-    event = _event(text="~Agent 回复模型 replyer-b")
-
-    handled = asyncio.run(
-        service.configure_agent(
-            event,
-            SimpleNamespace(),
-            "回复模型 replyer-b",
-        )
-    )
-
-    assert handled is True
-    assert calls == ["~Agent 回复模型 replyer-b"]
 
 
 def test_legacy_auto_mode_output_explains_whitelist_semantics() -> None:

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import os
+import secrets
 import signal
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -23,7 +22,6 @@ from plugins.JianerAI.tools.contracts import (
 
 _MAX_COMMAND_CHARS = 4096
 _MAX_OUTPUT_CHARS = 12000
-_REQUEST_ID_HEX_CHARS = 8
 
 
 @dataclass(slots=True)
@@ -57,7 +55,6 @@ class ShellApprovalManager:
         )
         self._process_factory = process_factory
         self._pending: dict[str, _PendingApproval] = {}
-        self._request_sequence = 0
         self._closed = False
 
     def tool(self) -> ToolSpec:
@@ -117,19 +114,13 @@ class ShellApprovalManager:
             )
 
         loop = asyncio.get_running_loop()
-        scope = _conversation_scope(context)
-        requester_external_id = str(
-            getattr(getattr(context, "event", None), "user_id", "") or ""
-        )
-        request_id = self._new_request_id(
-            scope=scope,
-            requester_external_id=requester_external_id,
-            command=command,
-        )
+        request_id = self._new_request_id()
         pending = _PendingApproval(
             request_id=request_id,
-            scope=scope,
-            requester_external_id=requester_external_id,
+            scope=_conversation_scope(context),
+            requester_external_id=str(
+                getattr(getattr(context, "event", None), "user_id", "") or ""
+            ),
             command=command,
             future=loop.create_future(),
         )
@@ -193,28 +184,9 @@ class ShellApprovalManager:
             if not pending.future.done():
                 pending.future.set_result("cancelled")
 
-    def _new_request_id(
-        self,
-        *,
-        scope: tuple[str, str, str, str],
-        requester_external_id: str,
-        command: str,
-    ) -> str:
+    def _new_request_id(self) -> str:
         while True:
-            self._request_sequence += 1
-            material = "\x00".join(
-                (
-                    *scope,
-                    requester_external_id,
-                    command,
-                    str(os.getpid()),
-                    str(time.time_ns()),
-                    str(self._request_sequence),
-                )
-            )
-            request_id = hashlib.sha256(
-                material.encode("utf-8")
-            ).hexdigest()[:_REQUEST_ID_HEX_CHARS]
+            request_id = secrets.token_hex(4)
             if request_id not in self._pending:
                 return request_id
 

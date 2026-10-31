@@ -28,7 +28,6 @@ def test_active_plugins_must_explicitly_export_and_tool_calls_hold_generation_le
             },
             handler=handler,
             risk=ToolRisk.READ_ONLY,
-            direct_message=True,
         )
         opted_in = SimpleNamespace(
             provide_agent_tools=lambda context: (spec,)
@@ -68,7 +67,6 @@ def test_active_plugins_must_explicitly_export_and_tool_calls_hold_generation_le
         available = registry.available(context)
         assert len(available) == 1
         assert available[0].name.startswith("plugin_plugins_example_")
-        assert available[0].direct_message is True
         assert "internal_helper" not in " ".join(item.name for item in available)
 
         result = await registry.execute(

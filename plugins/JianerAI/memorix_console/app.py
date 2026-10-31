@@ -11,8 +11,8 @@ from typing import Any, Mapping
 try:
     from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
     from fastapi.responses import FileResponse, PlainTextResponse
-except ImportError as exc:  # pragma: no cover - dependency comes from the root uv environment
-    raise RuntimeError("Memory console requires fastapi; run uv sync at the project root") from exc
+except ImportError as exc:  # pragma: no cover - dependency is installed by requirements.txt
+    raise RuntimeError("Memory console requires fastapi; install the root requirements") from exc
 
 from .adapter import MemoryConsoleAdapter
 

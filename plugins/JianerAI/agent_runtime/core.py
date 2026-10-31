@@ -1,9 +1,8 @@
-"""JianerAI model/tool loop backed by JianerAI providers."""
+"""HypeR-style model/tool loop backed by JianerAI providers."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -62,8 +61,6 @@ class AgentCore:
         model_resolver: Callable[[SessionKey], str],
         prompt_builder: Callable[[tuple[ToolSpec, ...]], str],
         allowed_tool_names: frozenset[str] | None = None,
-        replyer_enabled: bool = False,
-        max_rounds: int = 16,
         total_timeout_seconds: float = 600.0,
         max_history_chars: int = 60000,
         logger: Any | None = None,
@@ -76,8 +73,6 @@ class AgentCore:
         self.model_resolver = model_resolver
         self.prompt_builder = prompt_builder
         self.allowed_tool_names = allowed_tool_names
-        self.replyer_enabled = bool(replyer_enabled)
-        self.max_rounds = max(1, int(max_rounds))
         self.total_timeout_seconds = max(1.0, float(total_timeout_seconds))
         self.max_history_chars = max(0, int(max_history_chars))
         self.logger = logger
@@ -173,60 +168,35 @@ class AgentCore:
         rounds = 0
         tool_count = 0
         final_text = ""
-        specs = self.available_tools(context)
-        function_tools = tuple(
-            FunctionTool(
-                name=spec.name,
-                description=spec.description,
-                parameters=spec.input_schema,
-            )
-            for spec in specs
-        )
-        if not function_tools:
-            raise AgentCoreError(
-                "agent_tools_unavailable",
-                "当前模型没有可用的 Agent 工具，无法执行规划循环",
-            )
-        declarations = {item.name: item for item in specs}
-        system_prompt = self._system_prompt(context, function_tools)
-        history_items = self._provider_raw_history()
-        cache_prefix_hash = _cache_prefix_hash(
-            system_prompt,
-            function_tools,
-            history_items,
-        )
-        self._log_info(
-            "JianerAI Planner cache prefix | "
-            f"model={model} hash={cache_prefix_hash} "
-            f"history={len(history_items)} tools={len(function_tools)}"
-        )
         while True:
             self._raise_if_stopped()
             rounds += 1
-            if rounds > self.max_rounds:
-                raise AgentCoreError(
-                    "agent_max_rounds",
-                    f"JianerAI Planner 已达到最大轮数 {self.max_rounds}",
+            specs = self.available_tools(context)
+            function_tools = tuple(
+                FunctionTool(
+                    name=spec.name,
+                    description=spec.description,
+                    parameters=spec.input_schema,
                 )
+                for spec in specs
+            )
+            if not function_tools:
+                raise AgentCoreError(
+                    "agent_tools_unavailable",
+                    "当前模型没有可用的 Agent 工具，无法使用工具发送消息",
+                )
+            declarations = {item.name: item for item in specs}
             request = ChatRequest(
                 message=event,
                 history=(),
-                history_items=history_items,
-                system_prompt=system_prompt,
+                history_items=self._provider_raw_history(),
+                system_prompt=self._system_prompt(context, function_tools),
                 attachments=tuple(getattr(context, "attachments", ())),
                 tools=function_tools,
                 turns=tuple(turns),
                 json_mode=True,
             )
             response = await self._complete_or_stop(model, request)
-            self._log_info(
-                "JianerAI Planner usage | "
-                f"model={model} round={rounds} "
-                f"prompt={response.prompt_tokens} "
-                f"completion={response.completion_tokens} "
-                f"cached={response.cached_prompt_tokens} "
-                f"cache_hit={response.cache_hit_ratio:.2%}"
-            )
             final_text = str(response.text or "")
             if not response.tool_calls:
                 if final_text.strip() and final_text.strip() not in {"{}", ""}:
@@ -353,19 +323,14 @@ class AgentCore:
 
     def available_tools(self, context: ToolContext) -> tuple[ToolSpec, ...]:
         specs = self.tools.available(context, getattr(context, "actor", None))
-        if self.replyer_enabled:
-            specs = tuple(spec for spec in specs if not spec.direct_message)
-            required = {"reply"}
-        else:
-            specs = tuple(spec for spec in specs if spec.name != "reply")
-            required = {
-                "send_message",
-                "send_group_msg",
-                "send_private_msg",
-                "collected_send",
-            }
         if self.allowed_tool_names is None:
             return specs
+        required = {
+            "send_message",
+            "send_group_msg",
+            "send_private_msg",
+            "collected_send",
+        }
         return tuple(
             spec
             for spec in specs
@@ -635,14 +600,6 @@ class AgentCore:
         except Exception:
             pass
 
-    def _log_info(self, message: str) -> None:
-        if self.logger is None:
-            return
-        try:
-            self.logger.info(message)
-        except Exception:
-            pass
-
     def _repair_history(self) -> None:
         """Remove an incomplete tool-call suffix after interruption."""
 
@@ -852,38 +809,9 @@ def _mapping_copy(value: Any) -> dict[str, Any] | None:
         return None
 
 
-def _cache_prefix_hash(
-    system_prompt: str,
-    tools: Sequence[FunctionTool],
-    history_items: Sequence[Mapping[str, Any]],
-) -> str:
-    payload = {
-        "system_prompt": str(system_prompt or ""),
-        "tools": [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            }
-            for tool in tools
-        ],
-        "history": list(history_items),
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
-
-
 def _retryable_provider_error(exc: Exception) -> bool:
     """Avoid retrying deterministic endpoint, auth, and model errors."""
 
-    if isinstance(exc, AgentCoreError):
-        return False
     if not isinstance(exc, ProviderRequestError):
         return True
     message = str(exc)

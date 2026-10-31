@@ -346,23 +346,16 @@ JianerAI 从 `aiconfig/*.ai.json` 读取模型，不以 `config.json` 里旧的 
 
 文件名去掉 `.ai.json` 后就是模型代码。上例的代码是 `primary`，因此在 `config.json -> others` 中设置：
 
-下面的示例为启用独立 Replyer 的状态；不启用时可把
-`agent_replyer_api_profile` 留空。
-
 ```json
 {
   "default_mode": "primary",
   "memory_mode": "primary",
   "agent_api_profile": "primary",
-  "agent_replyer_api_profile": "primary",
-  "agent_max_rounds": 16,
   "agent_profile": "XingYu"
 }
 ```
 
-`agent_api_profile` 指定 Planner 模型；`agent_replyer_api_profile` 指定独立
-Replyer 模型，留空时保留旧的直发工具行为。`agent_max_rounds` 限制 Planner
-单次运行的内部工具轮次；`agent_profile` 指定
+`agent_api_profile` 指定当前全局 Agent 模型；`agent_profile` 指定
 `data/jianer_ai/profiles.json` 中的全局人设。原始人设模板直接作为 prompt，
 不再生成结构化人格 JSON。人设文件会在每次构建 System Prompt 前重新读取，
 完整人设固定放在 System Prompt 末尾。切换人设时保留最近轮次原文，其余上下文

@@ -46,9 +46,6 @@ from plugins.JianerAI.agent_runtime.context_tools import (
     CONTEXT_TOOL_NAMES,
     context_tools,
 )
-from plugins.JianerAI.agent_runtime.context_messages import (
-    CURRENT_SPEAKER_PREFIX,
-)
 from plugins.JianerAI.agent_runtime.bootstrap import import_legacy_contexts
 from plugins.JianerAI.agent_runtime.content_store import (
     ContentStore,
@@ -56,7 +53,6 @@ from plugins.JianerAI.agent_runtime.content_store import (
 )
 from plugins.JianerAI.agent_runtime.models import SessionKey
 from plugins.JianerAI.agent_runtime.profiles import ProfileStore
-from plugins.JianerAI.agent_runtime.replyer import JianerAIReplyer
 from plugins.JianerAI.agent_runtime.sessions import AgentSessionManager
 from plugins.JianerAI.agent_runtime.store import ContextStore
 from plugins.JianerAI.agent_runtime.subagents import (
@@ -118,7 +114,6 @@ from plugins.JianerAI.tools import (
     ToolRisk,
     register_builtin_tools,
     register_platform_api_tools,
-    reply_tool,
 )
 from plugins.JianerAI.tools.web_browser import BrowserOptions
 from plugins.JianerAI.tools.agent_skills import AgentSkillManager
@@ -354,8 +349,6 @@ class RuntimeOptions:
     agent_max_parallel_calls: int = 4
     agent_total_timeout_seconds: float = 300.0
     agent_allowed_tools: frozenset[str] | None = None
-    agent_replyer_api_profile: str = ""
-    agent_max_rounds: int = 16
     agent_interrupt_enabled: bool = True
     agent_interrupt_debounce_ms: int = 300
     agent_interrupt_max_merges: int = 10
@@ -660,13 +653,6 @@ class RuntimeOptions:
                 float(others.get("agent_total_timeout_seconds", 300.0)),
             ),
             agent_allowed_tools=agent_allowed_tools,
-            agent_replyer_api_profile=str(
-                others.get("agent_replyer_api_profile", "") or ""
-            ).strip(),
-            agent_max_rounds=max(
-                1,
-                min(64, int(others.get("agent_max_rounds", 16))),
-            ),
             agent_interrupt_enabled=_runtime_bool(
                 others.get("agent_interrupt_enabled", True),
                 default=True,
@@ -1044,8 +1030,8 @@ class MessageSink:
         return await self.send(**kwargs)
 
 
-class JianerAIMessageSink:
-    """Outbound pipeline for JianerAI tools.
+class HypeRMessageSink:
+    """Outbound pipeline for HypeR tools.
 
     It keeps the existing suffix, moderation and TTS features while exposing
     the small ``send`` contract expected by ToolSpec handlers.
@@ -1066,7 +1052,6 @@ class JianerAIMessageSink:
         self.canonical = canonical
         self.visible_texts: list[str] = []
         self.finalized = False
-        self.last_send_suppressed = False
 
     async def send(
         self,
@@ -1077,16 +1062,12 @@ class JianerAIMessageSink:
         source: str = "agent",
         **kwargs: Any,
     ) -> list[str]:
-        self.last_send_suppressed = False
         image_urls = tuple(
             str(item)
             for item in (kwargs.get("image_urls") or ())
             if str(item).strip()
         )
         target = kwargs.get("target")
-        moderation_user_request = str(
-            kwargs.get("user_request") or text or ""
-        ).strip()
         raw = str(text or "").strip()
         if not raw:
             return []
@@ -1104,7 +1085,7 @@ class JianerAIMessageSink:
                 self.actions,
                 self.key,
                 reply=processed,
-                user_request=moderation_user_request or raw,
+                user_request=raw,
                 persona=self.service._render_persona(
                     self.key.preset,
                     self.event,
@@ -1115,10 +1096,9 @@ class JianerAIMessageSink:
                 ),
             )
             if blocked:
-                self.last_send_suppressed = True
                 return []
         if image_urls or target:
-            message_ids = await MessageSink(
+            await MessageSink(
                 self.service,
                 self.event,
                 self.actions,
@@ -1130,20 +1110,15 @@ class JianerAIMessageSink:
                 target=target,
             )
         else:
-            send_kwargs: dict[str, Any] = {
-                "reply": source != "collected_send",
-                "at_user_ids": at_user_ids,
-            }
-            if reply_to_message_id:
-                send_kwargs["reply_to_message_id"] = reply_to_message_id
-            message_ids = await self.service._send_ai_text(
+            await self.service._send_ai_text(
                 self.event,
                 self.actions,
                 processed,
-                **send_kwargs,
+                reply=source != "collected_send",
+                at_user_ids=at_user_ids,
             )
         self.visible_texts.append(processed)
-        return list(message_ids or ())
+        return []
 
     async def send_message(self, **kwargs: Any) -> Any:
         return await self.send(**kwargs)
@@ -1398,7 +1373,6 @@ class JianerAIService:
         )
         if options.agent_bash_enabled:
             mutating_tool_names |= frozenset({"bash"})
-        mutating_tool_names |= frozenset({"reply"})
         self.tools = tools or ToolRegistry(
             allowed_risks=frozenset(allowed_risks),
             allowed_mutating_tools=(
@@ -1501,31 +1475,11 @@ class JianerAIService:
             default_model=options.default_model,
             active_model=configured_api,
         )
-        if options.agent_replyer_api_profile:
-            self.providers.get(options.agent_replyer_api_profile)
-        self.replyer_api = ApiModelManager(
-            self.providers,
-            active_model=options.agent_replyer_api_profile,
-            require_tools=False,
-            allow_empty=True,
-        )
         self.agent_profiles = ProfileStore(
             agent_data_root / "profiles.json",
             legacy_metadata=options.project_root / "prerequisites" / "current.json",
             active_name=configured_profile,
         )
-        self.replyer: JianerAIReplyer | None = None
-        self._reply_tool_registered = False
-        if self.replyer_api.active:
-            self.replyer = JianerAIReplyer(
-                providers=self.providers,
-                model=self.replyer_api.active,
-                profile_resolver=self._render_jianer_ai_replyer_profile,
-                bot_name=options.bot_name,
-                logger=self._logger,
-            )
-            self.tools.register(reply_tool())
-            self._reply_tool_registered = True
         ensure_partition = getattr(
             self.memory, "ensure_persona_partition", None
         )
@@ -1557,8 +1511,6 @@ class JianerAIService:
             bot_name=options.bot_name,
             bot_name_en=options.bot_name_en,
             allowed_tool_names=options.agent_allowed_tools,
-            replyer_enabled=self.replyer is not None,
-            max_rounds=options.agent_max_rounds,
             total_timeout_seconds=600.0,
             max_history_chars=options.agent_max_history_chars,
             idle_seconds=options.agent_core_idle_hours * 3600.0,
@@ -1598,12 +1550,10 @@ class JianerAIService:
                 for item in (getattr(runtime_config, "owner", None) or ())
             ),
             config_path=config_path,
-            build_context=self._build_jianer_ai_context,
-            after_run=self._after_jianer_ai_run,
+            build_context=self._build_hyper_context,
+            after_run=self._after_hyper_run,
             reply=self._reply_agent_command,
             model_manager=self.agent_api,
-            replyer_model_manager=self.replyer_api,
-            apply_replyer_model=self.apply_replyer_model,
             tools=self.tools,
             collector_max_buffer=options.agent_collector_max_buffer,
             collector_keep_after_compress=(
@@ -1626,8 +1576,8 @@ class JianerAIService:
             protocol=str(getattr(runtime_config, "protocol", "") or ""),
             self_id=str(getattr(runtime_config, "uin", "") or ""),
         )
-        self._jianer_ai_sinks: dict[SessionKey, JianerAIMessageSink] = {}
-        self._jianer_ai_run_started: dict[SessionKey, float] = {}
+        self._hyper_sinks: dict[SessionKey, HypeRMessageSink] = {}
+        self._hyper_run_started: dict[SessionKey, float] = {}
         self._agent_bootstrap_complete = False
         self._active_presets: dict[ConversationBase, str] = {}
         self._preset_locks: dict[ConversationBase, asyncio.Lock] = {}
@@ -1720,11 +1670,11 @@ class JianerAIService:
         text = self._event_text(event)
         if not str(text or "").strip().startswith(self.options.reminder):
             try:
-                if await self._moderate_jianer_ai_input(event, actions, text):
+                if await self._moderate_hyper_input(event, actions, text):
                     self.agent_facade.mark_seen(event)
                     return
             except Exception:
-                self._log_exception("JianerAI input moderation failed")
+                self._log_exception("JianerAI HypeR input moderation failed")
                 self.agent_facade.mark_seen(event)
                 return
         try:
@@ -1734,7 +1684,7 @@ class JianerAIService:
                 text=text,
             )
         except Exception:
-            self._log_exception("JianerAI Agent observe failed")
+            self._log_exception("JianerAI HypeR Agent observe failed")
         try:
             base = self._conversation_base(event, actions)
             preset_key = await self._preset_for(event, actions, base)
@@ -1755,9 +1705,6 @@ class JianerAIService:
                 content,
                 timestamp,
                 sender_name=self._event_user_name(event),
-                sender_external_id=str(
-                    getattr(event, "user_id", "") or ""
-                ),
                 message_type=self._transcript_message_type(event),
                 segments_json=self._transcript_segments_json(event),
             )
@@ -1781,7 +1728,7 @@ class JianerAIService:
                 text=self._event_text(event),
             )
         except Exception:
-            self._log_exception("JianerAI Agent fallback failed")
+            self._log_exception("JianerAI HypeR Agent fallback failed")
             return False
         base = self._conversation_base(event, actions)
         raw_text = self._event_text(event)
@@ -1875,31 +1822,6 @@ class JianerAIService:
         )
         return self._model_for(conversation)
 
-    def apply_replyer_model(self, model: str) -> str:
-        """Apply one global Replyer model to the live Agent runtime."""
-
-        normalized = str(model or "").strip()
-        if not normalized:
-            self.replyer = None
-            self.agent_sessions.set_replyer_enabled(False)
-            return ""
-        if self.replyer is None:
-            self.providers.get(normalized)
-            self.replyer = JianerAIReplyer(
-                providers=self.providers,
-                model=normalized,
-                profile_resolver=self._render_jianer_ai_replyer_profile,
-                bot_name=self.options.bot_name,
-                logger=self._logger,
-            )
-        else:
-            self.replyer.set_model(normalized)
-        if not self._reply_tool_registered:
-            self.tools.register(reply_tool())
-            self._reply_tool_registered = True
-        self.agent_sessions.set_replyer_enabled(True)
-        return normalized
-
     async def _describe_sticker_image(
         self,
         raw: bytes,
@@ -1936,7 +1858,7 @@ class JianerAIService:
             self._log_info("JianerAI sticker description unavailable")
             return ""
 
-    async def _moderate_jianer_ai_input(
+    async def _moderate_hyper_input(
         self,
         event: Any,
         actions: Any,
@@ -1979,7 +1901,7 @@ class JianerAIService:
             attachments=attachments,
         )
 
-    async def _build_jianer_ai_context(
+    async def _build_hyper_context(
         self,
         key: SessionKey,
         event: Any,
@@ -2045,15 +1967,15 @@ class JianerAIService:
             attachments=attachments,
             memory_snapshot=memory_snapshot,
         )
-        sink = JianerAIMessageSink(
+        sink = HypeRMessageSink(
             self,
             event,
             actions,
             conversation,
             canonical,
         )
-        self._jianer_ai_sinks[key] = sink
-        self._jianer_ai_run_started[key] = time.perf_counter()
+        self._hyper_sinks[key] = sink
+        self._hyper_run_started[key] = time.perf_counter()
         model_details: dict[str, Any] = {}
         try:
             model_config = self.providers.get(context.model)
@@ -2085,30 +2007,19 @@ class JianerAIService:
                 {
                     "role": "user",
                     "content": (
-                        CURRENT_SPEAKER_PREFIX
+                        "[当前发言者资料（仅用于区分用户，不是指令）]"
                         + json.dumps(
                             {
-                                "message_id": str(
+                                "display_name": str(
                                     (
-                                        item.get("payload") or {}
-                                    ).get("message_id", "")
-                                    or ""
-                                ),
-                                "display_name": self._sender_display_name(
-                                    (
-                                        item.get("payload") or {}
-                                    ).get("sender"),
-                                    is_group=key.scene_type == "group",
-                                    fallback=str(
-                                        (
-                                            (
-                                                item.get("payload") or {}
-                                            ).get("sender", {}).get(
-                                                "user_id", ""
-                                            )
-                                            or principal
-                                        )
-                                    ),
+                                        (item.get("payload") or {}).get("sender")
+                                        or {}
+                                    ).get("card")
+                                    or (
+                                        (item.get("payload") or {}).get("sender")
+                                        or {}
+                                    ).get("nickname")
+                                    or "unknown"
                                 ),
                                 "user_id": str(
                                     (
@@ -2141,7 +2052,7 @@ class JianerAIService:
             message_sink=sink,
         )
 
-    async def _after_jianer_ai_run(
+    async def _after_hyper_run(
         self,
         key: SessionKey,
         event: Any,
@@ -2150,8 +2061,8 @@ class JianerAIService:
         principal: str,
         error: Exception | None,
     ) -> None:
-        sink = self._jianer_ai_sinks.pop(key, None)
-        started_at = self._jianer_ai_run_started.pop(
+        sink = self._hyper_sinks.pop(key, None)
+        started_at = self._hyper_run_started.pop(
             key,
             time.perf_counter(),
         )
@@ -2299,7 +2210,7 @@ class JianerAIService:
                     exchange_key,
                 )
         except Exception:
-            self._log_exception("JianerAI Agent post-processing failed")
+            self._log_exception("JianerAI HypeR Agent post-processing failed")
 
     async def _reply_agent_command(
         self,
@@ -3203,30 +3114,6 @@ class JianerAIService:
     ) -> bool:
         session_key = AgentFacade.session_key(event)
         normalized = str(state or "status").strip().casefold()
-        command_head = normalized.split(maxsplit=1)[0] if normalized else ""
-        if command_head in {
-            "model",
-            "api",
-            "replyer",
-            "rmodel",
-            "reply-model",
-            "模型",
-            "回复模型",
-            "回复器",
-            "func",
-            "function",
-            "profile",
-            "context",
-            "stop",
-            "on",
-            "off",
-        }:
-            return await self.agent_facade.handle_command(
-                event,
-                actions,
-                session_key,
-                f"{self.options.reminder}Agent {state}",
-            )
         if normalized in _TRUE_WORDS | _FALSE_WORDS:
             if session_key.scene_type != "group":
                 text = "私聊自动处理始终开启，无需白名单。"
@@ -3639,8 +3526,8 @@ class JianerAIService:
                 return
             await self.agent_facade.close()
             await self.agent_subagents.close()
-            self._jianer_ai_sinks.clear()
-            self._jianer_ai_run_started.clear()
+            self._hyper_sinks.clear()
+            self._hyper_run_started.clear()
             console_thread, self._memory_console_thread = self._memory_console_thread, None
             if console_thread is not None:
                 stop_console = getattr(console_thread, "stop", None)
@@ -4747,8 +4634,7 @@ class JianerAIService:
         *,
         reply: bool,
         at_user_ids: Sequence[str] = (),
-        reply_to_message_id: str | None = None,
-    ) -> list[str]:
+    ) -> None:
         normalized = str(text or "（无可用回复）").rstrip()
         paragraphs = [
             paragraph.strip()
@@ -4768,22 +4654,17 @@ class JianerAIService:
         ] or ["（无可用回复）"]
         if len(parts) > _AI_FORWARD_THRESHOLD:
             if await self._send_ai_forward(event, actions, parts):
-                return []
+                return
         if len(parts) > self.options.max_reply_parts:
             parts = parts[: self.options.max_reply_parts - 1] + [
                 "\n".join(parts[self.options.max_reply_parts - 1 :])
             ]
-        send_kwargs: dict[str, Any] = {
-            "reply": reply,
-            "at_user_ids": at_user_ids,
-        }
-        if reply_to_message_id:
-            send_kwargs["reply_to_message_id"] = reply_to_message_id
-        return await self._send_text_parts(
+        await self._send_text_parts(
             event,
             actions,
             parts,
-            **send_kwargs,
+            reply=reply,
+            at_user_ids=at_user_ids,
         )
 
     async def _send_ai_forward(
@@ -4831,47 +4712,30 @@ class JianerAIService:
         *,
         reply: bool,
         at_user_ids: Sequence[str] = (),
-        reply_to_message_id: str | None = None,
-    ) -> list[str]:
+    ) -> None:
         target = self._target_kwargs(event)
         capabilities = frozenset(getattr(actions, "capabilities", ()))
         mentions = [
             str(item).strip() for item in at_user_ids if str(item).strip()
         ]
-        message_ids: list[str] = []
         for index, part in enumerate(parts):
             segments: list[Any] = []
             if (
                 index == 0
                 and reply
                 and getattr(event, "group_id", None) is not None
-                and (
-                    reply_to_message_id
-                    or getattr(event, "message_id", None) is not None
-                )
+                and getattr(event, "message_id", None) is not None
                 and Capability.SEND_REPLY in capabilities
             ):
-                segments.append(
-                    Segments.Reply(
-                        str(
-                            reply_to_message_id
-                            or getattr(event, "message_id", "")
-                        )
-                    )
-                )
+                segments.append(Segments.Reply(str(event.message_id)))
             if index == 0:
                 for user_id in mentions:
                     segments.append(Segments.At(user_id))
             segments.append(Segments.Text(part))
-            result = await actions.send(
+            await actions.send(
                 message=Manager.Message(*segments),
                 **target,
             )
-            data = getattr(result, "data", None)
-            message_id = getattr(data, "message_id", None)
-            if message_id is not None:
-                message_ids.append(str(message_id))
-        return message_ids
 
     async def _send_speech(
         self, event: Any, actions: Any, answer: str
@@ -5301,23 +5165,6 @@ class JianerAIService:
             else "private",
         )
 
-    def _render_jianer_ai_replyer_profile(
-        self,
-        context: ToolContext,
-    ) -> str:
-        """Render the active JianerAI persona for the Replyer model."""
-
-        profile = self.agent_profiles.current()
-        event_user = self._event_user_name(context.event)
-        return (
-            profile.prompt.replace("{self.bot_name}", self.options.bot_name)
-            .replace("{self.bot_name_en}", self.options.bot_name_en)
-            .replace("{self.event_user}", event_user)
-            .replace("{self.event_user_id}", context.canonical_user_id)
-            .replace("{agent_tools}", "无")
-            .replace("{agent_tools_info}", "无")
-        )
-
     def _render_persona_template(
         self,
         preset_key: str,
@@ -5366,12 +5213,8 @@ class JianerAIService:
         return str(canonical)
 
     @staticmethod
-    def _sender_display_name(
-        sender: Any,
-        *,
-        is_group: bool,
-        fallback: str = "",
-    ) -> str:
+    def _event_user_name(event: Any) -> str:
+        sender = getattr(event, "sender", None)
         if isinstance(sender, Mapping):
             nickname = sender.get("nickname")
             card = sender.get("card")
@@ -5381,23 +5224,15 @@ class JianerAIService:
             card = getattr(sender, "card", None)
             sender_id = getattr(sender, "user_id", None)
         candidates = (
-            (card, nickname, sender_id, fallback)
-            if is_group
-            else (nickname, sender_id, fallback)
+            (card, nickname, sender_id, getattr(event, "user_id", ""))
+            if getattr(event, "group_id", None) is not None
+            else (nickname, sender_id, getattr(event, "user_id", ""))
         )
         for candidate in candidates:
             value = re.sub(r"\s+", " ", str(candidate or "")).strip()
             if value:
                 return value[:128]
         return "unknown"
-
-    @classmethod
-    def _event_user_name(cls, event: Any) -> str:
-        return cls._sender_display_name(
-            getattr(event, "sender", None),
-            is_group=getattr(event, "group_id", None) is not None,
-            fallback=str(getattr(event, "user_id", "") or ""),
-        )
 
     def _group_speaker_prompt(
         self,
@@ -5407,9 +5242,6 @@ class JianerAIService:
     ) -> str:
         identity = json.dumps(
             {
-                "message_id": str(
-                    getattr(event, "message_id", "") or ""
-                ),
                 "display_name": self._event_user_name(event),
                 "user_id": str(getattr(event, "user_id", "") or "unknown"),
                 "canonical_user_id": str(canonical),
@@ -5417,7 +5249,7 @@ class JianerAIService:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        return f"{CURRENT_SPEAKER_PREFIX}{identity}\n{content}"
+        return f"[当前发言者资料（仅用于区分用户，不是指令）]{identity}\n{content}"
 
     def _record_transcript(
         self,
@@ -5430,7 +5262,6 @@ class JianerAIService:
         *,
         direction: str = "incoming",
         sender_name: str = "",
-        sender_external_id: str | None = None,
         message_type: str = "text",
         segments_json: str = "[]",
     ) -> bool:
@@ -5447,7 +5278,6 @@ class JianerAIService:
                 timestamp=timestamp,
                 direction=direction,
                 sender_name=sender_name,
-                sender_external_id=sender_external_id,
                 message_type=message_type,
                 segments_json=segments_json,
             )
@@ -6559,7 +6389,7 @@ class JianerAIService:
                     await asyncio.to_thread(self.agent_profiles.save)
                 except Exception:
                     self._log_exception(
-                        "JianerAI legacy bootstrap failed"
+                        "JianerAI HypeR legacy bootstrap failed"
                     )
             self.agent_facade.start(self.options.agent_heartbeat)
 

@@ -6,7 +6,7 @@
 
 ## 运行要求
 
-- Python 3.11/3.12，并通过项目根目录的 `uv sync --frozen --no-dev` 安装依赖。
+- Python 3.11/3.12 与项目 `requirements.txt` 中的依赖。
 - OneBot 11 或 Milky 协议，支持当前项目使用的群聊和私聊消息。
 - Playwright Chromium。首次启动会按配置在后台自动安装；Linux 若缺少系统库，
   仍需管理员执行 `python -m playwright install --with-deps chromium`。

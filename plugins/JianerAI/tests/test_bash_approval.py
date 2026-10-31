@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,35 +75,6 @@ def _request_id(message: str) -> str:
         for line in message.splitlines()
         if line.startswith("请求 ID：")
     )
-
-
-def test_shell_approval_request_id_is_sha256(monkeypatch) -> None:
-    monkeypatch.setattr("plugins.JianerAI.tools.bash.os.getpid", lambda: 123)
-    monkeypatch.setattr(
-        "plugins.JianerAI.tools.bash.time.time_ns",
-        lambda: 456789,
-    )
-    manager = ShellApprovalManager(project_root=Path.cwd())
-    scope = ("milky", "bot-1", "group", "group-1")
-    request_id = manager._new_request_id(
-        scope=scope,
-        requester_external_id="platform-admin",
-        command="printf reviewed",
-    )
-    material = "\x00".join(
-        (
-            *scope,
-            "platform-admin",
-            "printf reviewed",
-            "123",
-            "456789",
-            "1",
-        )
-    )
-    expected = hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
-
-    assert request_id == expected
-    assert len(request_id) == 8
 
 
 def test_bash_is_hidden_from_non_bot_admins_and_handler_rechecks_admin():

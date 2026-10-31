@@ -667,37 +667,6 @@ def test_agent_api_manager_prefers_configured_active_model(
     assert manager.active == "deepseek"
 
 
-def test_replyer_api_manager_allows_models_without_tools(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / "replyer.ai.json").write_text(
-        json.dumps(
-            {
-                "FriendlyName": "replyer",
-                "Model": "replyer-model",
-                "ApiKey": "test-key",
-                "ResponseType": "OpenAI Chat Completions",
-                "BaseUrl": "https://replyer.example/v1",
-                "ToolsEnabled": False,
-            }
-        ),
-        encoding="utf-8",
-    )
-    registry = ProviderRegistry(tmp_path)
-    manager = ApiModelManager(
-        registry,
-        active_model="replyer",
-        require_tools=False,
-        allow_empty=True,
-    )
-
-    assert manager.active == "replyer"
-    assert manager.redacted_status()["supports_tools"] is None
-    assert manager.activate("") == ""
-    assert manager.active == ""
-    assert manager.redacted_status()["status"] == "disabled"
-
-
 def test_collector_compresses_and_preserves_recent_events() -> None:
     async def scenario():
         collector = Collector(max_buffer=4, keep_after_compress=2)
@@ -718,7 +687,7 @@ def test_collector_compresses_and_preserves_recent_events() -> None:
     assert len(buffer) == 3
 
 
-def test_tool_registry_keeps_legacy_execute_and_adds_jianer_ai_dispatch() -> None:
+def test_tool_registry_keeps_legacy_execute_and_adds_hype_dispatch() -> None:
     registry = ToolRegistry(
         allowed_risks=frozenset({ToolRisk.READ_ONLY, ToolRisk.MUTATING}),
     )
@@ -741,19 +710,19 @@ def test_tool_registry_keeps_legacy_execute_and_adds_jianer_ai_dispatch() -> Non
             ToolCall("1", "echo", {"text": "legacy"}),
             context,
         )
-        jianer_ai = await registry.dispatch("echo", {"text": "jianer_ai"}, context)
-        return old, jianer_ai
+        hype = await registry.dispatch("echo", {"text": "hype"}, context)
+        return old, hype
 
-    old, jianer_ai = asyncio.run(scenario())
+    old, hype = asyncio.run(scenario())
     assert old.ok is True
     assert json.loads(old.content)["data"] == "legacy"
-    assert json.loads(jianer_ai)["data"] == "jianer_ai"
+    assert json.loads(hype)["data"] == "hype"
     assert registry.schema("main")[0]["function"]["name"] == "echo"
 
 
 def test_decorated_tool_binds_to_compatibility_registry() -> None:
     class DemoTools(AgentToolBase):
-        @tool(group="demo", direct_message=True)
+        @tool(group="demo")
         async def greet(self, ctx, name: str) -> str:
             """Greet one user."""
             return f"hello {name}"
@@ -763,7 +732,6 @@ def test_decorated_tool_binds_to_compatibility_registry() -> None:
     spec = registry.specs[0]
     assert spec.name == "greet"
     assert spec.group == "demo"
-    assert spec.direct_message is True
     assert spec.input_schema["required"] == ["name"]
 
 
@@ -965,7 +933,7 @@ def test_anthropic_protocol_is_rejected() -> None:
         )
 
 
-def test_registry_filters_jianer_ai_permissions_and_scenes() -> None:
+def test_registry_filters_hype_permissions_and_scenes() -> None:
     registry = ToolRegistry(
         allowed_risks=frozenset({ToolRisk.READ_ONLY}),
     )

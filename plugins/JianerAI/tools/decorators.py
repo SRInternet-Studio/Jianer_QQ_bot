@@ -1,4 +1,4 @@
-"""JianerAI class/decorator tool declarations.
+"""HypeR-style class/decorator tool declarations.
 
 Existing ToolSpec providers remain first-class.  New built-ins can use
 ``AgentToolBase`` and ``@tool`` while the compatibility registry presents
@@ -31,7 +31,6 @@ class ToolDeclaration:
     system_visible: bool
     release: bool
     preserve: bool
-    direct_message: bool
     risk: ToolRisk
 
 
@@ -47,7 +46,6 @@ def tool(
     system_visible: bool = False,
     release: bool = False,
     preserve: bool = False,
-    direct_message: bool = False,
     risk: ToolRisk = ToolRisk.READ_ONLY,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -65,7 +63,6 @@ def tool(
                 system_visible=bool(system_visible),
                 release=bool(release),
                 preserve=bool(preserve),
-                direct_message=bool(direct_message),
                 risk=risk,
             ),
         )
@@ -106,7 +103,6 @@ def bind_decorated_tools(instance: AgentToolBase) -> tuple[ToolSpec, ...]:
                 system_visible=declaration.system_visible,
                 release=declaration.release,
                 preserve=declaration.preserve,
-                direct_message=declaration.direct_message,
             )
         )
     return tuple(specs)

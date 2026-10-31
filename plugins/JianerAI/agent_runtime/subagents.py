@@ -1,4 +1,4 @@
-"""Persistent JianerAI Sub-Agents."""
+"""Persistent HypeR-style Sub-Agents."""
 
 from __future__ import annotations
 

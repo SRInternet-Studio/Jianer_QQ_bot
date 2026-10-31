@@ -200,7 +200,7 @@ class ToolRegistry:
         return tuple(output)
 
     def schema(self, role: str = "main") -> list[dict[str, Any]]:
-        """Return JianerAI/OpenAI tool declarations for one Agent role."""
+        """Return HypeR/OpenAI tool declarations for one Agent role."""
 
         normalized_role = str(role or "main").strip().casefold()
         output: list[dict[str, Any]] = []
@@ -225,7 +225,7 @@ class ToolRegistry:
         params: Mapping[str, Any],
         context: ToolContext,
     ) -> Any:
-        """JianerAI dispatch that returns a model-facing result."""
+        """HypeR-style dispatch that returns a model-facing result."""
 
         stored = self._tools.get(str(name))
         if stored is None:

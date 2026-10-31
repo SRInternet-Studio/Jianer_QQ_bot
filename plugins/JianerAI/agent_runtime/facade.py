@@ -1,4 +1,4 @@
-"""Event facade for the JianerAI JianerAI Agent runtime."""
+"""Event facade for the HypeR-style JianerAI Agent runtime."""
 
 from __future__ import annotations
 
@@ -49,8 +49,6 @@ class AgentFacade:
         after_run: AfterRun,
         reply: Reply,
         model_manager: Any | None = None,
-        replyer_model_manager: Any | None = None,
-        apply_replyer_model: Callable[[str], Any] | None = None,
         tools: Any | None = None,
         collector_max_buffer: int = 80,
         collector_keep_after_compress: int = 60,
@@ -71,8 +69,6 @@ class AgentFacade:
         self.after_run = after_run
         self.reply = reply
         self.model_manager = model_manager
-        self.replyer_model_manager = replyer_model_manager
-        self.apply_replyer_model = apply_replyer_model
         self.tools = tools
         self.collector_max_buffer = max(2, int(collector_max_buffer))
         self.collector_keep_after_compress = max(
@@ -398,10 +394,6 @@ class AgentFacade:
             else:
                 parts = ["agent", "api", action, *parts[2:]]
             sub = "api"
-        if sub.startswith("replyer."):
-            action = sub.split(".", 1)[1]
-            parts = ["agent", "replyer", action, *parts[2:]]
-            sub = "replyer"
         if sub in {"on", "off"}:
             if key.scene_type != "group":
                 await self.reply(
@@ -460,6 +452,9 @@ class AgentFacade:
             )
             return True
         if sub in {"model", "api"}:
+            if permission_level(perm) < permission_level("bot_owner"):
+                await self.reply(event, actions, "仅 Bot 主人可以切换模型。")
+                return True
             if self.model_manager is None:
                 await self.reply(event, actions, "模型管理器不可用。")
                 return True
@@ -476,71 +471,12 @@ class AgentFacade:
                 return True
             if parts[2].casefold() in {"reload", "rl"}:
                 self.model_manager.reload()
-                if self.replyer_model_manager is not None:
-                    self.replyer_model_manager.reload()
-                    if self.apply_replyer_model is not None:
-                        self.apply_replyer_model(
-                            str(
-                                getattr(
-                                    self.replyer_model_manager,
-                                    "active",
-                                    "",
-                                )
-                                or ""
-                            )
-                        )
                 await self.reply(event, actions, "已重新加载 aiconfig 模型。")
                 return True
             try:
                 selected = self.model_manager.activate(parts[2])
                 self._persist_agent_setting("agent_api_profile", selected)
                 text = f"已切换全局 Agent 模型：{selected}"
-            except Exception as exc:
-                text = str(exc)
-            await self.reply(event, actions, text)
-            return True
-        if sub == "replyer":
-            manager = self.replyer_model_manager
-            if manager is None:
-                await self.reply(event, actions, "Replyer 模型管理器不可用。")
-                return True
-            if len(parts) <= 2:
-                await self.reply(
-                    event,
-                    actions,
-                    json.dumps(
-                        manager.redacted_status(),
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                )
-                return True
-            action = parts[2].casefold()
-            try:
-                if action in {"reload", "rl"}:
-                    manager.reload()
-                    active = str(getattr(manager, "active", "") or "")
-                    if self.apply_replyer_model is not None:
-                        self.apply_replyer_model(active)
-                    text = "已重新加载 aiconfig 模型。"
-                elif action in {"off", "disable", "关闭"}:
-                    manager.activate("")
-                    if self.apply_replyer_model is not None:
-                        self.apply_replyer_model("")
-                    self._persist_agent_setting(
-                        "agent_replyer_api_profile",
-                        "",
-                    )
-                    text = "已关闭独立 Replyer，恢复旧消息工具。"
-                else:
-                    selected = manager.activate(parts[2])
-                    if self.apply_replyer_model is not None:
-                        self.apply_replyer_model(selected)
-                    self._persist_agent_setting(
-                        "agent_replyer_api_profile",
-                        selected,
-                    )
-                    text = f"已切换全局 Replyer 模型：{selected}"
             except Exception as exc:
                 text = str(exc)
             await self.reply(event, actions, text)
@@ -713,18 +649,12 @@ class AgentFacade:
     def command_help(self, key: SessionKey) -> str:
         active = bool(self.group_whitelist(key)) if key.scene_type == "group" else True
         model = getattr(self.model_manager, "active", "") or "未配置"
-        replyer_model = (
-            getattr(self.replyer_model_manager, "active", "") or "未启用"
-        )
         return (
             f"Agent 状态：{'已启用' if active else '未启用'}\n"
             f"白名单用户：{', '.join(sorted(self.group_whitelist(key))) or '无'}\n"
             f"当前人设：{self._active_profile_label()}\n"
-            f"当前 Planner 模型：{model}\n"
-            f"当前 Replyer 模型：{replyer_model}\n"
+            f"当前模型：{model}\n"
             f"命令：{self.reminder}agent.on/off/status/stop/profile/context\n"
-            f"切换模型：{self.reminder}agent.model <代码>\n"
-            f"切换 Replyer：{self.reminder}agent.replyer <代码|reload|off>\n"
             f"清空当前上下文：{self.reminder}清空上下文"
         )
 
@@ -1097,12 +1027,6 @@ def _normalize_subcommand(value: str) -> str:
         "关闭": "off",
         "工具": "func",
         "子代理": "sub_list",
-        "回复模型": "replyer",
-        "回复器": "replyer",
-        "rmodel": "replyer",
-        "reply-model": "replyer",
-        "模型": "model",
-        "模型菜单": "model",
         "pf.ad": "profile.add",
         "pf.rm": "profile.remove",
         "pf.ma": "profile.master",
