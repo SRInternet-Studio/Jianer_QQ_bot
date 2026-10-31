@@ -34,9 +34,7 @@ class CommandMatcher(_CommandMatcher):
             return False
         event = trigger.body_event(event)
         if isinstance(self._trigger_pattern, str):
-            self.command = _coerce_alconna(
-                f"{trigger.reminder()}{self._trigger_pattern}"
-            )
+            self.command = _coerce_alconna(self._trigger_pattern)
         return await super().dispatch(event, actions)
 
 

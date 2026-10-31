@@ -2,8 +2,20 @@
 
 from bot import plugin_state
 
-import copy
 from typing import Any
+
+
+class _MessageBodyEvent:
+    """Expose stripped command text while forwarding the adapter event."""
+
+    __slots__ = ("_event", "msg_str")
+
+    def __init__(self, event: Any, message_text: str) -> None:
+        self._event = event
+        self.msg_str = message_text
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._event, name)
 
 
 def _reminder() -> str:
@@ -30,9 +42,7 @@ def body_event(event: Any) -> Any:
     text = str(getattr(event, "msg_str", "") or "")
     if not prefix or not text.startswith(prefix):
         return event
-    body = copy.copy(event)
-    body.msg_str = text[len(prefix) :]
-    return body
+    return _MessageBodyEvent(event, text[len(prefix) :])
 
 
 def command_body(text: Any, command: str, *, value: str | None = None) -> str | None:

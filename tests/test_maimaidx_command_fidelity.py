@@ -142,9 +142,11 @@ def test_self_mention_may_use_the_senders_own_lxns_token(monkeypatch):
     assert resolution.user.access_token == "own-access-token"
 
 
-def test_command_argument_preserves_digits_that_match_a_mention():
+def test_command_argument_preserves_digits_that_match_a_mention(monkeypatch):
+    from bot import plugin_state
     from plugins.MaimaiDX.commands.common import command_argument
 
+    monkeypatch.setitem(plugin_state._runtime, "reminder", "")
     event = _event(
         "b50 user123456",
         message=common.Message(
@@ -155,6 +157,40 @@ def test_command_argument_preserves_digits_that_match_a_mention():
     )
 
     assert command_argument(event, "b50") == "user123456"
+
+
+def test_body_event_wraps_host_proxy_without_copying(monkeypatch):
+    from bot import plugin_state
+    from plugins.MaimaiDX.commands.trigger import body_event
+
+    monkeypatch.setitem(plugin_state._runtime, "reminder", "~")
+    host_event = _event("~b50 user123456")
+    dispatch_event = plugin_state._MessageTextEventProxy(host_event, "~b50 user123456")
+
+    event = body_event(dispatch_event)
+
+    assert event.msg_str == "b50 user123456"
+    assert event.user_id == host_event.user_id
+
+
+def test_command_matcher_accepts_host_proxy(monkeypatch):
+    from bot import plugin_state
+    from plugins.MaimaiDX.commands.matchers import Command
+
+    monkeypatch.setitem(plugin_state._runtime, "reminder", "~")
+    handled = []
+    matcher = Command("b50 <argument>")
+
+    async def handler(argument=None, event=None, actions=None):
+        handled.append((argument, event.msg_str))
+        return True
+
+    matcher.handlers.append(handler)
+    host_event = _event("~b50 111")
+    event = plugin_state._MessageTextEventProxy(host_event, "~b50 111")
+
+    assert asyncio.run(matcher.dispatch(event, None)) is True
+    assert handled == [("111", "b50 111")]
 
 
 def test_ap50_rejects_username_before_drawing(monkeypatch):

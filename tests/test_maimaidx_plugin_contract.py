@@ -403,10 +403,12 @@ def test_divingfish_proxy_setting_is_used_by_new_clients(monkeypatch):
 
 
 def test_message_routes_ignore_messages_that_mention_the_bot(monkeypatch):
+    from bot import plugin_state
     from plugins.MaimaiDX import commands as maimai_commands
     from plugins.MaimaiDX.commands import base as base_commands
 
     routed = []
+    monkeypatch.setitem(plugin_state._runtime, "reminder", "~")
 
     async def fake_pending_oauth(event, actions):
         routed.append(event.msg_str)
@@ -416,21 +418,24 @@ def test_message_routes_ignore_messages_that_mention_the_bot(monkeypatch):
 
     actions = StubActions()
     mention_event = _event(
-        "查歌 Test",
-        message=common.Message(segments.At("789"), segments.Text(" 查歌 Test")),
+        "~查歌 Test",
+        message=common.Message(segments.At("789"), segments.Text(" ~查歌 Test")),
     )
     assert asyncio.run(maimai_commands.handle_raw(mention_event, actions)) is False
     assert routed == []
     assert actions.sent == []
 
-    plain_event = _event("查歌 Test")
+    assert asyncio.run(maimai_commands.handle_raw(_event("查歌 Test"), actions)) is False
+    plain_event = _event("~查歌 Test")
     assert asyncio.run(maimai_commands.handle_raw(plain_event, actions)) is True
     assert routed == ["查歌 Test"]
 
 
-def test_command_matchers_ignore_messages_that_mention_the_bot():
+def test_command_matchers_ignore_messages_that_mention_the_bot(monkeypatch):
+    from bot import plugin_state
     from plugins.MaimaiDX.commands.matchers import Command
 
+    monkeypatch.setitem(plugin_state._runtime, "reminder", "~")
     handled = []
     matcher = Command("b50")
 
@@ -442,13 +447,14 @@ def test_command_matchers_ignore_messages_that_mention_the_bot():
     matcher.handlers.append(handler)
 
     mention_event = _event(
-        "b50",
-        message=common.Message(segments.At("789"), segments.Text(" b50")),
+        "~b50",
+        message=common.Message(segments.At("789"), segments.Text(" ~b50")),
     )
     assert asyncio.run(matcher.dispatch(mention_event, StubActions())) is False
     assert handled == []
 
-    plain_event = _event("b50")
+    assert asyncio.run(matcher.dispatch(_event("b50"), StubActions())) is False
+    plain_event = _event("~b50")
     assert asyncio.run(matcher.dispatch(plain_event, StubActions())) is True
     assert handled == ["b50"]
 
@@ -462,8 +468,11 @@ def test_mentions_self_only_matches_the_bot_account():
     assert adapter.mentions_self(_event("")) is False
 
 
-def test_plugin_manager_dispatch_declines_bot_mentions(tmp_path):
+def test_plugin_manager_dispatch_declines_bot_mentions(tmp_path, monkeypatch):
+    from bot import plugin_state
     from jianer.plugins import PluginManager
+
+    monkeypatch.setitem(plugin_state._runtime, "reminder", "~")
 
     plugins_dir = tmp_path / "plugins"
     plugins_dir.mkdir()
@@ -485,8 +494,8 @@ def test_plugin_manager_dispatch_declines_bot_mentions(tmp_path):
         actions = StubActions()
         actions.protocol = "kritor"
         mention_event = _event(
-            "b50",
-            message=common.Message(segments.At("789"), segments.Text(" b50")),
+            "~b50",
+            message=common.Message(segments.At("789"), segments.Text(" ~b50")),
         )
         assert (
             asyncio.run(
@@ -496,7 +505,7 @@ def test_plugin_manager_dispatch_declines_bot_mentions(tmp_path):
         )
         assert actions.sent == []
 
-        plain_event = _event("b50", protocol="kritor")
+        plain_event = _event("~b50", protocol="kritor")
         assert (
             asyncio.run(
                 manager.dispatch(plain_event, actions, run_observers=False)
