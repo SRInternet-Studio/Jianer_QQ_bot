@@ -6,10 +6,10 @@ resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'emscripten'",
     "python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform == 'win32'",
-    "python_full_version < '3.11.5' and sys_platform == 'win32'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform == 'emscripten'",
-    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version < '3.11.5' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
@@ -987,7 +987,7 @@ wheels = [
 
 [[package]]
 name = "jianer-bot"
-version = "0.92.9"
+version = "0.92.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1005,9 +1005,9 @@ dependencies = [
     { name = "ucfgr" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/66/1b41cce29d4906683210e5541b9db080e90974d5b1a4b4a9f44113940d75/jianer_bot-0.92.9.tar.gz", hash = "sha256:6c7943d7d5501efb83be6c012cb4fe955b70818881569aeddb55ac00d946c77f", size = 143644, upload-time = "2026-09-26T02:39:51.397Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/ac/649fcd785100ae2cb2aae676eb26297045162209170277eb7b631ce6f175/jianer_bot-0.92.10.tar.gz", hash = "sha256:2a706e6b0ca4ffc54877dc515963de12b4f6b03d00fb8579ac4e8ea2bc196006", size = 146878, upload-time = "2026-11-06T11:38:19.533Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c8/4e/4a7322b7156c6cd0e49d1a18c75e624e7c2ce84f763df9bbfe2781cd2875/jianer_bot-0.92.9-py3-none-any.whl", hash = "sha256:23c0f7ebb31d1f35b97524162f833f1941bbc2e42399037930856aa602b49967", size = 137715, upload-time = "2026-09-26T02:39:49.795Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/45/e1126c99d83438aa37ddba6337779a67b70ee586458598928a40360bce12/jianer_bot-0.92.10-py3-none-any.whl", hash = "sha256:bf05eb8b038da117ea5a6b60e0a7125c0c047b6121f022c310a0370d09faefd2", size = 139469, upload-time = "2026-11-06T11:38:17.887Z" },
 ]
 
 [[package]]
@@ -1095,7 +1095,7 @@ requires-dist = [
     { name = "google-genai", specifier = ">=2.16,<3" },
     { name = "httpx" },
     { name = "httpx-ws", specifier = ">=0.7.2,<1" },
-    { name = "jianer-bot", specifier = ">=0.92.7" },
+    { name = "jianer-bot", specifier = ">=0.92.10" },
     { name = "jieba", specifier = ">=0.42,<1" },
     { name = "json-repair", specifier = ">=0.30,<1" },
     { name = "lark-oapi" },
@@ -1482,10 +1482,10 @@ version = "3.6.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform == 'win32'",
-    "python_full_version < '3.11.5' and sys_platform == 'win32'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform == 'emscripten'",
-    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version < '3.11.5' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6a/51/63fe664f3908c97be9d2e4f1158eb633317598cfa6e1fc14af5383f17512/networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509", size = 2517025, upload-time = "2025-12-08T17:02:39.908Z" }
@@ -1513,10 +1513,10 @@ version = "2.4.6"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform == 'win32'",
-    "python_full_version < '3.11.5' and sys_platform == 'win32'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform == 'emscripten'",
-    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version < '3.11.5' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d0/ad/fed0499ce6a338d2a03ebae59cd15093910c8875328855781952abf6c2fe/numpy-2.4.6.tar.gz", hash = "sha256:f3a3570c4a2a16746ac2c31a7c7c7b0c186b95ce902e33db6f28094ed7387dda", size = 20735807, upload-time = "2026-05-18T23:37:14.07Z" }
@@ -2446,10 +2446,10 @@ version = "1.17.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform == 'win32'",
-    "python_full_version < '3.11.5' and sys_platform == 'win32'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform == 'emscripten'",
-    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version >= '3.11.5' and python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version < '3.11.5' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
