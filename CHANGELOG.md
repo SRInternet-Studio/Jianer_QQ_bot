@@ -41,6 +41,9 @@
 - JianerAI 自动发言增加会话级冷却（默认 30 秒）；冷却期内普通消息只进入
   Collector 缓存，被 @、回复 Bot 与主人私聊仍然立即处理。System Prompt 同时
   要求只在被点名、强相关或确有信息时发言。
+- JianerAI Main Context 压缩改为自动读取当前模型的 provider 上下文窗口，并结合
+  system prompt、工具声明和输出预留计算 token 预算；不再依赖
+  `aiconfig/*.ai.json` 的 `max_history_messages` / `max_history_chars`。
 - AI 回复统一按换行、自然句和 `max_message_length` 拆分为多条短消息；
   单换行不再把多个自然段挤进同一条消息。
 - 表情包入库不再把动画 GIF/WebP 压成静态首帧；动图在尺寸和大小限制内

@@ -62,7 +62,6 @@ class AgentCore:
         prompt_builder: Callable[[tuple[ToolSpec, ...]], str],
         allowed_tool_names: frozenset[str] | None = None,
         total_timeout_seconds: float = 600.0,
-        max_history_chars: int = 60000,
         logger: Any | None = None,
     ) -> None:
         self.key = key
@@ -74,7 +73,6 @@ class AgentCore:
         self.prompt_builder = prompt_builder
         self.allowed_tool_names = allowed_tool_names
         self.total_timeout_seconds = max(1.0, float(total_timeout_seconds))
-        self.max_history_chars = max(0, int(max_history_chars))
         self.logger = logger
         self.history: list[dict[str, Any]] = []
         self.tasks: list[str] = []
@@ -86,6 +84,7 @@ class AgentCore:
         self._stop_event: asyncio.Event | None = None
         self._processing_started: float | None = None
         self._pending_notices: list[dict[str, Any]] = []
+        self._context_overhead_tokens = 0
 
     async def ensure_loaded(self) -> None:
         if self._loaded:
@@ -186,11 +185,16 @@ class AgentCore:
                     "当前模型没有可用的 Agent 工具，无法使用工具发送消息",
                 )
             declarations = {item.name: item for item in specs}
+            system_prompt = self._system_prompt(context, function_tools)
+            self._context_overhead_tokens = _estimate_request_overhead(
+                system_prompt,
+                function_tools,
+            )
             request = ChatRequest(
                 message=event,
                 history=(),
                 history_items=self._provider_raw_history(),
-                system_prompt=self._system_prompt(context, function_tools),
+                system_prompt=system_prompt,
                 attachments=tuple(getattr(context, "attachments", ())),
                 tools=function_tools,
                 turns=tuple(turns),
@@ -563,18 +567,27 @@ class AgentCore:
         await self.store.save_history(self.key, self.history)
         await self.store.save_tasks(self.key, self.tasks)
 
-    def history_chars(self) -> int:
-        return sum(
-            len(json.dumps(item, ensure_ascii=False, default=str))
-            for item in self.history
-            if isinstance(item, dict)
-        )
+    @property
+    def context_overhead_tokens(self) -> int:
+        """Conservative estimate for the system prompt and tool declarations."""
 
-    def should_auto_summarize(self) -> bool:
-        return (
-            self.max_history_chars > 0
-            and self.history_chars() >= self.max_history_chars
-        )
+        return self._context_overhead_tokens
+
+    def history_token_estimate(self) -> int:
+        """Estimate tokens sent as prior history, including structured fields."""
+
+        if not self.history:
+            return 0
+        try:
+            serialized = json.dumps(
+                self.history,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+        except (TypeError, ValueError):
+            serialized = str(self.history)
+        return _estimate_text_tokens(serialized)
 
     def _raise_if_stopped(self) -> None:
         if self._stop_event is not None and self._stop_event.is_set():
@@ -807,6 +820,39 @@ def _mapping_copy(value: Any) -> dict[str, Any] | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def _estimate_request_overhead(
+    system_prompt: str,
+    tools: Sequence[FunctionTool],
+) -> int:
+    declarations = json.dumps(
+        [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": dict(tool.parameters),
+            }
+            for tool in tools
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return _estimate_text_tokens(system_prompt) + _estimate_text_tokens(
+        declarations
+    )
+
+
+def _estimate_text_tokens(text: str) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    ascii_characters = sum(1 for character in raw if ord(character) < 128)
+    non_ascii_bytes = max(0, len(raw.encode("utf-8")) - ascii_characters)
+    # ASCII JSON is often tokenized closer to three characters per token.
+    # Non-ASCII text is counted from UTF-8 bytes so CJK and emoji stay safe.
+    return max(1, (ascii_characters + 2) // 3 + (non_ascii_bytes + 1) // 2)
 
 
 def _retryable_provider_error(exc: Exception) -> bool:

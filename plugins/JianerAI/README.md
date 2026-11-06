@@ -81,7 +81,8 @@ Context，完整保存模型 tool call、tool result、reasoning 和 provider �
 - `agent_collector_max_buffer` / `agent_collector_keep_after_compress` /
   `agent_collector_max_summary_chars`：Collector 默认 80 / 60 / 8000
 - `agent_core_idle_hours`：Main Context 空闲回收时间，默认 12 小时
-- `agent_max_history_chars`：自动总结阈值，默认 60000
+- Agent 上下文压缩阈值无需配置：运行期从当前模型的 provider 元数据读取上下文窗口；
+  元数据不可用时使用保守的模型家族值，未知模型按 32768 token 处理
 - `agent_stop_perm` / `agent_stop_open_after`：Stop 权限和向所有人开放的超时
 - `agent_func_disabled`：工具运行期禁用状态，由 Agent 命令持久化
 - `agent_allowed_tools`：允许暴露给模型的工具名称数组或逗号分隔字符串；未配置时
@@ -295,9 +296,11 @@ HypeR 风格人设保存在 `data/jianer_ai/profiles.json`：
 当前人设由 `config.others.agent_profile` 指定。切换人设时 System Context 先总结
 所有已加载 Main Context，再更新 system prompt；不再读取或生成结构化人格 JSON。
 
-模型配置可用 `max_history_messages` 和 `max_history_chars` 同时限制短期历史；
-字符预算从最新消息向前保留，默认 24000 字符，设为 `0` 表示不限制。当前请求和
-完整人设不参与该裁剪，避免长历史挤占人设与工具声明的空间。
+模型配置可用 `max_history_messages` 和 `max_history_chars` 限制普通
+`request.history` 调用；字符预算从最新消息向前保留，默认 24000 字符，设为 `0`
+表示不限制。HypeR Main Agent 使用结构化 `history_items`，不再依赖这两个字段：
+运行期会自动读取模型上下文窗口，并按历史、system prompt、工具声明和输出预留
+共同计算安全预算。
 
 ## Context 与 Collector
 
@@ -305,7 +308,8 @@ HypeR 风格人设保存在 `data/jianer_ai/profiles.json`：
   provider 内容都会写入 `data/jianer_ai/agent/contexts/`。
 - Collector 默认等待 5–16 秒并与上一条消息节奏相关，缓冲达到阈值时把旧事件压缩为摘要。
 - 处理期间的新事件保留到下一批，不再取消当前 provider 请求。
-- 达到历史预算后由 System Context 总结并替换历史前缀。
+- Agent 会从当前模型元数据自动读取上下文窗口；达到按窗口计算的安全预算后，
+  由 System Context 总结并替换 Main Context。
 - `~agent.context.summary` 手动总结当前 Context；`~agent.context.clear` 清空。
 - `~agent.stop` 中止当前处理；超过配置阈值后普通成员也可中止。
 

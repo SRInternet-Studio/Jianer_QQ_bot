@@ -16,9 +16,17 @@ from plugins.JianerAI.agent_runtime.prompts import (
     build_main_prompt,
 )
 from plugins.JianerAI.agent_runtime.store import ContextStore
-from plugins.JianerAI.providers import ChatRequest, ProviderRegistry
+from plugins.JianerAI.providers import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    ChatRequest,
+    ProviderRegistry,
+)
 from plugins.JianerAI.tools.contracts import ToolSpec
 from plugins.JianerAI.tools.registry import ToolRegistry
+
+_CONTEXT_WINDOW_HISTORY_RATIO = 0.8
+_MIN_CONTEXT_WINDOW_HISTORY_TOKENS = 2048
+_MIN_OUTPUT_RESERVE_TOKENS = 2048
 
 
 class AgentSessionManager:
@@ -37,7 +45,6 @@ class AgentSessionManager:
         bot_name_en: str = "Jianer",
         allowed_tool_names: frozenset[str] | None = None,
         total_timeout_seconds: float = 600.0,
-        max_history_chars: int = 60000,
         idle_seconds: float = 12 * 3600,
         system_request_timeout: float = 300.0,
         profile_switch_summary: bool = True,
@@ -57,7 +64,6 @@ class AgentSessionManager:
         self.bot_name_en = str(bot_name_en or "Jianer")
         self.allowed_tool_names = allowed_tool_names
         self.total_timeout_seconds = total_timeout_seconds
-        self.max_history_chars = max_history_chars
         self.idle_seconds = max(60.0, float(idle_seconds))
         self.system_request_timeout = max(
             5.0, float(system_request_timeout)
@@ -250,6 +256,36 @@ class AgentSessionManager:
         await core.replace_with_summary(summary)
         return "已更新当前上下文总结"
 
+    async def should_auto_summarize(
+        self,
+        target: SessionKey,
+        core: AgentCore | None = None,
+    ) -> bool:
+        """Compare estimated request usage with the model context window."""
+
+        core = core or await self.get_main(target)
+        if not core.history:
+            return False
+        model = self.model_resolver(target)
+        resolver = getattr(self.providers, "context_window_tokens", None)
+        if callable(resolver):
+            context_window = await resolver(model)
+        else:
+            context_window = DEFAULT_CONTEXT_WINDOW_TOKENS
+        try:
+            output_reserve = max(
+                _MIN_OUTPUT_RESERVE_TOKENS,
+                int(self.providers.get(model).max_tokens),
+            )
+        except Exception:
+            output_reserve = _MIN_OUTPUT_RESERVE_TOKENS
+        history_budget = _context_history_budget(
+            context_window,
+            output_reserve=output_reserve,
+            overhead_tokens=core.context_overhead_tokens,
+        )
+        return core.history_token_estimate() >= history_budget
+
     async def prepare_main(self, core: AgentCore) -> None:
         """Lazily archive a Main context that predates the latest switch."""
 
@@ -340,7 +376,7 @@ class AgentSessionManager:
             if core.working:
                 continue
             await core.ensure_loaded()
-            if core.should_auto_summarize():
+            if await self.should_auto_summarize(core.key, core):
                 await self.summarize(core.key, source="heartbeat")
 
     async def close(self) -> None:
@@ -381,7 +417,6 @@ class AgentSessionManager:
             prompt_builder=prompt_builder,
             allowed_tool_names=self.allowed_tool_names,
             total_timeout_seconds=self.total_timeout_seconds,
-            max_history_chars=self.max_history_chars,
             logger=self.logger,
         )
         if role is AgentRole.MAIN:
@@ -482,3 +517,21 @@ def _history_text(history: list[dict[str, Any]]) -> str:
         if content:
             lines.append(f"{role}: {content[:4000]}")
     return "\n".join(lines)
+
+
+def _context_history_budget(
+    context_window: int,
+    *,
+    output_reserve: int,
+    overhead_tokens: int,
+) -> int:
+    remaining = max(
+        0,
+        int(context_window)
+        - max(0, int(output_reserve))
+        - max(0, int(overhead_tokens)),
+    )
+    return max(
+        _MIN_CONTEXT_WINDOW_HISTORY_TOKENS,
+        int(remaining * _CONTEXT_WINDOW_HISTORY_RATIO),
+    )

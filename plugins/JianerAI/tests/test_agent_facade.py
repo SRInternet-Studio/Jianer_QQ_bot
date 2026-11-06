@@ -301,6 +301,10 @@ class _Sessions:
         del key, source
         return "summarized"
 
+    async def should_auto_summarize(self, key, core=None):
+        del key, core
+        return False
+
     async def context_status(self, key):
         return key.value
 

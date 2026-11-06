@@ -389,7 +389,6 @@ class RuntimeOptions:
     agent_collector_keep_after_compress: int = 60
     agent_collector_max_summary_chars: int = 8000
     agent_core_idle_hours: float = 12.0
-    agent_max_history_chars: int = 60000
     agent_profile_switch_summary: bool = True
     agent_profile_switch_keep_turns: int = 6
     agent_profile_summary_chunk_chars: int = 24000
@@ -823,10 +822,6 @@ class RuntimeOptions:
             agent_core_idle_hours=max(
                 1.0,
                 float(others.get("agent_core_idle_hours", 12.0)),
-            ),
-            agent_max_history_chars=max(
-                1000,
-                int(others.get("agent_max_history_chars", 60000)),
             ),
             agent_profile_switch_summary=_runtime_bool(
                 others.get("agent_profile_switch_summary", True),
@@ -1512,7 +1507,6 @@ class JianerAIService:
             bot_name_en=options.bot_name_en,
             allowed_tool_names=options.agent_allowed_tools,
             total_timeout_seconds=600.0,
-            max_history_chars=options.agent_max_history_chars,
             idle_seconds=options.agent_core_idle_hours * 3600.0,
             system_request_timeout=options.agent_sys_request_timeout,
             profile_switch_summary=options.agent_profile_switch_summary,

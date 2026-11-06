@@ -330,7 +330,6 @@ class SubAgentManager:
             model_resolver=self.model_resolver,
             prompt_builder=_SubPromptBuilder(prompt),
             total_timeout_seconds=600.0,
-            max_history_chars=30000,
             logger=self.logger,
         )
 

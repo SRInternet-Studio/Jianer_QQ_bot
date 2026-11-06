@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import hashlib
 import inspect
 import json
 import re
-from collections.abc import Awaitable, Mapping, Sequence
+import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from plugins.JianerAI.media_input import (
     MediaProcessingError,
@@ -24,6 +26,9 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_REQUEST_TIMEOUT = 120.0
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+DEFAULT_CONTEXT_WINDOW_TOKENS = 32768
+_CONTEXT_WINDOW_PROBE_TIMEOUT = 8.0
+_CONTEXT_WINDOW_FALLBACK_RETRY_SECONDS = 600.0
 _SUPPORTED_ATTACHMENT_MIME_PREFIXES = ("image/", "audio/", "video/")
 _PROTECTED_PAYLOAD_KEYS = frozenset(
     {
@@ -251,6 +256,9 @@ class ProviderTransport(Protocol):
         ...
 
 
+ContextWindowResolver = Callable[[ModelConfig], Awaitable[Any] | Any]
+
+
 @dataclass(frozen=True, slots=True)
 class ChatRequest:
     message: str
@@ -362,12 +370,19 @@ class ProviderRegistry:
         config_dir: str | Path,
         *,
         transport: ProviderTransport | None = None,
+        context_window_resolver: ContextWindowResolver | None = None,
     ) -> None:
         self.config_dir = Path(config_dir)
         self._transport = transport
+        self._context_window_resolver = context_window_resolver
         self._configs: dict[str, ModelConfig] = {}
         self._load_errors: dict[str, str] = {}
         self._tool_unsupported: set[str] = set()
+        self._context_windows: dict[
+            tuple[str, str, str],
+            tuple[int, bool, float],
+        ] = {}
+        self._context_window_lock = asyncio.Lock()
         self.reload()
 
     @property
@@ -380,6 +395,7 @@ class ProviderRegistry:
         if not self.config_dir.exists():
             self._configs = {}
             self._load_errors = {}
+            self._context_windows.clear()
             return {}
         if not self.config_dir.is_dir():
             raise ModelConfigError(f"AI config path is not a directory: {self.config_dir}")
@@ -396,6 +412,7 @@ class ProviderRegistry:
         self._configs = configs
         self._load_errors = errors
         self._tool_unsupported.intersection_update(configs)
+        self._context_windows.clear()
         return dict(configs)
 
     def list_models(self) -> Mapping[str, str]:
@@ -420,6 +437,69 @@ class ProviderRegistry:
 
     def mark_tools_unsupported(self, key: str) -> None:
         self._tool_unsupported.add(self.get(key).key)
+
+    async def context_window_tokens(self, key: str) -> int:
+        """Return the model context window, discovered from provider metadata."""
+
+        config = self.get(key)
+        cache_key = (
+            config.provider,
+            config.model.casefold(),
+            config.base_url.rstrip("/"),
+        )
+        now = time.monotonic()
+        cached = self._context_windows.get(cache_key)
+        if cached is not None:
+            value, discovered, checked_at = cached
+            if discovered or now - checked_at < _CONTEXT_WINDOW_FALLBACK_RETRY_SECONDS:
+                return value
+
+        async with self._context_window_lock:
+            now = time.monotonic()
+            cached = self._context_windows.get(cache_key)
+            if cached is not None:
+                value, discovered, checked_at = cached
+                if (
+                    discovered
+                    or now - checked_at
+                    < _CONTEXT_WINDOW_FALLBACK_RETRY_SECONDS
+                ):
+                    return value
+
+            discovered_value = await self._probe_context_window(config)
+            if discovered_value is not None:
+                value = discovered_value
+                discovered = True
+            else:
+                known = _known_model_context_window(config.model)
+                value = known or DEFAULT_CONTEXT_WINDOW_TOKENS
+                discovered = False
+            self._context_windows[cache_key] = (
+                max(1024, int(value)),
+                discovered,
+                now,
+            )
+            return max(1024, int(value))
+
+    async def _probe_context_window(self, config: ModelConfig) -> int | None:
+        resolver = self._context_window_resolver
+        try:
+            async with asyncio.timeout(_CONTEXT_WINDOW_PROBE_TIMEOUT):
+                if resolver is not None:
+                    value = resolver(config)
+                    if inspect.isawaitable(value):
+                        value = await value
+                    return _extract_context_window_tokens(value)
+                if config.provider in {
+                    "openai_chat_completions",
+                    "openai_responses",
+                }:
+                    return await _default_openai_context_window(config)
+                if config.provider == "google_generate_content":
+                    return await _default_gemini_context_window(config)
+        except Exception:
+            return None
+        return None
 
     async def complete_agent_turn(
         self,
@@ -2124,6 +2204,172 @@ def _merge_safe_extra(payload: dict[str, Any], extra: Mapping[str, Any]) -> None
         key_text = str(key)
         if key_text not in _PROTECTED_PAYLOAD_KEYS:
             payload[key_text] = value
+
+
+_CONTEXT_WINDOW_FIELDS = frozenset(
+    {
+        "contextwindow",
+        "contextlength",
+        "contextsize",
+        "maxcontextwindow",
+        "maxcontextlength",
+        "maxcontexttokens",
+        "maxinputtokens",
+        "maxprompttokens",
+        "inputtokenlimit",
+        "modellentokens",
+        "maxmodellen",
+        "maxseqlen",
+        "maxsequencelength",
+        "modelmaxlength",
+        "nctx",
+    }
+)
+
+_KNOWN_MODEL_CONTEXT_WINDOWS = (
+    ("gpt-4.1", 1_047_576),
+    ("gpt-4o", 128_000),
+    ("gpt-4-turbo", 128_000),
+    ("gpt-4", 8_192),
+    ("gpt-3.5", 16_385),
+    ("gpt-5", 400_000),
+    ("o1", 200_000),
+    ("o3", 200_000),
+    ("o4", 200_000),
+    ("gemini", 1_048_576),
+    ("deepseek", 131_072),
+)
+
+
+async def _default_openai_context_window(config: ModelConfig) -> int | None:
+    import httpx
+
+    base_url = (config.base_url or DEFAULT_OPENAI_BASE_URL).rstrip("/")
+    headers = {"Authorization": f"Bearer {config.api_key}"}
+    timeout = min(_CONTEXT_WINDOW_PROBE_TIMEOUT, config.request_timeout_seconds)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        model_url = (
+            f"{base_url}/models/{quote(config.model, safe='')}"
+        )
+        try:
+            response = await client.get(model_url, headers=headers)
+            if response.is_success:
+                value = _extract_context_window_tokens(response.json())
+                if value is not None:
+                    return value
+        except Exception:
+            pass
+
+        try:
+            response = await client.get(
+                f"{base_url}/models",
+                headers=headers,
+            )
+            if not response.is_success:
+                return None
+            payload = response.json()
+            entries = (
+                payload.get("data")
+                if isinstance(payload, Mapping)
+                else payload
+            )
+            if not isinstance(entries, Sequence) or isinstance(
+                entries,
+                (str, bytes, bytearray),
+            ):
+                return None
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                entry_model = str(
+                    entry.get("id")
+                    or entry.get("model")
+                    or entry.get("name")
+                    or ""
+                )
+                if not _same_model_id(entry_model, config.model):
+                    continue
+                return _extract_context_window_tokens(entry)
+        except Exception:
+            return None
+    return None
+
+
+async def _default_gemini_context_window(
+    config: ModelConfig,
+) -> int | None:
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        return None
+    client = genai.Client(
+        api_key=config.api_key,
+        http_options=_google_sdk_http_options(config, types),
+    )
+    async_client = client.aio
+    try:
+        model = await async_client.models.get(model=config.model)
+        return _extract_context_window_tokens(model)
+    finally:
+        await async_client.aclose()
+
+
+def _extract_context_window_tokens(value: Any, *, depth: int = 0) -> int | None:
+    if depth > 8 or value is None:
+        return None
+    plain = _plain_value(value)
+    if isinstance(plain, Mapping):
+        for key, item in plain.items():
+            normalized = re.sub(
+                r"[^a-z0-9]",
+                "",
+                str(key).casefold(),
+            )
+            if normalized not in _CONTEXT_WINDOW_FIELDS:
+                continue
+            parsed = _positive_int(item)
+            if parsed is not None:
+                return parsed
+        for item in plain.values():
+            parsed = _extract_context_window_tokens(item, depth=depth + 1)
+            if parsed is not None:
+                return parsed
+    elif isinstance(plain, Sequence) and not isinstance(
+        plain,
+        (str, bytes, bytearray),
+    ):
+        for item in plain:
+            parsed = _extract_context_window_tokens(item, depth=depth + 1)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _same_model_id(left: str, right: str) -> bool:
+    def normalize(value: str) -> str:
+        normalized = str(value or "").strip().casefold()
+        return normalized.removeprefix("models/")
+
+    return normalize(left) == normalize(right)
+
+
+def _known_model_context_window(model: str) -> int | None:
+    normalized = str(model or "").strip().casefold().replace("_", "-")
+    for marker, tokens in _KNOWN_MODEL_CONTEXT_WINDOWS:
+        if marker in normalized:
+            return tokens
+    return None
 
 
 async def _default_openai_request(

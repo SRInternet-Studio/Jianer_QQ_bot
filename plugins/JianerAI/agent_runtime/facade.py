@@ -305,11 +305,13 @@ class AgentFacade:
                     memory = str(render() or "").strip()
                     if memory:
                         payload["retrieved_memory"] = memory
+                if await self.sessions.should_auto_summarize(key, core):
+                    await self.sessions.summarize(key, source="自动压缩")
                 await core.event_handler(
                     json.dumps(payload, ensure_ascii=False),
                     context=context,
                 )
-                if core.should_auto_summarize():
+                if await self.sessions.should_auto_summarize(key, core):
                     await self.sessions.summarize(key, source="自动压缩")
         except AgentStopped as exc:
             error = exc

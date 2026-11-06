@@ -378,7 +378,6 @@ chmod 600 aiconfig/*.ai.json
   "agent_collector_max_buffer": 80,
   "agent_collector_keep_after_compress": 60,
   "agent_core_idle_hours": 12,
-  "agent_max_history_chars": 60000,
   "agent_profile_switch_summary": true,
   "agent_profile_switch_keep_turns": 6,
   "agent_profile_summary_chunk_chars": 24000,
