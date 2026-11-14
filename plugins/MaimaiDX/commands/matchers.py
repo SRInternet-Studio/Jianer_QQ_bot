@@ -33,8 +33,6 @@ class CommandMatcher(_CommandMatcher):
         if not trigger.is_triggered(event):
             return False
         event = trigger.body_event(event)
-        if isinstance(self._trigger_pattern, str):
-            self.command = _coerce_alconna(self._trigger_pattern)
         return await super().dispatch(event, actions)
 
 

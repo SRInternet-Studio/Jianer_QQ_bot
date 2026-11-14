@@ -547,39 +547,65 @@ def plugin_retirement_failures() -> list[ShutdownReport]:
 
 
 def get_plugin_manager() -> PluginManager | None:
+    client = get_plugin_client()
+    if client is not None and getattr(client, "plugin_manager", None) is not None:
+        return client.plugin_manager
     with _state_lock:
         return _plugin_manager
 
 
 def get_load_result() -> Any:
+    client = get_plugin_client()
+    if client is not None:
+        return client.last_load_result
     with _state_lock:
         return _load_result
 
 
 def loaded_plugins() -> list[str]:
-    if _load_result is None:
-        return []
-    return list(getattr(_load_result, "loaded", []))
+    result = get_load_result()
+    return list(getattr(result, "loaded", []) or [])
 
 
 def disabled_plugins() -> list[str]:
+    client = get_plugin_client()
+    if client is not None:
+        return list(client.disabled_plugins())
     return list(_disabled_plugins)
 
 
 def failed_plugins() -> list[str]:
-    if _load_result is None:
-        return []
-    return list(getattr(_load_result, "failed", []))
+    result = get_load_result()
+    return list(getattr(result, "failed", []) or [])
 
 
 def plugin_warnings() -> list[str]:
-    if _load_result is None:
-        return []
-    return list(getattr(_load_result, "warnings", []))
+    result = get_load_result()
+    return list(getattr(result, "warnings", []) or [])
 
 
-def plugin_help_text() -> str:
-    return _help_text
+def plugin_help_text(exclude: set[str] | frozenset[str] | None = None) -> str:
+    manager = get_plugin_manager()
+    if manager is None:
+        return _help_text
+    excluded = set(exclude or ())
+    lines: list[str] = []
+    for plugin_id in manager.dependency_order:
+        if plugin_id == "jianerbot-plugin-alconna" or plugin_id in excluded:
+            continue
+        plugin = manager.plugins.get(plugin_id)
+        metadata = getattr(plugin, "metadata", None)
+        usage = getattr(metadata, "usage", "") if metadata else ""
+        description = getattr(metadata, "description", "") if metadata else ""
+        text = usage or description
+        if text:
+            lines.extend(str(text).splitlines())
+    reminder = _runtime.get("reminder", "")
+    return "".join(
+        f"\n       {line.strip().replace('{reminder}', reminder)}"
+        for line in lines
+        if line.strip()
+    )
 
 
 async def dispatch_plugins(
@@ -758,6 +784,10 @@ def _publish_manager(
         _load_result = result
         _disabled_plugins = disabled
         _help_text = help_text
+    client = get_plugin_client()
+    if client is not None:
+        client._last_load_result = result
+        client._disabled_plugins = list(disabled)
 
 
 @contextlib.asynccontextmanager

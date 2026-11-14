@@ -1,7 +1,4 @@
-"""帮助内容生成与展示（图片/文本）。"""
-import os
-
-from Tools.tools import create_help_message_images_async
+"""Help text builders shared by the native HelpInfo plugin."""
 
 from .help_mode import normalize_help_mode
 from .protocol import is_feishu_protocol, is_qq_protocol
@@ -29,7 +26,7 @@ def set_help_mode(help_mode_settings: dict, save_fn, user_id, mode: str) -> bool
 
 def build_help_message(config, Events, event, bot_name: str, reminder: str, plugins_help: str) -> str:
     plugin_section = str(plugins_help or "").strip()
-    if isinstance(event, Events.GroupMessageEvent):
+    if getattr(event, "group_id", None) is not None:
         lines = [
             f"如何与{bot_name}交流( •̀ ω •́ )✧",
             f"       注：对话前必须加上 {reminder} 噢！~",
@@ -44,7 +41,7 @@ def build_help_message(config, Events, event, bot_name: str, reminder: str, plug
             lines.extend(["", "插件功能：", plugin_section])
         lines.append("快来聊天吧(*≧︶≦)")
         return "\n".join(lines)
-    elif isinstance(event, Events.PrivateMessageEvent):
+    elif getattr(event, "user_id", None) is not None:
         lines = [
             f"如何与{bot_name}私聊( •̀ ω •́ )✧",
             "       直接发送消息即可使用支持私聊的插件功能",
@@ -96,79 +93,3 @@ def build_admin_help(config, bot_name: str, reminder: str, is_super: bool) -> st
         *command_lines,
         "你的每一步操作，与用户息息相关。",
     ])
-
-
-async def send_help_visual(
-    config,
-    Events,
-    Manager,
-    Segments,
-    help_mode_settings,
-    bot_name,
-    logger,
-    actions,
-    event,
-    content: str,
-    reply_message_id: str = None,
-    user_id_override=None,
-):
-    mode = get_help_mode(config, help_mode_settings, user_id_override if user_id_override is not None else getattr(event, "user_id", ""))
-    if isinstance(event, Events.GroupMessageEvent) and is_qq_protocol(config) and mode == "文本":
-        lines = [line.strip() for line in content.splitlines() if line.strip()]
-        if not lines:
-            lines = [content]
-        try:
-            nodes = [
-                Segments.CustomNode(
-                    str(event.self_id),
-                    bot_name,
-                    Manager.Message(Segments.Text(line))
-                )
-                for line in lines
-            ]
-            await actions.send_group_forward_msg(
-                group_id=event.group_id,
-                message=Manager.Message(*nodes)
-            )
-            return
-        except Exception:
-            logger.warning("群聊帮助转发发送失败，已回退为文本")
-            if reply_message_id:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), Segments.Text(content)))
-            else:
-                await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
-            return
-    bg_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "bg.jpeg")
-    image_paths = await create_help_message_images_async(content, bg_path)
-    if isinstance(event, Events.PrivateMessageEvent):
-        if is_qq_protocol(config) and mode == "文本":
-            await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
-            return
-        if image_paths:
-            try:
-                await actions.send(
-                    user_id=event.user_id,
-                    message=Manager.Message(*(Segments.Image(path) for path in image_paths)),
-                )
-                return
-            except Exception:
-                logger.warning("帮助图片发送失败，已回退为文本")
-        await actions.send(user_id=event.user_id, message=Manager.Message(Segments.Text(content)))
-        return
-    if isinstance(event, Events.GroupMessageEvent):
-        if image_paths:
-            try:
-                images = tuple(Segments.Image(path) for path in image_paths)
-                if reply_message_id:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), *images))
-                else:
-                    await actions.send(group_id=event.group_id, message=Manager.Message(*images))
-                return
-            except Exception:
-                logger.warning("群聊帮助图片发送失败，已回退为文本")
-        if reply_message_id:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Reply(reply_message_id), Segments.Text(content)))
-        else:
-            await actions.send(group_id=event.group_id, message=Manager.Message(Segments.Text(content)))
-        return
-    await actions.send(group_id=getattr(event, "group_id", None), user_id=getattr(event, "user_id", None), message=Manager.Message(Segments.Text(content)))

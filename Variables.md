@@ -45,6 +45,10 @@ plugins/
 - `cooldowns1`：Pixiv 生图冷却表。
 - `generating`：Pixiv 生图并发状态。
 - `confused_word`：无权限提示模板。
+- `started_at`：宿主启动时间，供 `~感知` 计算运行时间。
+- `emoji_repeat_enabled` / `emoji_send_count`：表情复述开关与节流时间。
+- `self_service_titles`：自助分配头衔开关。
+- `wait_for_add_in`：入群邀请审批后的欢迎跳过标记。
 
 ## 事件与发送
 

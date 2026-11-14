@@ -3,6 +3,13 @@
 ## 未发布
 
 ### 新增
+- 原生功能迁移为 5 个 JianerCore 目录插件：`InteractionEvents`、`HelpInfo`、
+  `Admin`、`Broadcast`、`FeishuBinding`；插件统一使用 `UniMessage` 发送文本、
+  图片、At 和回复，仅在群管理、戳一戳、群列表等没有统一消息接口的操作中使用
+  `actions`。
+- JianerCore 0.93.0 新增核心 `UniMessage`、插件管理命令
+  `~重载插件`/`~禁用插件`/`~启用插件`/`~插件视角`，以及两阶段插件重载 API。
+  Jianer_QQ_bot 不再自行实现这四个命令。
 - JianerAI Agent 重构为 HypeR 风格运行时：白名单触发、Collector、持久
   Main/System Context、跨 Context 工具、工具发送、持久 Sub-Agent、全局
   `profiles.json`、Chat/Responses/Gemini API 适配和运行期工具启停。
@@ -26,6 +33,11 @@
 - 新增脱敏的 `config.example.json`，提供 OneBot、Milky、Kritor、飞书和 AI 基础配置结构。
 
 ### 变更
+- `main.py` 收缩为宿主启动与消息路由层；`~重启`、`~休眠` 及其门禁继续留在
+  宿主，其余原生命令与事件处理迁入插件。
+- 帮助、关于、感知、权限管理、群管理、群发、飞书绑定、戳一戳、成员事件和
+  重启通知均由插件处理；`~帮助` 过滤 5 个原生插件，避免重复展示。
+- 飞书按能力降级：QQ 专属群管理和群列表功能返回明确不支持提示。
 - JianerAI 命令改用无歧义主名称：`模型菜单/切换模型`、`人设/切换人设`、
   `添加人设/删除人设/重载人设`、`清空上下文`；旧命令继续作为兼容别名。
 - JianerAI 人设系统完整对齐 HypeR：`profiles.json` 每次使用时重新读取，
@@ -74,6 +86,8 @@
 - 飞书绑定以 JSON 为权威源，通过持久 outbox 幂等合并 AI 身份；回调失败不回滚非 AI 绑定。
 
 ### 修复
+- 修复 MaimaiDX 命令匹配器每次派发都重新创建 `Alconna` 对象、导致全局命令
+  注册计数泄漏并在多次热重载后触发 `ExceedMaxCount` 的问题。
 - AI 回复的分段策略不再作用于命令菜单、状态列表和错误提示；这些结构化文本
   始终原文单条发送，只有模型生成的 AI 回复才执行流式/字符切片。
 - 修复 HypeR Agent 失败日志把开始计时写成打印时刻、`duration_ms` 永远接近 0
