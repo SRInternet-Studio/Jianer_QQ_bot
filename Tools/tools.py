@@ -3,7 +3,6 @@ from typing import Tuple, Optional, Any
 import platform
 import psutil
 import io, gc, os
-import math
 from pathlib import Path
 import shutil, subprocess
 import warnings
@@ -269,6 +268,58 @@ async def create_help_message_image_async(help_text: str, background_path: str =
     paths = await create_help_message_images_async(help_text, background_path)
     return paths[0] if paths else None
 
+
+def _parse_help_rows(help_text: str) -> tuple[str, list[tuple[str, Any]]]:
+    lines = [line.strip() for line in help_text.strip().split("\n") if line.strip()]
+    if not lines:
+        return "帮助", []
+
+    rows: list[tuple[str, Any]] = []
+    command_buffer: list[tuple[str, str]] = []
+
+    def flush_commands() -> None:
+        for start in range(0, len(command_buffer), 5):
+            rows.append(("commands", tuple(command_buffer[start:start + 5])))
+        command_buffer.clear()
+
+    for line in lines[1:]:
+        separator = "—>" if "—>" in line else ("->" if "->" in line else None)
+        if separator:
+            cmd, desc = line.split(separator, 1)
+            command_buffer.append((cmd.strip(), desc.strip()))
+        else:
+            flush_commands()
+            rows.append(("text", line))
+    flush_commands()
+    return lines[0], rows
+
+
+def _help_row_weight(row: tuple[str, Any]) -> float:
+    if row[0] == "commands":
+        return 1.0
+    line = str(row[1])
+    return 0.6 if len(line) > 46 else 0.45
+
+
+def _paginate_help_rows(rows: list[tuple[str, Any]], max_weight: float = 8.0):
+    pages: list[list[tuple[str, Any]]] = []
+    current_page: list[tuple[str, Any]] = []
+    current_weight = 0.0
+
+    for row in rows:
+        weight = _help_row_weight(row)
+        if current_page and current_weight + weight > max_weight:
+            pages.append(current_page)
+            current_page = []
+            current_weight = 0.0
+        current_page.append(row)
+        current_weight += weight
+
+    if current_page:
+        pages.append(current_page)
+    return pages or [[]]
+
+
 async def create_help_message_images_async(help_text: str, background_path: str = "assets/bg.jpeg") -> list[str]:
     """按 16:9 横排纵列分页渲染帮助内容，返回顺序分页图片路径。"""
     try:
@@ -288,56 +339,47 @@ async def create_help_message_images_async(help_text: str, background_path: str 
         for path in tuple(Path(out_dir).glob(f"help_{digest}*")):
             os.remove(path)
 
-        lines = [line.strip() for line in help_text.strip().split("\n") if line.strip()]
-        title = html.escape(lines[0]) if lines else "帮助"
-        command_lines = []
-        other_lines = []
-        for index, line in enumerate(lines[1:] if lines else []):
-            if "->" in line:
-                cmd, desc = line.split("->", 1)
-                command_lines.append((cmd.strip(), desc.strip()))
-            elif "—>" in line:
-                cmd, desc = line.split("—>", 1)
-                command_lines.append((cmd.strip(), desc.strip()))
-            elif index == 0:
-                other_lines.append(line)
-            else:
-                other_lines.append(line)
-
-        command_count_per_page = 6
-        if not command_lines:
-            command_pages = [[]]
-        else:
-            page_count = math.ceil(len(command_lines) / command_count_per_page)
-            per_page = math.ceil(len(command_lines) / page_count)
-            command_pages = [
-                command_lines[start:start + per_page]
-                for start in range(0, len(command_lines), per_page)
-            ]
+        raw_title, rows = _parse_help_rows(help_text)
+        title = html.escape(raw_title)
+        help_pages = _paginate_help_rows(rows)
 
         paths = []
         bg_url = "file:///" + background_path.replace("\\", "/")
 
-        for page_index, page_commands in enumerate(command_pages):
-            rows = max(1, math.ceil(len(page_commands) / 2)) if page_commands else 1
-            command_html = []
-            for cmd, desc in page_commands:
-                command_html.append(
-                    f"""
-                    <div class="command-card">
-                        <div class="cmd-badge">{html.escape(cmd)}</div>
-                        <div class="cmd-desc">{html.escape(desc)}</div>
-                    </div>
-                    """
-                )
-            commands_html = "\n".join(command_html)
-            other_html = "\n".join(
-                f'<div class="text-line">{html.escape(line)}</div>'
-                for line in other_lines
-            ) if page_index == 0 else ""
+        for page_index, page_rows in enumerate(help_pages):
+            flow_html = []
+            for row_kind, row_value in page_rows:
+                if row_kind == "commands":
+                    cards = []
+                    for cmd, desc in row_value:
+                        cards.append(
+                            f"""
+                            <div class="command-card">
+                                <div class="cmd-badge">{html.escape(cmd)}</div>
+                                <div class="cmd-desc">{html.escape(desc)}</div>
+                            </div>
+                            """
+                        )
+                    flow_html.append(
+                        f'<div class="command-row">{"".join(cards)}</div>'
+                    )
+                else:
+                    line = str(row_value)
+                    css_class = "text-row"
+                    if line.endswith(("：", ":")):
+                        css_class += " section-row"
+                    elif line.startswith(("注：", "注意：")):
+                        css_class += " notice-row"
+                    elif "快来聊天吧" in line:
+                        css_class += " footer-row"
+                    flow_html.append(
+                        f'<div class="{css_class}">{html.escape(line)}</div>'
+                    )
+
+            flow_content = "\n".join(flow_html)
             page_foot = ""
-            if len(command_pages) > 1:
-                page_foot = f'<div class="page-foot">{page_index + 1} / {len(command_pages)}</div>'
+            if len(help_pages) > 1:
+                page_foot = f'<div class="page-foot">{page_index + 1} / {len(help_pages)}</div>'
 
             html_content = f"""
 <!DOCTYPE html>
@@ -364,76 +406,97 @@ async def create_help_message_images_async(help_text: str, background_path: str 
             color: #fff;
         }}
         .screen {{
-            width: 1560px;
-            height: 860px;
+            width: 1660px;
+            height: 960px;
             background: rgba(18, 18, 20, 0.54);
             backdrop-filter: blur(34px) saturate(120%);
             -webkit-backdrop-filter: blur(34px) saturate(120%);
             border: 1px solid rgba(255,255,255,0.16);
             border-radius: 28px;
             box-shadow: 0 28px 58px rgba(0,0,0,0.38);
-            padding: 32px 48px 36px;
+            padding: 26px 36px 32px;
             box-sizing: border-box;
             display: flex;
             flex-direction: column;
         }}
         .title {{
-            min-height: 52px;
+            min-height: 46px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 36px;
+            font-size: 32px;
             font-weight: 600;
             letter-spacing: 1px;
             overflow-wrap: anywhere;
         }}
-        .other {{ display: flex; flex-direction: column; gap: 6px; margin: 6px 0 12px; }}
-        .text-line {{
-            font-size: 21px;
-            color: rgba(255,255,255,0.8);
-            text-align: center;
-            overflow-wrap: anywhere;
-        }}
-        .commands {{
+        .flow {{
             flex: 1;
             min-height: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 4px;
+        }}
+        .command-row {{
+            flex: 1 1 0;
+            min-height: 0;
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            grid-template-rows: repeat({rows}, minmax(0, 1fr));
-            gap: 16px;
-            align-content: space-evenly;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 10px;
         }}
         .command-card {{
             min-width: 0;
             min-height: 0;
-            display: grid;
-            grid-template-columns: 280px minmax(0, 1fr);
-            align-items: center;
-            gap: 18px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 4px;
             background: rgba(255,255,255,0.1);
             border: 1px solid rgba(255,255,255,0.13);
-            border-radius: 18px;
-            padding: 18px 22px;
+            border-radius: 14px;
+            padding: 8px 10px;
             box-sizing: border-box;
             overflow: hidden;
         }}
         .cmd-badge, .cmd-desc {{
-            flex: 1;
-            font-size: 20px;
-            line-height: 1.45;
-            padding: 10px 12px;
+            font-size: 16px;
+            line-height: 1.24;
             overflow-wrap: anywhere;
         }}
         .cmd-badge {{
-            flex: none;
-            max-width: 300px;
+            font-weight: 600;
+            padding: 4px 6px;
             background: rgba(255,255,255,0.12);
-            border-radius: 12px;
+            border-radius: 8px;
             text-align: center;
         }}
         .cmd-desc {{
             color: rgba(255,255,255,0.86);
         }}
+        .text-row {{
+            flex: 0 0 auto;
+            width: 100%;
+            min-height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 12px;
+            color: rgba(255,255,255,0.82);
+            font-size: 15px;
+            line-height: 1.22;
+            text-align: center;
+            overflow-wrap: anywhere;
+        }}
+        .section-row {{
+            justify-content: flex-start;
+            padding-left: 4px;
+            color: rgba(255,255,255,0.95);
+            font-weight: 600;
+            border-bottom: 1px solid rgba(255,255,255,0.18);
+        }}
+        .notice-row {{ color: rgba(255,255,255,0.72); }}
+        .footer-row {{ color: rgba(255,255,255,0.9); }}
         .page-foot {{
             position: fixed;
             right: 46px;
@@ -446,8 +509,7 @@ async def create_help_message_images_async(help_text: str, background_path: str 
 <body>
     <div class="screen">
         <div class="title">{title}</div>
-        <div class="other">{other_html}</div>
-        <div class="commands">{commands_html}</div>
+        <div class="flow">{flow_content}</div>
     </div>
     {page_foot}
 </body>
